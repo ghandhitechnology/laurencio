@@ -90,7 +90,11 @@ export function createWebRoutes(deps: WebDeps): Hono<AppBindings> {
     if (!response.ok) return c.html(signInPageWithError(deps, next), 400)
     const payload = (await response.json()) as { url?: string }
     if (!payload.url) return c.html(signInPageWithError(deps, next), 502)
-    return c.redirect(payload.url, 302)
+    // Better Auth sets its OAuth state cookie on this response; dropping it makes the
+    // callback fail with a state mismatch, so the redirect carries the cookies forward.
+    const headers = new Headers({ location: payload.url })
+    for (const cookie of response.headers.getSetCookie()) headers.append('set-cookie', cookie)
+    return new Response(null, { status: 302, headers })
   })
 
   app.post('/sign-in/dev', async (c) => {

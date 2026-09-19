@@ -54,10 +54,22 @@ describe('development defaults', () => {
     expect(() => loadEnv(withoutBucket)).toThrow(/filesystem storage/)
   })
 
-  test('a valid production env still listens on loopback and disables generation', () => {
+  test('a valid production env binds for a container and disables generation', () => {
     const env = loadEnv(productionBase)
     expect(env.storage.kind).toBe('s3')
     expect(env.generatedSecret).toBe(false)
-    expect(env.host).toBe('127.0.0.1')
+    expect(env.host).toBe('0.0.0.0')
+  })
+
+  test('staging binds for a container and keeps development affordances', () => {
+    const env = loadEnv({ ...productionBase, NODE_ENV: 'staging', ALLOW_DEV_SIGNIN: 'true' })
+    expect(env.nodeEnv).toBe('staging')
+    expect(env.host).toBe('0.0.0.0')
+    expect(env.auth.allowDevSignin).toBe(true)
+  })
+
+  test('development stays on loopback and an explicit host wins', () => {
+    expect(loadEnv({}).host).toBe('127.0.0.1')
+    expect(loadEnv({ HOST: '0.0.0.0' }).host).toBe('0.0.0.0')
   })
 })

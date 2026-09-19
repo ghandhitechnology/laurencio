@@ -20,7 +20,8 @@
     "cli:test": "bash scripts/cli-tests.sh",
     "e2e:all": "bun run e2e:two-home && bun run e2e:server",
     "verify": "bun run check && bun run lint && bun test && bun run e2e:all && bun run cli:test",
-    "smoke:live": "bun scripts/smoke-live.ts"
+    "smoke:live": "bun scripts/smoke-live.ts",
+    "start": "bun packages/server/src/db/migrate.ts && bun packages/server/src/index.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",

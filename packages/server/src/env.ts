@@ -42,7 +42,7 @@ export type StorageConfig =
   | { kind: 'fs'; dir: string; secret: string; baseUrl: string }
 
 export interface ServerEnv {
-  nodeEnv: 'development' | 'test' | 'production'
+  nodeEnv: 'development' | 'test' | 'staging' | 'production'
   port: number
   /** Loopback unless HOST is set; the deployment has to opt into a public bind. */
   host: string
@@ -109,7 +109,13 @@ function timeString(source: EnvSource, key: string, fallback: TimeString): TimeS
 export function loadEnv(source: EnvSource = process.env): ServerEnv {
   const rawNodeEnv = source.NODE_ENV ?? 'development'
   const nodeEnv =
-    rawNodeEnv === 'production' ? 'production' : rawNodeEnv === 'test' ? 'test' : 'development'
+    rawNodeEnv === 'production'
+      ? 'production'
+      : rawNodeEnv === 'staging'
+        ? 'staging'
+        : rawNodeEnv === 'test'
+          ? 'test'
+          : 'development'
   const isProduction = nodeEnv === 'production'
 
   const publicUrl = source.BETTER_AUTH_URL ?? `http://localhost:${source.PORT ?? '8787'}`
@@ -141,7 +147,9 @@ export function loadEnv(source: EnvSource = process.env): ServerEnv {
   return {
     nodeEnv,
     port: integer(source, 'PORT', 8787),
-    host: source.HOST?.trim() || '127.0.0.1',
+    host:
+      source.HOST?.trim() ||
+      (nodeEnv === 'production' || nodeEnv === 'staging' ? '0.0.0.0' : '127.0.0.1'),
     publicUrl,
     secret,
     generatedSecret: configuredSecret === undefined && !isProduction,
