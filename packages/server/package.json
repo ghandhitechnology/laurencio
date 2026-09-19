@@ -1,0 +1,10 @@
+{
+  "name": "@laurencio/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Sync service: auth, devices, blobs, revisions",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

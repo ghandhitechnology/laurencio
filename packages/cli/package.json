@@ -1,0 +1,10 @@
+{
+  "name": "@laurencio/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "laurencio command line interface",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

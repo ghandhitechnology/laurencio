@@ -1,0 +1,10 @@
+{
+  "name": "@laurencio/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Wire protocol schemas and shared types",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

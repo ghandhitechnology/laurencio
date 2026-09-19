@@ -1,0 +1,10 @@
+{
+  "name": "@laurencio/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Adapters, sync engine, transforms, crypto",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
