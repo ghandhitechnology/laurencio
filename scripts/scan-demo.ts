@@ -9,15 +9,19 @@
  *   bun run scan:demo -- --harness opencode --json
  *   bun run scan:demo -- --home /tmp/scratch-home --json
  */
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { builtinAdapters } from '../packages/core/src/adapters/registry'
 import { type DetectionReport, detectionReport } from '../packages/core/src/adapters/types'
+import { expand } from '../packages/core/src/paths'
 import { type ScanResult, scan } from '../packages/core/src/scan'
 import type {
   AdapterContext,
   HarnessAdapter,
   HarnessId,
+  HarnessProbe,
   Surface,
   TreeSurface,
 } from '../packages/core/src/types'
@@ -115,7 +119,7 @@ function demoDetection(adapterId: HarnessId, configRoot: string): HarnessAdapter
   })
 }
 
-const adapters: HarnessAdapter[] = [
+const demoAdapters: HarnessAdapter[] = [
   {
     id: 'claude',
     displayName: 'Claude Code (demo)',
@@ -154,6 +158,46 @@ const adapters: HarnessAdapter[] = [
     ],
   },
 ]
+
+/** Real adapters replace demo placeholders as phases 4-6 register them. */
+const builtins = new Map(builtinAdapters.map((adapter) => [adapter.id, adapter]))
+const adapters: HarnessAdapter[] = demoAdapters.map(
+  (adapter) => builtins.get(adapter.id) ?? adapter,
+)
+
+/** CLI-edge probes, the only place adapters get install and credential facts. */
+function harnessProbes(
+  home: string,
+  platform: AdapterContext['platform'],
+  env: Record<string, string | undefined>,
+  selected: readonly HarnessAdapter[],
+): Partial<Record<HarnessId, HarnessProbe>> {
+  const probes: Partial<Record<HarnessId, HarnessProbe>> = {}
+  if (selected.some((adapter) => adapter.id === 'codex')) {
+    let version: string | undefined
+    let installed = false
+    try {
+      const output = execFileSync('codex', ['--version'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      installed = true
+      const parsed = output.trim().replace(/^codex-cli\s+/, '')
+      if (parsed !== '') version = parsed
+    } catch {
+      installed = false
+    }
+    const authPath = expand(`\${CODEX_HOME}/auth.json`, { home, platform, env })
+    probes.codex = {
+      installed,
+      ...(version === undefined ? {} : { version }),
+      notes: [
+        fs.existsSync(authPath) ? 'credential-storage: auth.json' : 'credential-storage: keyring',
+      ],
+    }
+  }
+  return probes
+}
 
 function report(result: ScanResult, detections: DetectionReport[]): void {
   console.log('Laurencio scan demo (read-only)')
@@ -218,6 +262,7 @@ function main(): void {
       process.platform === 'win32' ? 'win32' : process.platform === 'linux' ? 'linux' : 'darwin',
     env: { ...process.env },
   }
+  ctx.probes = harnessProbes(ctx.home, ctx.platform, ctx.env, selected)
   const detections = selected.map((adapter) => detectionReport(adapter, ctx))
   const result = scan({
     adapters: selected,

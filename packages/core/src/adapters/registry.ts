@@ -1,5 +1,9 @@
 import type { AdapterContext, HarnessAdapter, Surface } from '../types'
+import { codexAdapter } from './codex'
 import type { RegisteredSurface } from './types'
+
+/** Built-in adapters, one per harness. Harness phases append to this list. */
+export const builtinAdapters: readonly HarnessAdapter[] = [codexAdapter]
 
 export type AdapterRegistryErrorKind = 'duplicate-adapter' | 'duplicate-surface' | 'duplicate-path'
 
