@@ -29,6 +29,7 @@ export interface TreeOptions {
   path: string
   policy?: Policy
   exclude?: string[]
+  filePolicy?: TreeSurface['filePolicy']
   merge?: MergeStrategy
   shared?: boolean
   transforms?: TreeSurface['transforms']
@@ -48,6 +49,7 @@ export function tree(options: TreeOptions): TreeSurface {
     exclude: options.exclude ?? [],
     transforms: options.transforms ?? [],
     secretRules: options.secretRules ?? [],
+    ...(options.filePolicy === undefined ? {} : { filePolicy: options.filePolicy }),
     ...(options.shared === true ? { shared: true as const } : {}),
   }
 }

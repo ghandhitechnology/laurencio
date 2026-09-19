@@ -57,6 +57,10 @@ PATH_EXTRA = "/Users/laurencio/tools/bin"
 nested = { value = true }
 `
 
+export const CODEX_PROFILE_TOML = `model = "gpt-5.6-codex-mini"
+approval_policy = "never"
+`
+
 export const CODEX_AUTOMATION_TOML = `version = 1
 id = "nightly-docs"
 kind = "cron"
@@ -99,6 +103,7 @@ export function buildCodexHome(options: CodexFixtureOptions = {}): FakeHome {
     entries: [
       { kind: 'file', path: '.codex/config.toml', content: CODEX_CONFIG_TOML },
       { kind: 'file', path: '.codex/.config.toml', content: 'model = "gpt-5.6-codex-mini"\n' },
+      { kind: 'file', path: '.codex/work.config.toml', content: CODEX_PROFILE_TOML },
       { kind: 'file', path: '.codex/AGENTS.md', content: '# global instructions\n' },
       { kind: 'file', path: '.codex/AGENTS.override.md', content: '# override\n' },
       { kind: 'file', path: '.codex/hooks.json', content: CODEX_HOOKS_JSON },

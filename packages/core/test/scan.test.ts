@@ -250,3 +250,176 @@ describe('scan manifest', () => {
     home.cleanup()
   })
 })
+
+describe('scan tree file policies', () => {
+  test('a sync override inside a never tree joins the manifest and the rest stays never', () => {
+    const home = buildFakeHome({
+      entries: [
+        { kind: 'file', path: '.claude/projects/a/memory.md', content: '# memory\n' },
+        { kind: 'file', path: '.claude/projects/a/session.jsonl', content: '{"line":1}\n' },
+        { kind: 'file', path: '.claude/projects/.hidden.json', content: '{"h":1}\n' },
+      ],
+    })
+    const result = scanHome(home, [
+      tree({
+        id: 'claude.projects',
+        path: '$HOME/.claude/projects',
+        policy: 'never',
+        filePolicy: [
+          { pattern: '**/memory.md', policy: 'sync' },
+          { pattern: '*.json', policy: 'opt-in' },
+        ],
+      }),
+    ])
+
+    expect(result.manifest.entries.map((entry) => entry.path)).toEqual([
+      '$HOME/.claude/projects/.hidden.json',
+      '$HOME/.claude/projects/a/memory.md',
+    ])
+    expect(entryFor(result, home.path('.claude/projects/a/memory.md')).classification).toBe('sync')
+    expect(entryFor(result, home.path('.claude/projects/.hidden.json')).classification).toBe(
+      'opt-in',
+    )
+    const session = entryFor(result, home.path('.claude/projects/a/session.jsonl'))
+    expect(session.classification).toBe('never')
+    expect(session.hash).toBeNull()
+    expect(session.storePath).toBeNull()
+    home.cleanup()
+  })
+
+  test('the first matching override wins, regardless of specificity', () => {
+    const home = buildFakeHome({
+      entries: [
+        { kind: 'file', path: '.claude/projects/work.config.toml', content: 'model = "x"\n' },
+        { kind: 'file', path: '.claude/projects/notes.toml', content: 'x = 1\n' },
+      ],
+    })
+    const firstWins = scanHome(home, [
+      tree({
+        id: 'claude.projects',
+        path: '$HOME/.claude/projects',
+        policy: 'never',
+        filePolicy: [
+          { pattern: '**/*.toml', policy: 'never' },
+          { pattern: 'work.config.toml', policy: 'sync' },
+        ],
+      }),
+    ])
+    expect(entryFor(firstWins, home.path('.claude/projects/work.config.toml')).classification).toBe(
+      'never',
+    )
+    expect(firstWins.manifest.entries).toEqual([])
+
+    const reordered = scanHome(home, [
+      tree({
+        id: 'claude.projects',
+        path: '$HOME/.claude/projects',
+        policy: 'never',
+        filePolicy: [
+          { pattern: 'work.config.toml', policy: 'sync' },
+          { pattern: '**/*.toml', policy: 'never' },
+        ],
+      }),
+    ])
+    expect(entryFor(reordered, home.path('.claude/projects/work.config.toml')).classification).toBe(
+      'sync',
+    )
+    expect(entryFor(reordered, home.path('.claude/projects/notes.toml')).classification).toBe(
+      'never',
+    )
+    expect(reordered.manifest.entries.map((entry) => entry.path)).toEqual([
+      '$HOME/.claude/projects/work.config.toml',
+    ])
+    home.cleanup()
+  })
+
+  test('patterns are tree-relative globs and dotfiles match', () => {
+    const home = buildFakeHome({
+      entries: [
+        { kind: 'file', path: '.claude/projects/top.md', content: '# top\n' },
+        { kind: 'file', path: '.claude/projects/.dotted.md', content: '# dot\n' },
+        { kind: 'file', path: '.claude/projects/deep/nested.md', content: '# deep\n' },
+      ],
+    })
+    const shallow = scanHome(home, [
+      tree({
+        id: 'claude.projects',
+        path: '$HOME/.claude/projects',
+        policy: 'never',
+        filePolicy: [{ pattern: '*.md', policy: 'sync' }],
+      }),
+    ])
+    expect(shallow.manifest.entries.map((entry) => entry.path).sort()).toEqual([
+      '$HOME/.claude/projects/.dotted.md',
+      '$HOME/.claude/projects/top.md',
+    ])
+
+    const recursive = scanHome(home, [
+      tree({
+        id: 'claude.projects',
+        path: '$HOME/.claude/projects',
+        policy: 'never',
+        filePolicy: [{ pattern: '**/*.md', policy: 'sync' }],
+      }),
+    ])
+    expect(recursive.manifest.entries.map((entry) => entry.path).sort()).toEqual([
+      '$HOME/.claude/projects/.dotted.md',
+      '$HOME/.claude/projects/deep/nested.md',
+      '$HOME/.claude/projects/top.md',
+    ])
+    home.cleanup()
+  })
+
+  test('a declared nested surface still owns files an override would capture', () => {
+    const home = buildFakeHome({
+      entries: [
+        { kind: 'file', path: '.claude/projects/README.md', content: '# readme\n' },
+        { kind: 'file', path: '.claude/projects/a/notes.md', content: '# notes\n' },
+      ],
+    })
+    const result = scanHome(home, [
+      tree({
+        id: 'claude.projects',
+        path: '$HOME/.claude/projects',
+        policy: 'never',
+        filePolicy: [{ pattern: '**/*.md', policy: 'sync' }],
+      }),
+      file({ id: 'claude.readme', path: '$HOME/.claude/projects/README.md', format: 'markdown' }),
+    ])
+    expect(result.manifest.entries.map((entry) => [entry.surfaceId, entry.path])).toEqual([
+      [sid('claude.projects'), '$HOME/.claude/projects/a/notes.md'],
+      [sid('claude.readme'), '$HOME/.claude/projects/README.md'],
+    ])
+    expect(entryFor(result, home.path('.claude/projects/README.md')).classification).toBe('nested')
+    home.cleanup()
+  })
+
+  test('never files in an overridden tree are not read and two scans match', () => {
+    const home = buildFakeHome({
+      entries: [
+        { kind: 'file', path: '.claude/projects/sync.md', content: '# sync\n' },
+        { kind: 'file', path: '.claude/projects/locked.json', content: 'secret\n', mode: 0o000 },
+      ],
+    })
+    const surfaces = [
+      tree({
+        id: 'claude.projects',
+        path: '$HOME/.claude/projects',
+        policy: 'never',
+        filePolicy: [{ pattern: '*.md', policy: 'sync' }],
+      }),
+    ]
+    const first = scanHome(home, surfaces)
+    const second = scanHome(home, surfaces)
+
+    const locked = entryFor(first, home.path('.claude/projects/locked.json'))
+    expect(locked.classification).toBe('never')
+    expect(locked.hash).toBeNull()
+    expect(first.surfaces[0]?.errors).toBe(0)
+    expect(first.manifest.entries.map((entry) => entry.path)).toEqual([
+      '$HOME/.claude/projects/sync.md',
+    ])
+    expect(JSON.stringify(second, null, 2)).toBe(JSON.stringify(first, null, 2))
+    home.cleanup()
+  })
+})

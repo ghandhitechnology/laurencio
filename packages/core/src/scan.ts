@@ -94,6 +94,11 @@ interface OwnerRoot {
   resolvedPath: string
 }
 
+interface PolicyMatcher {
+  matches: (candidate: string) => boolean
+  policy: Policy
+}
+
 interface ScanState {
   manifest: ManifestEntry[]
   layout: Map<string, LayoutEntry>
@@ -101,6 +106,7 @@ interface ScanState {
   ownerRoots: OwnerRoot[]
   boundary: Set<string>
   matchers: Map<SurfaceId, ((candidate: string) => boolean)[]>
+  filePolicyMatchers: Map<SurfaceId, PolicyMatcher[]>
 }
 
 interface WalkTarget {
@@ -157,6 +163,25 @@ function isExcluded(state: ScanState, surface: Surface, relPosix: string): boole
   return matchers.some((matches) => matches(relPosix))
 }
 
+/** The policy for one walked file, applying `filePolicy` overrides in declared order. */
+function effectivePolicy(state: ScanState, surface: Surface, relPosix: string): Policy {
+  if (surface.kind !== 'tree') return surface.policy
+  const overrides = surface.filePolicy
+  if (overrides === undefined || overrides.length === 0) return surface.policy
+  let matchers = state.filePolicyMatchers.get(surface.id)
+  if (matchers === undefined) {
+    matchers = overrides.map((override) => ({
+      matches: pm(override.pattern, { dot: true }),
+      policy: override.policy,
+    }))
+    state.filePolicyMatchers.set(surface.id, matchers)
+  }
+  for (const matcher of matchers) {
+    if (matcher.matches(relPosix)) return matcher.policy
+  }
+  return surface.policy
+}
+
 /** The most specific declared surface a link target lands in, if any. */
 function findOwnerRoot(state: ScanState, targetPath: string): SurfaceId | null {
   let best: OwnerRoot | null = null
@@ -194,7 +219,8 @@ function recordFile(
   entry.kind = 'file'
   entry.size = stat.size
   entry.mode = stat.mode & 0o777
-  if (target.surface.policy === 'never') {
+  const policy = effectivePolicy(state, target.surface, relPosix)
+  if (policy === 'never') {
     entry.classification = 'never'
     state.entries.push(entry)
     return
@@ -212,7 +238,7 @@ function recordFile(
   entry.storePath = storePath
   entry.hash = sha256Hex(data)
   // Opt-in surfaces hash like sync surfaces; DevicePolicy filters them when a plan is built.
-  entry.classification = target.surface.policy === 'opt-in' ? 'opt-in' : 'sync'
+  entry.classification = policy === 'opt-in' ? 'opt-in' : 'sync'
   target.counters.files += 1
   target.counters.bytes += stat.size
   state.manifest.push({
@@ -367,6 +393,7 @@ export function scan(options: ScanOptions): ScanResult {
       })),
     boundary: new Set(ownership.surfaces.map((surface) => surface.declaredPath)),
     matchers: new Map(),
+    filePolicyMatchers: new Map(),
   }
 
   const surfaces: SurfaceReport[] = []

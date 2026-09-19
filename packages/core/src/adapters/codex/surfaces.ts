@@ -82,6 +82,7 @@ interface TreeOptions {
   description: string
   policy?: Policy
   exclude?: string[]
+  filePolicy?: TreeSurface['filePolicy']
   transforms?: TransformSpec[]
   shared?: boolean
 }
@@ -99,6 +100,7 @@ function codexTree(options: TreeOptions): TreeSurface {
     exclude: options.exclude ?? [],
     transforms: options.transforms ?? [],
     secretRules: [],
+    ...(options.filePolicy === undefined ? {} : { filePolicy: options.filePolicy }),
     ...(options.shared === true ? { shared: true as const } : {}),
   }
 }
@@ -254,6 +256,8 @@ export function codexSurfaces(ctx: AdapterContext): Surface[] {
       policy: 'never',
       description: 'every other file under CODEX_HOME, including *_*.sqlite state and caches',
       exclude: CODEX_HOME_EXCLUDES,
+      // Codex profile overrides live beside machine state; only the named profile files sync.
+      filePolicy: [{ pattern: '*.config.toml', policy: 'sync' }],
     }),
   ]
   if (ctx.platform !== 'win32') {

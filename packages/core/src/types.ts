@@ -89,6 +89,13 @@ export interface TreeSurface extends SurfaceBase {
   merge: MergeStrategy
   /** Glob patterns excluded from a tree, for example `**​/node_modules/**`. */
   exclude: string[]
+  /**
+   * Per-file policy overrides for trees that mix portable files with machine state.
+   * Patterns are globs against the POSIX path relative to the tree root, matched with
+   * picomatch and dotfiles included, like `exclude`. First match wins; unmatched files
+   * keep the tree policy.
+   */
+  filePolicy?: { pattern: string; policy: Policy }[]
   /** Reserved for shared trees another surface owns. */
   shared?: true
 }

@@ -30,6 +30,7 @@ describe('codex surfaces', () => {
     const syncPaths = [
       '/.codex/config.toml',
       '/.codex/.config.toml',
+      '/.codex/work.config.toml',
       '/.codex/AGENTS.md',
       '/.codex/AGENTS.override.md',
       '/.codex/hooks.json',
@@ -86,11 +87,52 @@ describe('codex surfaces', () => {
       'codex.agents-skills',
       'codex.automations',
     ])
+    // Profile files sync through the never `codex.home` tree as per-file overrides.
+    const homeProfiles = new Set([`\${CODEX_HOME}/work.config.toml`])
     expect(result.manifest.entries.length).toBeGreaterThan(0)
     for (const entry of result.manifest.entries) {
-      expect(syncSurfaces.has(entry.surfaceId), entry.path).toBe(true)
+      const declared = syncSurfaces.has(entry.surfaceId) || homeProfiles.has(entry.path)
+      expect(declared, entry.path).toBe(true)
       expect(entry.path).not.toContain('sqlite')
       expect(entry.path).not.toContain('auth.json')
+    }
+    home.cleanup()
+  })
+
+  test('syncs named profile files while machine state in the same tree stays never', () => {
+    const home = buildCodexHome()
+    const result = scanCodex(home.ctx)
+
+    expect(classesFor(result.entries, '/.codex/work.config.toml')).toEqual(['sync'])
+    const profile = result.manifest.entries.find(
+      (entry) => entry.path === `\${CODEX_HOME}/work.config.toml`,
+    )
+    expect(profile?.surfaceId).toBe(sid('codex.home'))
+    expect(profile?.hash).toMatch(/^[0-9a-f]{64}$/)
+
+    const config = result.manifest.entries.filter(
+      (entry) => entry.surfaceId === sid('codex.config'),
+    )
+    expect(config.map((entry) => entry.path)).toEqual([`\${CODEX_HOME}/config.toml`])
+
+    const machineSuffixes = [
+      '/.codex/auth.json',
+      '/.codex/history.jsonl',
+      '/.codex/session_index.jsonl',
+      '/.codex/sessions/2026/rollout.jsonl',
+      '/.codex/archived_sessions/old.jsonl',
+      '/.codex/state_5.sqlite',
+      '/.codex/memories_1.sqlite',
+    ]
+    for (const suffix of machineSuffixes) {
+      const entries = result.entries.filter((entry) => entry.localPath.endsWith(suffix))
+      expect(entries.length, suffix).toBeGreaterThan(0)
+      for (const entry of entries) {
+        expect(entry.classification, suffix).not.toBe('sync')
+        expect(entry.classification, suffix).not.toBe('opt-in')
+        expect(entry.hash, suffix).toBeNull()
+        expect(entry.storePath, suffix).toBeNull()
+      }
     }
     home.cleanup()
   })
@@ -146,6 +188,11 @@ describe('codex surfaces', () => {
     const agentSkills = byPath.get('$HOME/.agents/skills')
     expect(agentSkills?.kind).toBe('tree')
     if (agentSkills?.kind === 'tree') expect(agentSkills.shared).toBe(true)
+    const homeTree = byPath.get(`\${CODEX_HOME}`)
+    expect(homeTree?.kind).toBe('tree')
+    if (homeTree?.kind === 'tree') {
+      expect(homeTree.filePolicy).toEqual([{ pattern: '*.config.toml', policy: 'sync' }])
+    }
     expect(
       surfaces.some((surface) => surface.path === '/etc/codex' && surface.policy === 'never'),
     ).toBe(true)
