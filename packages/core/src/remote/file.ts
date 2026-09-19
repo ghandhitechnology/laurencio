@@ -17,17 +17,20 @@ import type {
   KdfParams as WireKdfParams,
 } from '@laurencio/protocol'
 import { PROTOCOL_VERSION } from '@laurencio/protocol'
-import { type KdfParams, kdfParamsFromWire } from '../crypto/kdf'
+import { type KdfParams, kdfParamsFromWire, kdfParamsToWire } from '../crypto/kdf'
 import type { RevisionMeta, SurfaceDigest } from '../model'
 import type {
   BlobUpload,
+  KdfParamsLookup,
+  PublishedKdfParams,
+  PublishKdfParamsInput,
   Remote,
   RemoteCommit,
   RemoteCommitResult,
   RemoteListOptions,
   RemoteRevisionList,
 } from './types'
-import { RemoteError } from './types'
+import { KdfGenerationConflictError, KdfValidationError, RemoteError } from './types'
 
 interface StoreFile {
   version: 1
@@ -250,11 +253,36 @@ export function createFileRemote(options: FileRemoteOptions): FileRemote {
   }
 
   const kdfPath = path.join(dir, 'kdf.json')
+  const kdfVersionsDir = path.join(dir, 'kdf-versions')
+  fs.mkdirSync(kdfVersionsDir, { recursive: true })
   if (!fs.existsSync(kdfPath)) {
     if (options.kdf === undefined) {
       throw new RemoteError('not-found', 'file remote has no kdf parameters')
     }
-    atomicWrite(kdfPath, JSON.stringify(options.kdf, null, 2))
+    atomicWrite(kdfPath, JSON.stringify({ ...options.kdf, generation: 1 }, null, 2))
+  }
+
+  function readKdfFile(filePath: string): { wire: WireKdfParams; generation: number } | null {
+    if (!fs.existsSync(filePath)) return null
+    const record = asRecord(readJsonFile(filePath), 'kdf.json')
+    const generation =
+      typeof record.generation === 'number' &&
+      Number.isInteger(record.generation) &&
+      record.generation >= 1
+        ? record.generation
+        : 1
+    return { wire: record as unknown as WireKdfParams, generation }
+  }
+
+  function sameKdf(a: KdfParams, b: KdfParams): boolean {
+    return (
+      a.algo === b.algo &&
+      a.salt === b.salt &&
+      a.m === b.m &&
+      a.t === b.t &&
+      a.p === b.p &&
+      a.version === b.version
+    )
   }
 
   function blobPath(blobId: BlobId): string {
@@ -292,10 +320,56 @@ export function createFileRemote(options: FileRemoteOptions): FileRemote {
     dir,
     storeId: store.storeId,
 
-    async getKdfParams(): Promise<KdfParams | null> {
-      if (!fs.existsSync(kdfPath)) return null
-      const record = asRecord(readJsonFile(kdfPath), 'kdf.json')
-      return kdfParamsFromWire(record as unknown as WireKdfParams)
+    async getKdfParams(options: KdfParamsLookup = {}): Promise<PublishedKdfParams | null> {
+      const latest = readKdfFile(kdfPath)
+      if (options.version !== undefined) {
+        if (latest !== null && latest.generation === options.version) {
+          return { kdf: kdfParamsFromWire(latest.wire), generation: latest.generation }
+        }
+        const historical = readKdfFile(path.join(kdfVersionsDir, `${options.version}.json`))
+        if (historical === null) {
+          throw new RemoteError('not-found', `unknown KDF generation: ${options.version}`)
+        }
+        return { kdf: kdfParamsFromWire(historical.wire), generation: options.version }
+      }
+      return latest === null
+        ? null
+        : { kdf: kdfParamsFromWire(latest.wire), generation: latest.generation }
+    },
+
+    async putKdfParams(input: PublishKdfParamsInput): Promise<PublishedKdfParams> {
+      let wire: ReturnType<typeof kdfParamsToWire>
+      try {
+        wire = kdfParamsToWire(input.params, input.calibratedAt ?? now().toISOString())
+      } catch (error) {
+        throw new KdfValidationError(error instanceof Error ? error.message : String(error))
+      }
+      const latest = readKdfFile(kdfPath)
+      if (latest === null) {
+        if (input.expectedGeneration !== undefined && input.expectedGeneration !== 1) {
+          throw new KdfGenerationConflictError(input.expectedGeneration, null)
+        }
+        atomicWrite(kdfPath, JSON.stringify({ ...wire, generation: 1 }, null, 2))
+        return { kdf: input.params, generation: 1 }
+      }
+      const current = kdfParamsFromWire(latest.wire)
+      if (sameKdf(current, input.params)) {
+        return { kdf: current, generation: latest.generation }
+      }
+      if (
+        input.expectedGeneration !== undefined &&
+        latest.generation !== input.expectedGeneration
+      ) {
+        throw new KdfGenerationConflictError(input.expectedGeneration, latest.generation)
+      }
+      const raw = asRecord(readJsonFile(kdfPath), 'kdf.json')
+      atomicWrite(
+        path.join(kdfVersionsDir, `${latest.generation}.json`),
+        JSON.stringify({ ...raw, generation: latest.generation }, null, 2),
+      )
+      const generation = latest.generation + 1
+      atomicWrite(kdfPath, JSON.stringify({ ...wire, generation }, null, 2))
+      return { kdf: input.params, generation }
     },
 
     async listRevisions(listOptions: RemoteListOptions = {}): Promise<RemoteRevisionList> {

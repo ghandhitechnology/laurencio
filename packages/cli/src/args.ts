@@ -28,6 +28,7 @@ export interface Flags {
   passphraseFile: string | undefined
   remoteDir: string | undefined
   deviceName: string | undefined
+  resume: boolean
 }
 
 export interface ParsedArgs {
@@ -60,6 +61,7 @@ const OPTIONS = {
   'passphrase-file': { type: 'string' },
   'remote-dir': { type: 'string' },
   'device-name': { type: 'string' },
+  resume: { type: 'boolean' },
 } as const
 
 function booleanFlag(values: Record<string, unknown>, key: string): boolean {
@@ -104,6 +106,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       typeof values['passphrase-file'] === 'string' ? values['passphrase-file'] : undefined,
     remoteDir: typeof values['remote-dir'] === 'string' ? values['remote-dir'] : undefined,
     deviceName: typeof values['device-name'] === 'string' ? values['device-name'] : undefined,
+    resume: booleanFlag(values, 'resume'),
   }
   const args = parsed.positionals.slice(1)
   const command = parsed.positionals[0] ?? null

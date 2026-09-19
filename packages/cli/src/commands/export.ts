@@ -57,7 +57,7 @@ export const exportCommand: CommandSpec = {
       })
     }
     const manifest = await fetchManifestAt(session, page.head)
-    const kdf = await session.remote.getKdfParams()
+    const published = await session.remote.getKdfParams()
     const plaintext = ctx.flags.plaintext
     const files: ExportFile[] = []
     for (const entry of manifest.entries) {
@@ -94,7 +94,8 @@ export const exportCommand: CommandSpec = {
       deviceId: session.identity.deviceId,
       protocolVersion: PROTOCOL_VERSION,
       mode: plaintext ? 'plaintext' : 'encrypted',
-      kdf: kdf === null ? null : crypto.kdfParamsToWire(kdf, ctx.now().toISOString()),
+      kdf:
+        published === null ? null : crypto.kdfParamsToWire(published.kdf, ctx.now().toISOString()),
       revision: { id: manifest.revisionId, createdAt: manifest.createdAt },
       files,
     }

@@ -1,16 +1,33 @@
 import { describe, expect, test } from 'bun:test'
-import { StoreId } from '@laurencio/protocol'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { DeviceId, RevisionId, StoreId, SurfaceId } from '@laurencio/protocol'
 import { EnvelopeError, openText, type SealedBlob, sealText } from '../../src/crypto/aead'
 import {
   ARGON2_VERSION,
   deriveMasterKey,
   type KdfParams,
   type KeyMaterial,
+  kdfParamsToWire,
 } from '../../src/crypto/kdf'
-import { keyEpochFromParams, rotatePassphrase, rotationDigest } from '../../src/crypto/rotate'
+import {
+  keyEpochFromParams,
+  rotatePassphrase,
+  rotateStore,
+  rotationDigest,
+} from '../../src/crypto/rotate'
+import type { Manifest } from '../../src/model'
+import { createFileRemote } from '../../src/remote/file'
+import { parseManifest } from '../../src/remote/types'
 
 const storeId = StoreId.parse('0123456789ABCDEFGHJKMNPQRS')
 const protocolVersion = 1
+const deviceId = DeviceId.parse('0123456789ABCDEFGHJKMNPQRT')
+const headRevisionId = RevisionId.parse('0123456789ABCDEFGHJKMNPQRV')
+const rotatedRevisionId = RevisionId.parse('0123456789ABCDEFGHJKMNPQRW')
+const surfaceId = SurfaceId.parse('claude.settings')
+const ROTATED_PASSPHRASE = 'the new passphrase'
 const oldParams: KdfParams = {
   algo: 'argon2id',
   salt: 'ab'.repeat(16),
@@ -217,5 +234,122 @@ describe('key epochs', () => {
       kdf: oldParams,
       createdAt: '2026-09-19T12:00:00.000Z',
     })
+  })
+})
+
+describe('store rotation', () => {
+  test('rotates a FileRemote store: publish, re-derive, and decrypt the newest revision', async () => {
+    const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'laurencio-rotate-'))
+    const remote = createFileRemote({
+      dir,
+      storeId,
+      kdf: kdfParamsToWire(oldParams, '2026-09-19T00:00:00.000Z'),
+    })
+    const before = oldKey()
+    const content = sealText(before, 'content', '{"theme":"dark"}', {
+      storeId,
+      blobType: 'file',
+      protocolVersion,
+    })
+    await remote.putBlob({ blobId: content.blobId, bytes: content.bytes })
+    const manifest: Manifest = {
+      revisionId: headRevisionId,
+      deviceId,
+      createdAt: '2026-09-19T00:00:00.000Z',
+      entries: [
+        {
+          surfaceId,
+          path: 'settings.json',
+          kind: 'file',
+          policy: 'sync',
+          hash: 'hash-one',
+          size: content.bytes.length,
+          mode: 0o644,
+          blob: { id: content.blobId, size: content.bytes.length },
+        },
+      ],
+    }
+    const sealedManifest = sealText(before, 'manifest', JSON.stringify(manifest), {
+      storeId,
+      blobType: 'manifest',
+      protocolVersion,
+    })
+    await remote.putBlob({ blobId: sealedManifest.blobId, bytes: sealedManifest.bytes })
+    const committed = await remote.commit({
+      revision: {
+        id: headRevisionId,
+        storeId,
+        deviceId,
+        parents: [],
+        manifest: { id: sealedManifest.blobId, size: sealedManifest.bytes.length },
+        createdAt: manifest.createdAt,
+      },
+      blobs: [{ id: content.blobId, size: content.bytes.length }],
+      digest: [],
+    })
+    expect(committed.accepted).toBe(true)
+
+    const rotation = await rotateStore({
+      remote,
+      storeId,
+      protocolVersion,
+      deviceId,
+      master: before,
+      head: { revisionId: headRevisionId, parents: [], manifest },
+      newRevisionId: rotatedRevisionId,
+      newPassphrase: ROTATED_PASSPHRASE,
+      createdAt: '2026-09-19T01:00:00.000Z',
+      epoch: 1,
+      calibrate: () => newParams,
+      now: () => new Date('2026-09-19T01:00:00.000Z'),
+    })
+    const published = await remote.putKdfParams({
+      params: rotation.epoch.kdf,
+      calibratedAt: rotation.epoch.createdAt,
+      expectedGeneration: 1,
+    })
+    rotation.master.zeroize()
+    before.zeroize()
+
+    expect(published.generation).toBe(2)
+    expect(rotation.epoch.epoch).toBe(2)
+    expect(rotation.stats.reEncrypted).toBe(1)
+
+    // A fresh device derives from the published parameters and reads the head.
+    const derived = await remote.getKdfParams()
+    expect(derived?.generation).toBe(2)
+    const after = deriveMasterKey(ROTATED_PASSPHRASE, derived?.kdf ?? newParams)
+    const newest = await remote.listRevisions()
+    expect(newest.head).toBe(rotatedRevisionId)
+    const manifestBytes = await remote.getManifest(rotatedRevisionId)
+    const rotatedManifest = parseManifest(
+      JSON.parse(
+        openText(after, 'manifest', manifestBytes, {
+          storeId,
+          blobType: 'manifest',
+          protocolVersion,
+        }),
+      ),
+    )
+    const entry = rotatedManifest.entries[0]
+    if (entry?.blob === undefined) throw new Error('rotated manifest lost its blob')
+    const contentBytes = await remote.getBlob(entry.blob.id)
+    expect(
+      openText(after, 'content', contentBytes, { storeId, blobType: 'file', protocolVersion }),
+    ).toBe('{"theme":"dark"}')
+
+    // The old generation still resolves for audit, and the old key is locked out.
+    expect(await remote.getKdfParams({ version: 1 })).toEqual({ kdf: oldParams, generation: 1 })
+    const staleKey = deriveMasterKey('the old passphrase', oldParams)
+    expect(() =>
+      openText(staleKey, 'manifest', manifestBytes, {
+        storeId,
+        blobType: 'manifest',
+        protocolVersion,
+      }),
+    ).toThrow(EnvelopeError)
+    staleKey.zeroize()
+    after.zeroize()
+    fs.rmSync(dir, { recursive: true, force: true })
   })
 })

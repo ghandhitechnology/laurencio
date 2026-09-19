@@ -181,6 +181,17 @@ assert_contains "Resolved 1 conflict" "resolve --keep-local"
 run 0 status
 assert_contains "Conflicts: none" "status after resolve"
 
+echo "== rotate =="
+LAURENCIO_PASSPHRASE=cli-test-passphrase LAURENCIO_NEW_PASSPHRASE=cli-test-rotated run 0 rotate --yes
+assert_contains "Rotated to epoch 2" "rotate"
+run 0 doctor
+assert_contains "KDF: store generation 2, local epoch 2" "doctor after rotate"
+printf 'cli-test-passphrase\n' >"$SCRATCH/old-pass.txt"
+run 1 unlock --passphrase-file "$SCRATCH/old-pass.txt"
+assert_contains "does not open this store" "unlock with the old passphrase after rotate"
+run 0 sync
+assert_contains "Sync" "sync after rotate"
+
 echo "== offline init =="
 OFFLINE_HOME="$SCRATCH/offline-home"
 mkdir -p "$OFFLINE_HOME"

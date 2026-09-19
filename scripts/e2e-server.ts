@@ -17,6 +17,7 @@ import { EnvelopeError, openText, sealText } from '../packages/core/src/crypto/a
 import type { KeyMaterial } from '../packages/core/src/crypto/kdf'
 import { deriveMasterKey, type KdfParams, kdfParamsToWire } from '../packages/core/src/crypto/kdf'
 import { type CredentialStore, openKeyCache } from '../packages/core/src/crypto/keyring'
+import { rotateStore } from '../packages/core/src/crypto/rotate'
 import { createHttpRemote, ProtocolVersionError } from '../packages/core/src/remote/http'
 import type { Remote } from '../packages/core/src/remote/types'
 import { parseManifest } from '../packages/core/src/remote/types'
@@ -34,7 +35,9 @@ import { file, testAdapter, tree } from '../packages/core/test/helpers/adapter-f
 import { buildFakeHome, type FakeHome } from '../packages/core/test/helpers/fake-home'
 import {
   type BlobRef,
+  newId,
   PROTOCOL_VERSION,
+  type RevisionId as RevisionIdType,
   type RevisionSummary,
 } from '../packages/protocol/src/index'
 import { createAuth } from '../packages/server/src/auth'
@@ -46,6 +49,7 @@ import { createBlobStore, FsBlobStore } from '../packages/server/src/storage'
 
 const NOW = '2026-09-19T12:00:00.000Z'
 const PASSPHRASE = 'e2e-server-passphrase'
+const ROTATED_PASSPHRASE = 'e2e-server-rotated-passphrase'
 const WRONG_PASSPHRASE = 'e2e-server-not-the-passphrase'
 const SECRET_CANARY = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789'
 const MARKER_LOCAL = 'A local secret'
@@ -57,6 +61,7 @@ const KDF: KdfParams = {
   p: 1,
   version: 0x13,
 }
+const ROTATED_KDF: KdfParams = { ...KDF, salt: '11'.repeat(16) }
 const KEY = deriveMasterKey(PASSPHRASE, KDF)
 const WRONG_KEY = deriveMasterKey(WRONG_PASSPHRASE, KDF)
 
@@ -601,6 +606,107 @@ async function main(): Promise<void> {
     )
     await runHome(server.baseUrl, boxB)
     check('B sees the offline edit', b.read('.claude/CLAUDE.md').includes('A edited while offline'))
+
+    step('rotate the passphrase and publish generation 2')
+    const rotateRemote = createHttpRemote({
+      baseUrl: server.baseUrl,
+      storeId: boxA.credentials.storeId,
+      token: boxA.credentials.token,
+    })
+    const beforeRotate = await rotateRemote.listRevisions()
+    const rotateHeadId = beforeRotate.heads[0]
+    if (rotateHeadId === undefined) throw new Error('expected a head before rotation')
+    const rotateHead = beforeRotate.revisions.find((revision) => revision.id === rotateHeadId)
+    if (rotateHead === undefined) throw new Error('expected head metadata before rotation')
+    const rotateHeadManifest = parseManifest(
+      JSON.parse(
+        openText(boxA.credentials.key, 'manifest', await rotateRemote.getManifest(rotateHeadId), {
+          storeId: boxA.credentials.storeId,
+          blobType: 'manifest',
+          protocolVersion: PROTOCOL_VERSION,
+        }),
+      ),
+    )
+    const rotated = await rotateStore({
+      remote: rotateRemote,
+      storeId: boxA.credentials.storeId,
+      protocolVersion: PROTOCOL_VERSION,
+      deviceId: boxA.credentials.deviceId,
+      master: boxA.credentials.key,
+      head: {
+        revisionId: rotateHeadId,
+        parents: [...rotateHead.parents],
+        manifest: rotateHeadManifest,
+      },
+      newRevisionId: newId() as RevisionIdType,
+      newPassphrase: ROTATED_PASSPHRASE,
+      createdAt: NOW,
+      epoch: 1,
+      calibrate: () => ROTATED_KDF,
+    })
+    const published = await rotateRemote.putKdfParams({
+      params: rotated.epoch.kdf,
+      calibratedAt: rotated.epoch.createdAt,
+      expectedGeneration: 1,
+    })
+    check('the rotation published generation 2', published.generation === 2)
+    check(
+      'the superseded parameters still resolve for audit',
+      (await rotateRemote.getKdfParams({ version: 1 }))?.kdf.salt === KDF.salt,
+    )
+    rotated.master.zeroize()
+
+    // A fresh device enrolls from the published parameters, not the old ones.
+    const publishedKdf = await rotateRemote.getKdfParams()
+    if (publishedKdf === null) throw new Error('expected published KDF parameters')
+    const rotatedKey = deriveMasterKey(ROTATED_PASSPHRASE, publishedKdf.kdf)
+    const newestHead = (await rotateRemote.listRevisions()).head
+    const newestBytes = newestHead === null ? null : await rotateRemote.getManifest(newestHead)
+    let enrollsWithNew = false
+    if (newestBytes !== null) {
+      try {
+        parseManifest(
+          JSON.parse(
+            openText(rotatedKey, 'manifest', newestBytes, {
+              storeId: boxA.credentials.storeId,
+              blobType: 'manifest',
+              protocolVersion: PROTOCOL_VERSION,
+            }),
+          ),
+        )
+        enrollsWithNew = true
+      } catch {
+        enrollsWithNew = false
+      }
+    }
+    check('B enrolls with the new passphrase and decrypts the latest revision', enrollsWithNew)
+
+    const staleOldKey = deriveMasterKey(PASSPHRASE, publishedKdf.kdf)
+    let oldPassphraseFails = false
+    if (newestBytes !== null) {
+      try {
+        openText(staleOldKey, 'manifest', newestBytes, {
+          storeId: boxA.credentials.storeId,
+          blobType: 'manifest',
+          protocolVersion: PROTOCOL_VERSION,
+        })
+      } catch (error) {
+        oldPassphraseFails = error instanceof EnvelopeError && error.code === 'auth-failed'
+      }
+    }
+    check('the old passphrase fails with an auth failure', oldPassphraseFails)
+    staleOldKey.zeroize()
+
+    boxA = { ...boxA, credentials: { ...boxA.credentials, key: rotatedKey } }
+    boxB = { ...boxB, credentials: { ...boxB.credentials, key: rotatedKey } }
+    const rotatedA = await runHome(server.baseUrl, boxA)
+    check('A syncs under the new key', rotatedA.status === 'synced' || rotatedA.status === 'idle')
+    const rotatedB = await runHome(server.baseUrl, boxB)
+    check('B syncs under the new key', rotatedB.status === 'synced' || rotatedB.status === 'idle')
+    check(
+      'both homes converge after the rotation',
+      a.read('.claude/CLAUDE.md') === b.read('.claude/CLAUDE.md'),
+    )
 
     step('revoked device fails clearly')
     const revoke = await http.request(`/v1/devices/${boxB.credentials.deviceId}`, {

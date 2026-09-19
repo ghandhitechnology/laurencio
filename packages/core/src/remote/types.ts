@@ -90,6 +90,52 @@ export class RemoteError extends Error {
   }
 }
 
+/** The store's public KDF parameters together with their generation counter. */
+export interface PublishedKdfParams {
+  kdf: KdfParams
+  /** Monotonic counter: the enrollment write is 1, every rotation adds one. */
+  generation: number
+}
+
+export interface KdfParamsLookup {
+  /** Resolve a superseded generation instead of the latest. */
+  version?: number
+}
+
+export interface PublishKdfParamsInput {
+  params: KdfParams
+  /** ISO time the parameters were calibrated; defaults to the remote's clock. */
+  calibratedAt?: string
+  /**
+   * Compare-and-set against the store generation the caller read before
+   * rotating. A remote that supports the check refuses the write when the store
+   * moved underneath it.
+   */
+  expectedGeneration?: number
+}
+
+/** The store rotated between the read and the write; re-read and re-plan. */
+export class KdfGenerationConflictError extends Error {
+  readonly expected: number
+  readonly actual: number | null
+
+  constructor(expected: number, actual: number | null) {
+    const actualText = actual === null ? 'unknown' : String(actual)
+    super(`store KDF generation changed: expected ${expected}, found ${actualText}`)
+    this.name = 'KdfGenerationConflictError'
+    this.expected = expected
+    this.actual = actual
+  }
+}
+
+/** The remote rejected the parameters themselves; `message` carries its reason. */
+export class KdfValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'KdfValidationError'
+  }
+}
+
 /**
  * The transport contract. Phase 12 implements it over HTTP against the server;
  * {@link FileRemote} implements it over a directory for offline runs and tests.
@@ -98,7 +144,9 @@ export class RemoteError extends Error {
  */
 export interface Remote {
   /** Public KDF parameters for the store, or null before enrollment. */
-  getKdfParams(): Promise<KdfParams | null>
+  getKdfParams(options?: KdfParamsLookup): Promise<PublishedKdfParams | null>
+  /** Publishes new parameters; the latest generation is what new devices derive from. */
+  putKdfParams(input: PublishKdfParamsInput): Promise<PublishedKdfParams>
   listRevisions(options?: RemoteListOptions): Promise<RemoteRevisionList>
   /** Framed ciphertext of the revision's manifest blob. */
   getManifest(revisionId: RevisionId): Promise<Uint8Array>

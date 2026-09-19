@@ -10,6 +10,7 @@ import { pauseCommand } from './pause'
 import { resolveCommand } from './resolve'
 import { restoreCommand } from './restore'
 import { resumeCommand } from './resume'
+import { rotateCommand } from './rotate'
 import { statusCommand } from './status'
 import { surfacesCommand } from './surfaces'
 import { syncCommand } from './sync'
@@ -21,6 +22,7 @@ export const COMMANDS: Record<string, CommandSpec> = {
   sync: syncCommand,
   pause: pauseCommand,
   resume: resumeCommand,
+  rotate: rotateCommand,
   diff: diffCommand,
   log: logCommand,
   restore: restoreCommand,
@@ -39,6 +41,7 @@ export const COMMAND_ORDER: readonly string[] = [
   'sync',
   'pause',
   'resume',
+  'rotate',
   'diff',
   'log',
   'restore',

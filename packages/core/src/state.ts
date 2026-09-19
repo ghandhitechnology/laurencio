@@ -473,6 +473,10 @@ export class SyncState {
       .run(key, value)
   }
 
+  removeMeta(key: string): void {
+    this.#db.query('DELETE FROM meta WHERE key = ?').run(key)
+  }
+
   /** Stores a revision and replaces its manifest rows in one transaction. */
   saveManifest(record: RevisionRecord, entries: ManifestEntry[]): void {
     this.#db.run('BEGIN')

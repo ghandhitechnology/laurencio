@@ -4,13 +4,18 @@ import { PROTOCOL_VERSION, type StoreId } from '@laurencio/protocol'
 import { loadCliConfig } from '../config'
 import type { CommandContext } from '../context'
 import { cliError } from '../errors'
+import { readKeyEpoch, readPendingRotation } from '../key-epoch'
 import { hasMarkerBlocks, projectedContent } from '../layout'
 import { readPause } from '../pause'
 import { ok } from '../result'
 import {
+  baseUrlFor,
+  deviceToken,
   identityFor,
   keychainOptions,
   type LocalInventory,
+  openRemote,
+  openState,
   scanInventory,
   withProbes,
 } from '../session'
@@ -43,6 +48,15 @@ export interface SecretRow {
   line: number | null
 }
 
+export interface KdfDoctorRow {
+  /** Store generation from the remote, or null when it cannot be read. */
+  generation: number | null
+  /** Generation this device's cached key was derived from, when recorded. */
+  localEpoch: number | null
+  /** A committed rotation whose parameters are not published yet. */
+  pendingPublish: boolean
+}
+
 export interface DoctorData {
   version: string
   protocolVersion: number
@@ -55,6 +69,7 @@ export interface DoctorData {
   daemonPaused: boolean
   keychain: string
   keyCached: boolean | null
+  kdf: KdfDoctorRow
   harnesses: HarnessRow[]
   topology: TopologyRow[]
   neverSync: NeverRow[]
@@ -168,6 +183,38 @@ async function keychainStatus(
   }
 }
 
+async function kdfStatus(
+  ctx: CommandContext,
+  identity: ReturnType<typeof identityFor>,
+): Promise<KdfDoctorRow> {
+  const state = openState(ctx)
+  let localEpoch: number | null = null
+  let pendingPublish = false
+  try {
+    localEpoch = readKeyEpoch(state)?.epoch ?? null
+    pendingPublish = readPendingRotation(state) !== null
+  } finally {
+    state.close()
+  }
+  let generation: number | null = null
+  if (identity !== null) {
+    try {
+      const config = loadCliConfig(ctx.home)
+      const token = await deviceToken(ctx, identity.deviceId)
+      const remote = await openRemote(ctx, {
+        storeId: identity.storeId,
+        token,
+        baseUrl: baseUrlFor(ctx, config),
+      })
+      const published = await remote.getKdfParams()
+      generation = published?.generation ?? null
+    } catch {
+      generation = null
+    }
+  }
+  return { generation, localEpoch, pendingPublish }
+}
+
 export async function collectDoctor(ctx: CommandContext): Promise<DoctorData> {
   ctx = withProbes(ctx)
   const identity = identityFor(ctx)
@@ -175,6 +222,7 @@ export async function collectDoctor(ctx: CommandContext): Promise<DoctorData> {
   const config = loadCliConfig(ctx.home)
   const inventory = scanInventory(ctx, { policy: config.policy, mode: 'all' })
   const keychain = await keychainStatus(ctx, identity?.storeId ?? null)
+  const kdf = await kdfStatus(ctx, identity)
   const paused = readPause(ctx.home) !== null
   return {
     version: CLI_VERSION,
@@ -188,6 +236,7 @@ export async function collectDoctor(ctx: CommandContext): Promise<DoctorData> {
     daemonPaused: paused,
     keychain: keychain.backend,
     keyCached: keychain.cached,
+    kdf,
     harnesses: surfaces.harnesses,
     topology: collectTopology(inventory),
     neverSync: collectNeverSync(inventory),
@@ -214,6 +263,26 @@ export function humanDoctor(ctx: CommandContext, data: DoctorData): string {
   lines.push(
     `Keychain: ${data.keychain}${data.keyCached === null ? '' : data.keyCached ? ', store key cached' : ', store key not cached'}`,
   )
+  const localEpoch = data.kdf.localEpoch === null ? 'unknown' : String(data.kdf.localEpoch)
+  lines.push(
+    data.kdf.generation === null
+      ? `KDF: store generation unknown, local epoch ${localEpoch}`
+      : `KDF: store generation ${data.kdf.generation}, local epoch ${localEpoch}`,
+  )
+  if (
+    data.kdf.generation !== null &&
+    data.kdf.localEpoch !== null &&
+    data.kdf.localEpoch < data.kdf.generation
+  ) {
+    lines.push(
+      `Warning: this device key is at epoch ${data.kdf.localEpoch}, the store is at generation ${data.kdf.generation}; run \`laurencio unlock\` with the current passphrase.`,
+    )
+  }
+  if (data.kdf.pendingPublish) {
+    lines.push(
+      'Warning: a rotation is committed but not published; run `laurencio rotate --resume`.',
+    )
+  }
   lines.push(`Daemon: ${data.daemonPaused ? 'paused' : 'running'}`)
   lines.push('')
 
