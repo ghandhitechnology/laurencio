@@ -8,6 +8,9 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@laurencio/protocol": "workspace:*"
+    "@laurencio/protocol": "workspace:*",
+    "@napi-rs/keyring": "^2.1.0",
+    "@noble/ciphers": "^2.4.0",
+    "@noble/hashes": "^2.4.0"
   }
 }
