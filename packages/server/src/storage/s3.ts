@@ -30,6 +30,12 @@ export function createS3Client(config: S3Config): S3Client {
       accessKeyId: config.accessKeyId,
       secretAccessKey: config.secretAccessKey,
     },
+    // Presigned PUTs are signed for exactly the headers the client sends back.
+    // The SDK's default flexible checksums would add an x-amz-checksum-* header
+    // to the signature that our clients do not send, and the storage then
+    // rejects the upload with SignatureDoesNotMatch.
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
   })
 }
 

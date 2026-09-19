@@ -64,7 +64,11 @@ describe('s3 presigning', () => {
     expect(url.pathname).toBe('/laurencio-test/u/store-one/b/blob-one')
     expect(url.searchParams.get('X-Amz-Expires')).toBe('600')
     expect(url.searchParams.get('X-Amz-Signature')).toMatch(/^[0-9a-f]{64}$/)
-    expect(url.searchParams.get('X-Amz-SignedHeaders')).toContain('content-length')
+    const signed = url.searchParams.get('X-Amz-SignedHeaders') ?? ''
+    expect(signed).toContain('content-length')
+    // A checksum header in the signature would make the storage reject the
+    // upload because our clients send only the headers the server hands back.
+    expect(signed).not.toContain('x-amz-checksum')
   })
 
   test('a get URL signs the key and expiry without a body', async () => {
