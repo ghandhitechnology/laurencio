@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { createS3Client, S3BlobStore } from '../src/storage/s3'
 
 const requests: Array<{ method: string; path: string }> = []
@@ -46,7 +47,7 @@ afterAll(() => {
 })
 
 describe('s3 presigning', () => {
-  test('a put URL signs the key, size, expiry, and checksum condition', async () => {
+  test('a put URL signs the key, size, and expiry', async () => {
     const upload = await store.presignPut({
       key: 'u/store-one/b/blob-one',
       size: 128,
@@ -56,15 +57,14 @@ describe('s3 presigning', () => {
     const url = new URL(upload.url)
     expect(upload.method).toBe('PUT')
     expect(upload.headers['content-type']).toBe('application/octet-stream')
-    expect(upload.headers['x-amz-checksum-sha256']).toBe(
-      Buffer.from(checksumHex, 'hex').toString('base64'),
-    )
+    // The checksum is verified at commit by hashing the stored object, so the
+    // upload carries no checksum header that a storage could reject.
+    expect(upload.headers['x-amz-checksum-sha256']).toBeUndefined()
     expect(upload.expiresAt.getTime()).toBeGreaterThan(Date.now())
     expect(url.pathname).toBe('/laurencio-test/u/store-one/b/blob-one')
     expect(url.searchParams.get('X-Amz-Expires')).toBe('600')
     expect(url.searchParams.get('X-Amz-Signature')).toMatch(/^[0-9a-f]{64}$/)
     expect(url.searchParams.get('X-Amz-SignedHeaders')).toContain('content-length')
-    expect(url.searchParams.get('X-Amz-SignedHeaders')).toContain('x-amz-checksum-sha256')
   })
 
   test('a get URL signs the key and expiry without a body', async () => {
@@ -89,15 +89,25 @@ describe('s3 object operations', () => {
     })
   })
 
-  test('head reports a missing checksum as null', async () => {
+  test('head hashes a small object when the storage reports no checksum', async () => {
+    const body = Buffer.from('abcd')
+    const expected = createHash('sha256').update(body).digest('hex')
     const plain = Bun.serve({
       port: 0,
-      fetch: () => new Response(null, { status: 200, headers: { 'content-length': '4' } }),
+      fetch: (request) =>
+        new URL(request.url).pathname.includes('/b/plain')
+          ? request.method === 'HEAD'
+            ? new Response(null, { status: 200, headers: { 'content-length': String(body.length) } })
+            : new Response(body, { status: 200 })
+          : new Response(null, { status: 404 }),
     })
     try {
       const configWithPlain = { ...config, endpoint: `http://127.0.0.1:${plain.port}` }
       const plainStore = new S3BlobStore(configWithPlain, createS3Client(configWithPlain))
-      expect(await plainStore.head('u/store-one/b/plain')).toEqual({ size: 4, sha256: null })
+      expect(await plainStore.head('u/store-one/b/plain')).toEqual({
+        size: body.length,
+        sha256: expected,
+      })
     } finally {
       plain.stop(true)
     }

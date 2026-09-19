@@ -5,6 +5,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3'
+import { createHash } from 'node:crypto'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import type { StorageConfig } from '../env'
 import {
@@ -14,6 +15,9 @@ import {
   type PresignedDownload,
   type PresignedUpload,
 } from './types'
+
+/** Objects up to this size are downloaded and hashed when the storage reports no checksum. */
+const MAX_HASH_BYTES = 16 * 1024 * 1024
 
 export type S3Config = Extract<StorageConfig, { kind: 's3' }>
 
@@ -45,27 +49,22 @@ export class S3BlobStore implements BlobStore {
     sha256: string
     expiresInSeconds: number
   }): Promise<PresignedUpload> {
-    const checksum = Buffer.from(input.sha256, 'hex').toString('base64')
+    // The checksum is verified server-side at commit by hashing the stored
+    // object, because a signed checksum header is rejected by some S3-compatible
+    // storages and an unsigned one is not trustworthy enough to rely on.
     const command = new PutObjectCommand({
       Bucket: this.config.bucket,
       Key: input.key,
       ContentLength: input.size,
       ContentType: BLOB_CONTENT_TYPE,
-      // S3 rejects the PUT when the body does not hash to this value.
-      ChecksumSHA256: checksum,
     })
     const url = await getSignedUrl(this.client, command, {
       expiresIn: input.expiresInSeconds,
-      // Keep the checksum in a signed header the client must send back.
-      unhoistableHeaders: new Set(['x-amz-checksum-sha256']),
     })
     return {
       url,
       method: 'PUT',
-      headers: {
-        'content-type': BLOB_CONTENT_TYPE,
-        'x-amz-checksum-sha256': checksum,
-      },
+      headers: { 'content-type': BLOB_CONTENT_TYPE },
       expiresAt: new Date(Date.now() + input.expiresInSeconds * 1000),
     }
   }
@@ -85,10 +84,20 @@ export class S3BlobStore implements BlobStore {
       const result = await this.client.send(
         new HeadObjectCommand({ Bucket: this.config.bucket, Key: key }),
       )
-      return {
-        size: result.ContentLength ?? 0,
-        sha256: base64ToHex(result.ChecksumSHA256),
+      const size = result.ContentLength ?? 0
+      let sha256 = base64ToHex(result.ChecksumSHA256)
+      // Small objects are hashed on demand so verification does not depend on the
+      // storage reporting checksum metadata.
+      if (sha256 === null && size <= MAX_HASH_BYTES) {
+        const object = await this.client.send(
+          new GetObjectCommand({ Bucket: this.config.bucket, Key: key }),
+        )
+        if (object.Body !== undefined) {
+          const bytes = await object.Body.transformToByteArray()
+          sha256 = createHash('sha256').update(bytes).digest('hex')
+        }
       }
+      return { size, sha256 }
     } catch (error) {
       if (isNotFound(error)) return null
       throw error
