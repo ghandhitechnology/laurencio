@@ -39,6 +39,29 @@ export type DeviceRecord = z.infer<typeof DeviceRecord>
 export const DeviceRenameRequest = z.object({ name: z.string().min(1).max(80) })
 export type DeviceRenameRequest = z.infer<typeof DeviceRenameRequest>
 
+export const DeviceListResponse = z.object({
+  protocolVersion: z.number().int().positive(),
+  devices: z.array(DeviceRecord),
+})
+export type DeviceListResponse = z.infer<typeof DeviceListResponse>
+
+export const DeviceCreateResponse = z.object({
+  protocolVersion: z.number().int().positive(),
+  device: DeviceRecord,
+  /** Device token, shown once. Stored by the client in the OS keychain. */
+  token: z.string().min(16),
+})
+export type DeviceCreateResponse = z.infer<typeof DeviceCreateResponse>
+
+export const BlobDownloadResponse = z.object({
+  protocolVersion: z.number().int().positive(),
+  blobId: BlobId,
+  size: z.number().int().nonnegative(),
+  url: z.string().url(),
+  expiresAt: isoDate,
+})
+export type BlobDownloadResponse = z.infer<typeof BlobDownloadResponse>
+
 export const KdfParams = z.object({
   algo: z.literal('argon2id'),
   version: z.literal(1),
@@ -49,6 +72,12 @@ export const KdfParams = z.object({
   calibratedAt: isoDate,
 })
 export type KdfParams = z.infer<typeof KdfParams>
+
+export const KdfResponse = z.object({
+  protocolVersion: z.number().int().positive(),
+  kdf: KdfParams.nullable(),
+})
+export type KdfResponse = z.infer<typeof KdfResponse>
 
 export const BlobRef = z.object({
   id: BlobId,
