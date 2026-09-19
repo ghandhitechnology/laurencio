@@ -9,6 +9,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import type { StorageConfig } from '../env'
 import {
   BLOB_CONTENT_TYPE,
+  type BlobHead,
   type BlobStore,
   type PresignedDownload,
   type PresignedUpload,
@@ -41,19 +42,30 @@ export class S3BlobStore implements BlobStore {
   async presignPut(input: {
     key: string
     size: number
+    sha256: string
     expiresInSeconds: number
   }): Promise<PresignedUpload> {
+    const checksum = Buffer.from(input.sha256, 'hex').toString('base64')
     const command = new PutObjectCommand({
       Bucket: this.config.bucket,
       Key: input.key,
       ContentLength: input.size,
       ContentType: BLOB_CONTENT_TYPE,
+      // S3 rejects the PUT when the body does not hash to this value.
+      ChecksumSHA256: checksum,
     })
-    const url = await getSignedUrl(this.client, command, { expiresIn: input.expiresInSeconds })
+    const url = await getSignedUrl(this.client, command, {
+      expiresIn: input.expiresInSeconds,
+      // Keep the checksum in a signed header the client must send back.
+      unhoistableHeaders: new Set(['x-amz-checksum-sha256']),
+    })
     return {
       url,
       method: 'PUT',
-      headers: { 'content-type': BLOB_CONTENT_TYPE },
+      headers: {
+        'content-type': BLOB_CONTENT_TYPE,
+        'x-amz-checksum-sha256': checksum,
+      },
       expiresAt: new Date(Date.now() + input.expiresInSeconds * 1000),
     }
   }
@@ -68,17 +80,27 @@ export class S3BlobStore implements BlobStore {
     await this.client.send(new DeleteObjectCommand({ Bucket: this.config.bucket, Key: key }))
   }
 
-  async head(key: string): Promise<{ size: number } | null> {
+  async head(key: string): Promise<BlobHead | null> {
     try {
       const result = await this.client.send(
         new HeadObjectCommand({ Bucket: this.config.bucket, Key: key }),
       )
-      return { size: result.ContentLength ?? 0 }
+      return {
+        size: result.ContentLength ?? 0,
+        sha256: base64ToHex(result.ChecksumSHA256),
+      }
     } catch (error) {
       if (isNotFound(error)) return null
       throw error
     }
   }
+}
+
+function base64ToHex(base64: string | undefined): string | null {
+  if (!base64) return null
+  const bytes = Buffer.from(base64, 'base64')
+  if (bytes.byteLength !== 32) return null
+  return bytes.toString('hex')
 }
 
 function isNotFound(error: unknown): boolean {

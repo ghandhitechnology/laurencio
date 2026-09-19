@@ -26,19 +26,34 @@ export interface GcOptions {
   now?: Date
 }
 
+export interface OrphanCandidate {
+  id: string
+  storeId: string
+  size: number
+}
+
+export interface OrphanSelection {
+  scanned: number
+  candidates: OrphanCandidate[]
+}
+
 /**
  * Deletes blobs that no committed revision references and that are older than
  * the grace period. A blob uploaded for a commit that never arrived is the
  * normal case, so the grace period has to outlast a slow upload.
  */
 export async function collectOrphans(options: GcOptions): Promise<GcReport> {
+  const selection = await selectOrphans(options)
+  return deleteOrphans(options, selection)
+}
+
+/** Selection is separate from deletion so callers can re-check before acting. */
+export async function selectOrphans(options: GcOptions): Promise<OrphanSelection> {
   const now = options.now ?? new Date()
   const cutoff = new Date(now.getTime() - options.graceSeconds * 1000)
   const scope = options.storeId ? eq(blobs.storeId, options.storeId) : undefined
 
   const scannedRows = await options.db.select({ total: blobs.id }).from(blobs).where(scope)
-  const scanned = scannedRows.length
-
   const candidates = await options.db
     .select({ id: blobs.id, storeId: blobs.storeId, size: blobs.size })
     .from(blobs)
@@ -48,23 +63,52 @@ export async function collectOrphans(options: GcOptions): Promise<GcReport> {
     )
     .where(and(scope, isNull(revisionBlobs.revisionId), lt(blobs.createdAt, cutoff)))
 
+  return { scanned: scannedRows.length, candidates }
+}
+
+/**
+ * Re-checks references inside the delete transaction, so a commit that landed
+ * between selection and deletion keeps its blobs. Objects are removed from
+ * storage only after the row is gone.
+ */
+export async function deleteOrphans(
+  options: GcOptions,
+  selection: OrphanSelection,
+): Promise<GcReport> {
   let deleted = 0
   let bytesFreed = 0
-  for (const candidate of candidates) {
+  for (const candidate of selection.candidates) {
     if (options.dryRun) {
       deleted += 1
       bytesFreed += candidate.size
       continue
     }
+    const removed = await options.db.transaction(async (tx) => {
+      const references = await tx
+        .select({ revisionId: revisionBlobs.revisionId })
+        .from(revisionBlobs)
+        .where(
+          and(eq(revisionBlobs.storeId, candidate.storeId), eq(revisionBlobs.blobId, candidate.id)),
+        )
+        .limit(1)
+      if (references.length > 0) return false
+      const gone = await tx
+        .delete(blobs)
+        .where(and(eq(blobs.storeId, candidate.storeId), eq(blobs.id, candidate.id)))
+        .returning({ id: blobs.id })
+      return gone.length > 0
+    })
+    if (!removed) continue
     await options.storage.delete(blobKey(asStoreId(candidate.storeId), asBlobId(candidate.id)))
-    await options.db
-      .delete(blobs)
-      .where(and(eq(blobs.storeId, candidate.storeId), eq(blobs.id, candidate.id)))
     deleted += 1
     bytesFreed += candidate.size
   }
-
-  return { scanned, deleted, bytesFreed, kept: scanned - deleted }
+  return {
+    scanned: selection.scanned,
+    deleted,
+    bytesFreed,
+    kept: selection.scanned - deleted,
+  }
 }
 
 function parseArgs(argv: string[]): {

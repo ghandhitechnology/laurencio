@@ -87,7 +87,8 @@ export function createClient(app: Hono<AppBindings>, options: TestClientOptions 
   const request = async (path: string, init: RequestInit = {}): Promise<Response> => {
     const headers = new Headers(init.headers)
     if (init.body && !headers.has('content-type')) headers.set('content-type', 'application/json')
-    headers.set('origin', TEST_ORIGIN)
+    // Tests may pin a foreign origin to exercise the web origin check.
+    if (!headers.has('origin')) headers.set('origin', TEST_ORIGIN)
     if (cookies.size > 0) {
       headers.set(
         'cookie',

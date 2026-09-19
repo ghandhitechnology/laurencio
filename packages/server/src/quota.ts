@@ -1,7 +1,6 @@
-import type { StoreId } from '@laurencio/protocol'
-import { count, eq, sum } from 'drizzle-orm'
+import { and, count, eq, inArray, sum } from 'drizzle-orm'
 import type { Database } from './db/client'
-import { blobs } from './db/schema'
+import { blobs, revisionBlobs } from './db/schema'
 import type { StoreRow } from './devices'
 import type { ServerEnv } from './env'
 import { quotaExceeded } from './http/errors'
@@ -16,6 +15,9 @@ export interface QuotaUsage {
   blobs: number
 }
 
+/** Accepts a transaction as well as the pool so commit-time checks stay atomic. */
+type QuotaReader = Pick<Database, 'select'>
+
 export function limitsFor(env: ServerEnv, store: StoreRow): QuotaLimits {
   return {
     maxBytes: store.maxBytes ?? env.quota.maxBytes,
@@ -23,11 +25,20 @@ export function limitsFor(env: ServerEnv, store: StoreRow): QuotaLimits {
   }
 }
 
-export async function usageFor(db: Database, storeId: StoreId): Promise<QuotaUsage> {
+/**
+ * Only blobs a committed revision references count. Presign registers a row so
+ * GC and size checks can find the object, but an upload that never lands in a
+ * commit must not consume quota.
+ */
+export async function usageFor(db: QuotaReader, storeId: string): Promise<QuotaUsage> {
+  const committed = db
+    .select({ id: revisionBlobs.blobId })
+    .from(revisionBlobs)
+    .where(eq(revisionBlobs.storeId, storeId))
   const rows = await db
     .select({ blobs: count(), bytes: sum(blobs.size) })
     .from(blobs)
-    .where(eq(blobs.storeId, storeId))
+    .where(and(eq(blobs.storeId, storeId), inArray(blobs.id, committed)))
   const row = rows.at(0)
   const bytes = row?.bytes ? Number(row.bytes) : 0
   return { blobs: Number(row?.blobs ?? 0), bytes: Number.isFinite(bytes) ? bytes : 0 }
@@ -35,8 +46,8 @@ export async function usageFor(db: Database, storeId: StoreId): Promise<QuotaUsa
 
 /** Throws the typed quota error the client surfaces when the store is full. */
 export async function assertWithinQuota(
-  db: Database,
-  storeId: StoreId,
+  db: QuotaReader,
+  storeId: string,
   limits: QuotaLimits,
   incoming: { bytes: number; blobs: number },
 ): Promise<void> {

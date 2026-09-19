@@ -31,6 +31,8 @@ export interface RouteDeps {
   storage: BlobStore
   logger: Logger
   rateLimiter: RateLimiter
+  /** Browser-side writes get their own bucket, keyed by client address. */
+  webRateLimiter: RateLimiter
 }
 
 export function requirePrincipal(ctx: { get: (key: 'principal') => Principal | null }): Principal {

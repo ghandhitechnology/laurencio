@@ -43,6 +43,10 @@ export function createApp(options: CreateAppOptions): Hono<AppBindings> {
         capacity: options.env.rate.capacity,
         refillPerSecond: options.env.rate.refillPerSecond,
       }),
+    webRateLimiter: new RateLimiter({
+      capacity: options.env.rate.approvalCapacity,
+      refillPerSecond: options.env.rate.approvalRefillPerSecond,
+    }),
   }
 
   const app = new Hono<AppBindings>()
@@ -87,7 +91,15 @@ export function createApp(options: CreateAppOptions): Hono<AppBindings> {
   app.route('/', createKdfRoutes(deps))
   app.route('/', createBlobRoutes(deps))
   app.route('/', createCommitRoutes(deps))
-  app.route('/', createWebRoutes({ env: options.env, db: options.db, auth: options.auth }))
+  app.route(
+    '/',
+    createWebRoutes({
+      env: options.env,
+      db: options.db,
+      auth: options.auth,
+      rateLimiter: deps.webRateLimiter,
+    }),
+  )
   if (options.storage instanceof FsBlobStore) {
     app.route('/', createLocalBlobRoutes(options.storage, options.env.quota.maxBlobBytes))
   }
@@ -141,8 +153,14 @@ export async function startServer(env: ServerEnv = loadEnv()): Promise<RunningSe
   const storage = createBlobStore(env)
   const auth = createAuth({ db: handle.db, env })
   const app = createApp({ env, db: handle.db, storage, auth, logger })
-  const server = Bun.serve({ port: env.port, hostname: '0.0.0.0', fetch: app.fetch })
+  if (env.generatedSecret) {
+    logger.warn(
+      'BETTER_AUTH_SECRET is not set; using a random per-process secret. Set it to keep sessions across restarts.',
+    )
+  }
+  const server = Bun.serve({ port: env.port, hostname: env.host, fetch: app.fetch })
   logger.info('server listening', {
+    host: env.host,
     port: server.port,
     url: env.publicUrl,
     database: handle.dialect,

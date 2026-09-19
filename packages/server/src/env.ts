@@ -1,4 +1,11 @@
+import { randomBytes } from 'node:crypto'
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+
+/** Random fallback for local runs; processes must not share a public constant. */
+function randomSecret(): string {
+  return randomBytes(32).toString('base64url')
+}
 
 /** Matches the time strings Better Auth accepts, for example "5s" or "30m". */
 export type TimeString = `${number}${'s' | 'm' | 'h' | 'd'}`
@@ -37,14 +44,24 @@ export type StorageConfig =
 export interface ServerEnv {
   nodeEnv: 'development' | 'test' | 'production'
   port: number
+  /** Loopback unless HOST is set; the deployment has to opt into a public bind. */
+  host: string
   publicUrl: string
   secret: string
+  /** True when no BETTER_AUTH_SECRET was supplied and a random one was minted. */
+  generatedSecret: boolean
   trustedOrigins: string[]
   database: DatabaseConfig
   auth: AuthConfig
   storage: StorageConfig
   quota: { maxBytes: number; maxBlobs: number; maxBlobBytes: number }
-  rate: { capacity: number; refillPerSecond: number }
+  rate: {
+    capacity: number
+    refillPerSecond: number
+    /** Separate bucket for browser device-approval attempts, keyed by client address. */
+    approvalCapacity: number
+    approvalRefillPerSecond: number
+  }
   gc: { graceSeconds: number }
   autoMigrate: boolean
   logLevel: LogLevel
@@ -96,7 +113,10 @@ export function loadEnv(source: EnvSource = process.env): ServerEnv {
   const isProduction = nodeEnv === 'production'
 
   const publicUrl = source.BETTER_AUTH_URL ?? `http://localhost:${source.PORT ?? '8787'}`
-  const secret = source.BETTER_AUTH_SECRET ?? (isProduction ? '' : 'laurencio-development-secret')
+  const configuredSecret = source.BETTER_AUTH_SECRET
+  // A public constant would let anyone forge sessions on a local instance that
+  // is reachable from the network, so mint one per process instead.
+  const secret = configuredSecret ?? (isProduction ? '' : randomSecret())
   if (!secret) throw new EnvError('missing required environment variable BETTER_AUTH_SECRET')
 
   const allowDevSignin = booleanish(source, 'ALLOW_DEV_SIGNIN', nodeEnv !== 'production')
@@ -121,8 +141,10 @@ export function loadEnv(source: EnvSource = process.env): ServerEnv {
   return {
     nodeEnv,
     port: integer(source, 'PORT', 8787),
+    host: source.HOST?.trim() || '127.0.0.1',
     publicUrl,
     secret,
+    generatedSecret: configuredSecret === undefined && !isProduction,
     trustedOrigins: (source.TRUSTED_ORIGINS ?? '')
       .split(',')
       .map((origin) => origin.trim())
@@ -138,7 +160,7 @@ export function loadEnv(source: EnvSource = process.env): ServerEnv {
       devicePollInterval: timeString(source, 'DEVICE_POLL_INTERVAL', '5s'),
       deviceClientId: source.DEVICE_CLIENT_ID ?? 'laurencio-cli',
     },
-    storage: storageConfig(source, { nodeEnv, publicUrl }),
+    storage: storageConfig(source, { nodeEnv, publicUrl, fallbackSecret: secret }),
     quota: {
       maxBytes: integer(source, 'QUOTA_MAX_BYTES', 512 * 1024 * 1024),
       maxBlobs: integer(source, 'QUOTA_MAX_BLOBS', 20000),
@@ -147,8 +169,11 @@ export function loadEnv(source: EnvSource = process.env): ServerEnv {
     rate: {
       capacity: integer(source, 'RATE_LIMIT_CAPACITY', 60),
       refillPerSecond: integer(source, 'RATE_LIMIT_REFILL_PER_SECOND', 5),
+      approvalCapacity: integer(source, 'DEVICE_APPROVAL_RATE_CAPACITY', 10),
+      approvalRefillPerSecond: integer(source, 'DEVICE_APPROVAL_RATE_REFILL_PER_SECOND', 1),
     },
-    gc: { graceSeconds: integer(source, 'GC_GRACE_SECONDS', 6 * 60 * 60) },
+    // One day of slack so a commit racing a sweep still finds its objects.
+    gc: { graceSeconds: integer(source, 'GC_GRACE_SECONDS', 24 * 60 * 60) },
     autoMigrate: booleanish(source, 'AUTO_MIGRATE', nodeEnv !== 'production'),
     logLevel: logLevel(source),
   }
@@ -156,7 +181,7 @@ export function loadEnv(source: EnvSource = process.env): ServerEnv {
 
 function storageConfig(
   source: EnvSource,
-  context: { nodeEnv: string; publicUrl: string },
+  context: { nodeEnv: string; publicUrl: string; fallbackSecret: string },
 ): StorageConfig {
   const driver = source.STORAGE_DRIVER ?? ((source.S3_BUCKET ?? source.BUCKET) ? 's3' : 'fs')
   if (driver === 's3') {
@@ -175,11 +200,11 @@ function storageConfig(
     throw new EnvError('the filesystem storage driver is not available in production')
   }
   const dir = source.FS_STORAGE_DIR ?? '.data/blobs'
-  const fsSecret = source.FS_STORAGE_SECRET ?? source.BETTER_AUTH_SECRET ?? ''
+  const fsSecret = source.FS_STORAGE_SECRET ?? context.fallbackSecret
   return {
     kind: 'fs',
     dir,
-    secret: fsSecret || 'laurencio-development-secret',
+    secret: fsSecret,
     baseUrl: source.FS_STORAGE_BASE_URL ?? context.publicUrl,
   }
 }

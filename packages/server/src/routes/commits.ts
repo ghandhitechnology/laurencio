@@ -16,7 +16,7 @@ import type { AppBindings, RouteDeps } from '../context'
 import { rateLimitKey, requirePrincipal } from '../context'
 import type { Database } from '../db/client'
 import { blobs, revisionBlobs, revisions } from '../db/schema'
-import { recordAudit, requireStore } from '../devices'
+import { recordAudit, requireStore, type StoreRow } from '../devices'
 import { badRequest, conflict, forbidden, protocolMismatch } from '../http/errors'
 import { parseParam, readJson } from '../http/parse'
 import { asBlobId, asDeviceId, asRevisionId, asStoreId } from '../ids'
@@ -64,10 +64,6 @@ export function createCommitRoutes(deps: RouteDeps): Hono<AppBindings> {
       throw badRequest('commit references unknown parent revisions', { missingParents })
     }
 
-    // Every referenced blob already counts against the store, so this only
-    // rejects commits when the store is over its limit for another reason.
-    await assertWithinQuota(deps.db, storeId, limitsFor(deps.env, store), { bytes: 0, blobs: 0 })
-
     const referenced = collectBlobRefs(request)
     const missing = await checkBlobs(deps.db, storeId, referenced)
     if (missing.length > 0) {
@@ -80,6 +76,7 @@ export function createCommitRoutes(deps: RouteDeps): Hono<AppBindings> {
 
     const stored = await storeRevision(deps, {
       storeId,
+      store,
       deviceId: principal.deviceId,
       request,
       referenced,
@@ -259,6 +256,22 @@ async function verifyStoredObjects(
           registeredSize: row.size,
         })
       }
+      // Blob ids are the sha256 of the ciphertext, so a mismatched object
+      // would poison every device that later downloads or decrypts it.
+      if (head.sha256 === null) {
+        throw badRequest('stored object has no checksum to verify against', {
+          blobId: row.id,
+          reason: 'blob_checksum_missing',
+        })
+      }
+      if (head.sha256 !== row.id) {
+        throw badRequest('stored object checksum does not match the registered blob', {
+          blobId: row.id,
+          reason: 'blob_checksum_mismatch',
+          expected: row.id,
+          stored: head.sha256,
+        })
+      }
       await deps.db
         .update(blobs)
         .set({ verifiedAt: new Date() })
@@ -272,6 +285,7 @@ async function storeRevision(
   deps: RouteDeps,
   input: {
     storeId: StoreId
+    store: StoreRow
     deviceId: DeviceId
     request: CommitRequest
     referenced: BlobRef[]
@@ -279,6 +293,13 @@ async function storeRevision(
 ): Promise<boolean> {
   try {
     return await deps.db.transaction(async (tx) => {
+      // Quota is enforced against committed blobs here, where the insert can
+      // no longer race a concurrent presign that never uploaded anything.
+      const fresh = await uncommittedRefs(tx, input.storeId, input.referenced)
+      await assertWithinQuota(tx, input.storeId, limitsFor(deps.env, input.store), {
+        bytes: fresh.reduce((total, blob) => total + blob.size, 0),
+        blobs: fresh.length,
+      })
       const inserted = await tx
         .insert(revisions)
         .values({
@@ -307,6 +328,29 @@ async function storeRevision(
     if (!isUniqueViolation(error)) throw error
     return false
   }
+}
+
+/** Refs no committed revision references yet; only those add usage. */
+async function uncommittedRefs(
+  db: Pick<Database, 'select' | 'selectDistinct'>,
+  storeId: StoreId,
+  referenced: BlobRef[],
+): Promise<BlobRef[]> {
+  if (referenced.length === 0) return []
+  const rows = await db
+    .selectDistinct({ id: revisionBlobs.blobId })
+    .from(revisionBlobs)
+    .where(
+      and(
+        eq(revisionBlobs.storeId, storeId),
+        inArray(
+          revisionBlobs.blobId,
+          referenced.map((blob) => blob.id),
+        ),
+      ),
+    )
+  const committed = new Set(rows.map((row) => row.id))
+  return referenced.filter((blob) => !committed.has(blob.id))
 }
 
 function isUniqueViolation(error: unknown): boolean {

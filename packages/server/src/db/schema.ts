@@ -130,7 +130,7 @@ export const deviceTokens = pgTable(
   (table) => [index('device_tokens_device_idx').on(table.deviceId)],
 )
 
-/** Public KDF parameters. Written once per store and never updated. */
+/** Public KDF parameters. The row always holds the latest generation. */
 export const kdfParams = pgTable('kdf_params', {
   storeId: text('store_id')
     .primaryKey()
@@ -143,7 +143,29 @@ export const kdfParams = pgTable('kdf_params', {
   p: integer('p').notNull(),
   calibratedAt: timestamp('calibrated_at', { withTimezone: true }).notNull(),
   setAt: timestamp('set_at', { withTimezone: true }).notNull().defaultNow(),
+  /** Rotation counter: the first write is generation 1, every rotation adds one. */
+  generation: integer('generation').notNull().default(1),
 })
+
+/** Superseded generations kept for audit; the first write is copied here on rotation. */
+export const kdfParamVersions = pgTable(
+  'kdf_param_versions',
+  {
+    storeId: text('store_id')
+      .notNull()
+      .references(() => stores.id, { onDelete: 'cascade' }),
+    generation: integer('generation').notNull(),
+    algo: text('algo').notNull(),
+    version: integer('version').notNull(),
+    salt: text('salt').notNull(),
+    m: integer('m').notNull(),
+    t: integer('t').notNull(),
+    p: integer('p').notNull(),
+    calibratedAt: timestamp('calibrated_at', { withTimezone: true }).notNull(),
+    rotatedAt: timestamp('rotated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.storeId, table.generation] })],
+)
 
 export const auditLog = pgTable(
   'audit_log',

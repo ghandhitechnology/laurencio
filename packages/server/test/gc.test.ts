@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { newId } from '@laurencio/protocol'
 import { and, eq } from 'drizzle-orm'
 import { blobs, revisions } from '../src/db/schema'
-import { collectOrphans } from '../src/gc'
+import { collectOrphans, deleteOrphans, selectOrphans } from '../src/gc'
 import { asStoreId } from '../src/ids'
 import {
   authHeaders,
@@ -10,6 +10,7 @@ import {
   bytesFor,
   createTestServer,
   createUser,
+  type TestUser,
   uploadBlob,
 } from './helpers'
 
@@ -21,6 +22,7 @@ function storageKey(storeId: string, blobId: string): string {
 }
 
 interface Fixture {
+  user: TestUser
   storeId: string
   referenced: { id: string; size: number }
   orphan: { id: string; size: number }
@@ -51,7 +53,7 @@ async function seed(email: string): Promise<Fixture> {
     }),
   })
   if (response.status !== 201) throw new Error(`seed commit failed: ${await response.text()}`)
-  return { storeId: user.storeId, referenced, orphan }
+  return { user, storeId: user.storeId, referenced, orphan }
 }
 
 describe('orphan collection', () => {
@@ -109,6 +111,47 @@ describe('orphan collection', () => {
       .from(revisions)
       .where(eq(revisions.storeId, fixture.storeId))
     expect(revisionRows).toHaveLength(1)
+  })
+
+  test('a commit between selection and deletion keeps its blobs', async () => {
+    const fixture = await seed('gc-race@example.com')
+    const options = {
+      db: server.db,
+      storage: server.storage,
+      storeId: asStoreId(fixture.storeId),
+      graceSeconds: 0,
+    }
+    const selection = await selectOrphans(options)
+    expect(selection.candidates.map((candidate) => candidate.id)).toContain(fixture.orphan.id)
+
+    // The blob looked collectable at selection time; a commit references it
+    // before the sweep gets to delete it.
+    const response = await fixture.user.client.request(`/v1/stores/${fixture.storeId}/commits`, {
+      method: 'POST',
+      headers: authHeaders(fixture.user.token),
+      body: JSON.stringify({
+        protocolVersion: 1,
+        revision: {
+          id: newId(),
+          storeId: fixture.storeId,
+          deviceId: fixture.user.deviceId,
+          parents: [],
+          manifest: fixture.orphan,
+          createdAt: new Date().toISOString(),
+        },
+        blobs: [],
+      }),
+    })
+    expect(response.status).toBe(201)
+
+    const report = await deleteOrphans(options, selection)
+    expect(report.deleted).toBe(0)
+    expect(await server.storage.head(storageKey(fixture.storeId, fixture.orphan.id))).not.toBeNull()
+    const rows = await server.db
+      .select()
+      .from(blobs)
+      .where(and(eq(blobs.storeId, fixture.storeId), eq(blobs.id, fixture.orphan.id)))
+    expect(rows).toHaveLength(1)
   })
 
   test('respects the grace period', async () => {
