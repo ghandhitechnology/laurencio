@@ -248,6 +248,7 @@ interface ManifestRow {
   surface_id: string
   path: string
   kind: string
+  policy: string
   hash: string
   size: number
   mode: number
@@ -316,6 +317,7 @@ export class SyncState {
         surface_id TEXT NOT NULL,
         path TEXT NOT NULL,
         kind TEXT NOT NULL,
+        policy TEXT NOT NULL DEFAULT 'sync',
         hash TEXT NOT NULL,
         size INTEGER NOT NULL,
         mode INTEGER NOT NULL,
@@ -351,6 +353,14 @@ export class SyncState {
         value TEXT NOT NULL
       );
     `)
+    this.#migrateManifestPolicy()
+  }
+
+  /** `policy` arrived with the projection pipeline; older databases copy it in place. */
+  #migrateManifestPolicy(): void {
+    const columns = this.#db.query<{ name: string }, []>("PRAGMA table_info('base_manifest')").all()
+    if (columns.some((column) => column.name === 'policy')) return
+    this.#db.exec("ALTER TABLE base_manifest ADD COLUMN policy TEXT NOT NULL DEFAULT 'sync'")
   }
 
   close(): void {
@@ -450,8 +460,8 @@ export class SyncState {
       this.putRevision(record)
       this.#db.query('DELETE FROM base_manifest WHERE revision_id = ?').run(record.id)
       const insert = this.#db.query(
-        `INSERT INTO base_manifest (revision_id, surface_id, path, kind, hash, size, mode, blob_id, blob_size)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO base_manifest (revision_id, surface_id, path, kind, policy, hash, size, mode, blob_id, blob_size)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       for (const entry of entries) {
         insert.run(
@@ -459,6 +469,7 @@ export class SyncState {
           entry.surfaceId,
           entry.path,
           entry.kind,
+          entry.policy,
           entry.hash,
           entry.size,
           entry.mode,
@@ -478,7 +489,7 @@ export class SyncState {
     if (revision === null) return null
     const rows = this.#db
       .query<ManifestRow, [string]>(
-        'SELECT surface_id, path, kind, hash, size, mode, blob_id, blob_size FROM base_manifest WHERE revision_id = ? ORDER BY surface_id, path',
+        'SELECT surface_id, path, kind, policy, hash, size, mode, blob_id, blob_size FROM base_manifest WHERE revision_id = ? ORDER BY surface_id, path',
       )
       .all(revisionId)
     const entries: ManifestEntry[] = rows.map((row) => {
@@ -486,6 +497,7 @@ export class SyncState {
         surfaceId: row.surface_id as SurfaceId,
         path: row.path,
         kind: row.kind === 'tombstone' ? 'tombstone' : 'file',
+        policy: row.policy === 'opt-in' ? 'opt-in' : 'sync',
         hash: row.hash,
         size: row.size,
         mode: row.mode,
@@ -507,11 +519,13 @@ export class SyncState {
   recordTombstone(revisionId: RevisionId, surfaceId: SurfaceId, storePath: string): void {
     const existing = this.getManifest(revisionId)
     if (existing === null) return
+    const prior = existing.entries.find((entry) => entry.path === storePath)
     const entries = existing.entries.filter((entry) => entry.path !== storePath)
     entries.push({
       surfaceId,
       path: storePath,
       kind: 'tombstone',
+      policy: prior?.policy ?? 'sync',
       hash: '',
       size: 0,
       mode: 0,

@@ -256,7 +256,9 @@ export function codexSurfaces(ctx: AdapterContext): Surface[] {
       policy: 'never',
       description: 'every other file under CODEX_HOME, including *_*.sqlite state and caches',
       exclude: CODEX_HOME_EXCLUDES,
-      // Codex profile overrides live beside machine state; only the named profile files sync.
+      // Profile overrides live beside machine state; only `*.config.toml` syncs, and the
+      // tree's transforms apply to exactly those files so machine keys never leave raw.
+      transforms: [{ kind: 'codexTomlSplit' }, { kind: 'pathTokenize' }],
       filePolicy: [{ pattern: '*.config.toml', policy: 'sync' }],
     }),
   ]

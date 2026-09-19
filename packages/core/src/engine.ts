@@ -27,7 +27,7 @@ import {
 } from './apply'
 import { type BlobContext, openText, sealText } from './crypto/aead'
 import type { KeyMaterial } from './crypto/kdf'
-import { parseLocalBlocks, reinsertLocalBlocks, stripLocalBlocks } from './markers'
+import { parseLocalBlocks, reinsertLocalBlocks } from './markers'
 import { merge } from './merge'
 import {
   ConflictLedger,
@@ -49,10 +49,15 @@ import { expand, type TokenEnv } from './paths'
 import { QuiescenceGate, type QuiescenceOptions } from './quiescence'
 import type { Remote } from './remote/types'
 import { parseManifest, StaleParentsError } from './remote/types'
-import { type ScannedEntry, scan } from './scan'
-import { scanFiles } from './secrets/scan'
+import { scan } from './scan'
 import { acquireLock, releaseLock, type SyncState } from './state'
-import { type AdapterContext, type HarnessAdapter, isSyncable, type Surface } from './types'
+import {
+  applyTransforms,
+  enforceUploadRules,
+  localPathForMapping,
+  type PathMapping,
+} from './transforms'
+import type { AdapterContext, HarnessAdapter, Surface, TransformKind } from './types'
 
 export type PlanOpKind = 'read' | 'merge' | 'write' | 'delete' | 'upload' | 'download' | 'link'
 
@@ -352,6 +357,18 @@ async function runSync(
   const excluded = (storePath: string): boolean =>
     isConflictCopyPath(storePath) || ignores.some((matches) => matches(storePath))
 
+  /** Opt-in surfaces participate only when the device policy names them `on` explicitly. */
+  const optInEnabled = (surface: Surface): boolean => {
+    const harness = policy?.harnesses?.[surface.harness]
+    if (harness === undefined || !harness.enabled) return false
+    return harness.surfaces[surface.id] === 'on'
+  }
+  /** The entry's effective policy decides, so Codex profile overrides inside `never` travel. */
+  const entrySyncable = (entry: ManifestEntry, surface: Surface | undefined): boolean => {
+    if (surface === undefined || harnessDisabled(surface)) return false
+    return entry.policy !== 'opt-in' || optInEnabled(surface)
+  }
+
   const ledger = loadLedger(state)
   const scanResult = scan({
     adapters: options.adapters,
@@ -361,34 +378,9 @@ async function runSync(
     createdAt: now().toISOString(),
   })
   const localEntries: ManifestEntry[] = []
-  const scannedByStorePath = new Map<string, ScannedEntry>()
-  for (const entry of scanResult.entries) {
-    if (entry.storePath !== null) scannedByStorePath.set(entry.storePath, entry)
-  }
   for (const entry of scanResult.manifest.entries) {
-    if (!syncableForManifest(entry, surfaces, harnessDisabled)) continue
+    if (!entrySyncable(entry, surfaces.get(entry.surfaceId))) continue
     if (ledger.isExcluded(entry.path) || excluded(entry.path)) continue
-    const surface = surfaces.get(entry.surfaceId)
-    if (surface === undefined) continue
-    if (markerSurface(surface)) {
-      // Marker files compare and upload as their projection, never the raw bytes.
-      const localPath = scannedByStorePath.get(entry.path)?.localPath
-      if (localPath === undefined) continue
-      const text = readTextOrNull(localPath)
-      if (text === null) continue
-      let projection: string
-      try {
-        projection = stripLocalBlocks(localPath, text)
-      } catch {
-        continue
-      }
-      localEntries.push({
-        ...entry,
-        hash: hashContent(projection),
-        size: Buffer.byteLength(projection),
-      })
-      continue
-    }
     localEntries.push(entry)
   }
   const localManifest: Manifest = { ...scanResult.manifest, entries: localEntries }
@@ -424,7 +416,9 @@ async function runSync(
   })
   const active = plan.files.filter((file) => {
     const surface = surfaces.get(file.surfaceId)
-    return surface !== undefined && isSyncable(surface) && !harnessDisabled(surface)
+    if (surface === undefined) return false
+    const entry = file.local ?? file.remote
+    return entry !== null && entrySyncable(entry, surface)
   })
   plan.files = active
 
@@ -443,9 +437,25 @@ async function runSync(
   for (const entry of scanResult.entries) {
     if (entry.storePath !== null) declaredByStorePath.set(entry.storePath, entry.localPath)
   }
+  const pathMappings = new Map<SurfaceId, PathMapping[]>()
+  for (const mapping of scanResult.pathMap) {
+    const list = pathMappings.get(mapping.surfaceId)
+    if (list === undefined) pathMappings.set(mapping.surfaceId, [mapping])
+    else list.push(mapping)
+  }
+  /** Resolves a re-keyed store path (Claude memory) back to this machine's directory. */
+  const mappedLocalPath = (surfaceId: SurfaceId, storePath: string): string | null => {
+    for (const mapping of pathMappings.get(surfaceId) ?? []) {
+      const resolved = localPathForMapping(mapping, storePath)
+      if (resolved !== null) return resolved
+    }
+    return null
+  }
   const declaredPathFor = (file: PlanFile): string | null => {
     const known = declaredByStorePath.get(file.storePath)
     if (known !== undefined) return known
+    const mapped = mappedLocalPath(file.surfaceId, file.storePath)
+    if (mapped !== null) return mapped
     const surface = surfaces.get(file.surfaceId)
     if (surface === undefined) return null
     const root = surface.path.replace(/[/\\]+$/, '')
@@ -505,28 +515,61 @@ async function runSync(
     return ref
   }
 
+  /** Merge paths handle marker blocks themselves, so their projections skip that kind. */
+  const contentKinds = (surface: Surface): TransformKind[] =>
+    surface.transforms.map((spec) => spec.kind).filter((kind) => kind !== 'markerBlocks')
+  const allKinds = (surface: Surface): TransformKind[] =>
+    surface.transforms.map((spec) => spec.kind)
+
+  const project = (
+    surface: Surface,
+    file: PlanFile,
+    direction: 'toStore' | 'fromStore',
+    content: string,
+    localContent: string | null,
+    kinds: readonly TransformKind[],
+  ): string =>
+    applyTransforms({
+      surface,
+      storePath: file.storePath,
+      direction,
+      tokenEnv,
+      content,
+      localContent,
+      kinds,
+    }).content
+
+  /** The exact bytes an upload would carry: transforms plus secret rules, or a block reason. */
+  const uploadProjection = (
+    surface: Surface,
+    file: PlanFile,
+    content: string,
+    kinds: readonly TransformKind[],
+  ): { content: string; blocked: string | null } => {
+    const transformed = project(surface, file, 'toStore', content, null, kinds)
+    return enforceUploadRules(surface, file.storePath, transformed)
+  }
+
   const uploadLocalFile = async (file: PlanFile, declaredPath: string): Promise<boolean> => {
     const surface = surfaces.get(file.surfaceId)
     if (surface === undefined || file.local === null) return false
     const content = readTextOrNull(declaredPath)
     if (content === null) return false
-    let projection: string
+    let outcome: { content: string; blocked: string | null }
     try {
       if (markerSurface(surface)) {
         state.saveMarkers(declaredPath, parseLocalBlocks(declaredPath, content))
-        projection = stripLocalBlocks(declaredPath, content)
-      } else {
-        projection = content
       }
+      outcome = uploadProjection(surface, file, content, allKinds(surface))
     } catch {
       blocked.push(file.storePath)
       return false
     }
-    if (!scanFiles([{ path: file.storePath, content: projection }]).clean) {
+    if (outcome.blocked !== null) {
       blocked.push(file.storePath)
       return false
     }
-    await sealUpload(projection)
+    await sealUpload(outcome.content)
     changed.push(file.storePath)
     return true
   }
@@ -550,13 +593,49 @@ async function runSync(
     }
   }
 
+  /** Apply-side pipeline: marker re-insertion first, then transforms into local machine state. */
+  const fromStore = (file: PlanFile, declaredPath: string, remoteText: string): string | null => {
+    const surface = surfaces.get(file.surfaceId)
+    if (surface === undefined) return null
+    try {
+      const withMarkers = reinsert(file, declaredPath, remoteText)
+      if (withMarkers === null) return null
+      return project(
+        surface,
+        file,
+        'fromStore',
+        withMarkers,
+        readTextOrNull(declaredPath),
+        contentKinds(surface),
+      )
+    } catch {
+      return null
+    }
+  }
+
   const guard = (declaredPath: string): ReturnType<Applier['fingerprint']> =>
     applier.fingerprint(declaredPath)
 
   /** True when the local file still matches the scan that produced the plan. */
-  const unchangedSinceScan = (file: PlanFile, actual: FileFingerprint | null): boolean => {
+  const unchangedSinceScan = (
+    file: PlanFile,
+    declaredPath: string,
+    actual: FileFingerprint | null,
+  ): boolean => {
     if (actual === null) return file.local === null
-    return file.local !== null && actual.hash === file.local.hash
+    if (file.local === null) return false
+    if (actual.hash === file.local.hash) return true
+    // Manifest hashes are over the projection, so a projected file re-reads through the pipeline.
+    const surface = surfaces.get(file.surfaceId)
+    if (surface === undefined) return false
+    const content = readTextOrNull(declaredPath)
+    if (content === null) return false
+    try {
+      const outcome = uploadProjection(surface, file, content, allKinds(surface))
+      return outcome.blocked === null && hashContent(outcome.content) === file.local.hash
+    } catch {
+      return false
+    }
   }
 
   for (const file of active) {
@@ -566,13 +645,13 @@ async function runSync(
     if (declaredPath === null || !isFile(remoteEntry) || remoteEntry.blob === undefined) continue
     const bytes = await remote.getBlob(remoteEntry.blob.id)
     const remoteText = openText(key, 'content', bytes, fileContext)
-    const content = reinsert(file, declaredPath, remoteText)
+    const content = fromStore(file, declaredPath, remoteText)
     if (content === null) {
       defer(file.storePath, 'broken marker block in local file')
       continue
     }
     const before = guard(declaredPath)
-    if (!unchangedSinceScan(file, before)) {
+    if (!unchangedSinceScan(file, declaredPath, before)) {
       defer(file.storePath, 'local file changed since the scan')
       continue
     }
@@ -625,9 +704,21 @@ async function runSync(
         defer(file.storePath, 'local file recently written')
         break
       }
-      const localText = readTextOrNull(declaredPath)
-      if (localText === null) break
+      const localRaw = readTextOrNull(declaredPath)
+      if (localRaw === null) break
       const localMtimeMs = current?.mtimeMs ?? before?.mtimeMs
+      let localText: string
+      try {
+        const outcome = uploadProjection(surface, file, localRaw, contentKinds(surface))
+        if (outcome.blocked !== null) {
+          defer(file.storePath, 'local file blocked by secret rules')
+          break
+        }
+        localText = outcome.content
+      } catch {
+        defer(file.storePath, 'local projection failed')
+        break
+      }
       const result = merge(
         {
           strategy: surface.merge,
@@ -666,11 +757,24 @@ async function runSync(
         if (await uploadLocalFile(file, declaredPath)) merged = true
         break
       }
+      let writeContent: string
+      try {
+        writeContent = project(
+          surface,
+          file,
+          'fromStore',
+          result.content,
+          localRaw,
+          contentKinds(surface),
+        )
+      } catch {
+        break
+      }
       try {
         applier.write({
           storePath: file.storePath,
           declaredPath,
-          content: result.content,
+          content: writeContent,
           mode: file.local?.mode ?? remoteEntry.mode,
           expected: attempt === 0 ? before : guard(declaredPath),
         })
@@ -690,7 +794,7 @@ async function runSync(
     if (declaredPath === null) continue
     const before = guard(declaredPath)
     if (before === null) continue
-    if (!unchangedSinceScan(file, before)) {
+    if (!unchangedSinceScan(file, declaredPath, before)) {
       defer(file.storePath, 'local file changed since the scan')
       continue
     }
@@ -738,36 +842,20 @@ async function runSync(
 
   const baseByPath = entryMap(baseManifest)
   const remoteByPath = entryMap(remoteManifest)
-  const finalByStorePath = new Map<string, ScannedEntry>()
-  for (const entry of finalScan.entries) {
-    if (entry.storePath !== null) finalByStorePath.set(entry.storePath, entry)
-  }
   const newEntries: ManifestEntry[] = []
   for (const entry of finalScan.manifest.entries) {
     if (ledger.isExcluded(entry.path) || excluded(entry.path)) continue
-    if (!syncableForManifest(entry, surfaces, harnessDisabled)) continue
-    const surface = surfaces.get(entry.surfaceId)
-    if (surface === undefined || !isSyncable(surface)) continue
-    let hash = entry.hash
-    let size = entry.size
-    if (markerSurface(surface)) {
-      const localPath = finalByStorePath.get(entry.path)?.localPath
-      if (localPath === undefined) continue
-      const text = readTextOrNull(localPath)
-      if (text === null) continue
-      const projection = stripLocalBlocks(localPath, text)
-      hash = hashContent(projection)
-      size = Buffer.byteLength(projection)
-    }
+    if (!entrySyncable(entry, surfaces.get(entry.surfaceId))) continue
     const manifestEntry: ManifestEntry = {
       surfaceId: entry.surfaceId,
       path: entry.path,
       kind: 'file',
-      hash,
-      size,
+      policy: entry.policy,
+      hash: entry.hash,
+      size: entry.size,
       mode: entry.mode,
     }
-    const ref = refByHash.get(hash)
+    const ref = refByHash.get(entry.hash)
     if (ref !== undefined) {
       manifestEntry.blob = ref
       newEntries.push(manifestEntry)
@@ -788,10 +876,23 @@ async function runSync(
       surfaceId,
       path: storePath,
       kind: 'tombstone',
+      policy: source?.policy ?? 'sync',
       hash: '',
       size: 0,
       mode: 0,
     })
+  }
+  // A device that has an opt-in surface disabled still carries its remote entries
+  // forward. Dropping them would read as a remote deletion on every other device.
+  const carried = new Map<string, ManifestEntry>()
+  for (const entry of [...(baseManifest?.entries ?? []), ...(remoteManifest?.entries ?? [])]) {
+    const surface = surfaces.get(entry.surfaceId)
+    if (surface === undefined || entry.policy !== 'opt-in' || optInEnabled(surface)) continue
+    carried.set(entry.path, entry)
+  }
+  const present = new Set(newEntries.map((entry) => entry.path))
+  for (const [, entry] of [...carried].sort(([a], [b]) => a.localeCompare(b))) {
+    if (!present.has(entry.path)) newEntries.push(entry)
   }
   newEntries.sort((a, b) => a.surfaceId.localeCompare(b.surfaceId) || a.path.localeCompare(b.path))
 
@@ -1025,15 +1126,6 @@ function uniqueBlobs(entries: readonly ManifestEntry[]): BlobRef[] {
     if (entry.blob !== undefined) byId.set(entry.blob.id, entry.blob)
   }
   return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id))
-}
-
-function syncableForManifest(
-  entry: ManifestEntry,
-  surfaces: Map<SurfaceId, Surface>,
-  disabled: (surface: Surface) => boolean,
-): boolean {
-  const surface = surfaces.get(entry.surfaceId)
-  return surface !== undefined && isSyncable(surface) && !disabled(surface)
 }
 
 function surfaceDigest(entries: readonly ManifestEntry[]): SurfaceDigest[] {

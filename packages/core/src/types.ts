@@ -25,6 +25,9 @@ export interface AdapterContext {
 /** `sync` participates. `opt-in` requires explicit enablement. `never` is classified but excluded. */
 export type Policy = 'sync' | 'opt-in' | 'never'
 
+/** The policies an entry can carry once it is eligible for a manifest. */
+export type SyncPolicy = Exclude<Policy, 'never'>
+
 export type FileFormat =
   | 'markdown'
   | 'json'

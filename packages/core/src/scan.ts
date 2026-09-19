@@ -6,7 +6,13 @@ import pm from 'picomatch'
 import { createAdapterRegistry } from './adapters/registry'
 import type { LayoutEntry, LocalLayout, Manifest, ManifestEntry } from './model'
 import { type OwnershipRef, type ResolvedSurface, resolveOwnership } from './ownership'
-import { joinStorePath } from './paths'
+import type { TokenEnv } from './paths'
+import {
+  applyTransforms,
+  enforceUploadRules,
+  type PathMapping,
+  projectEntryPath,
+} from './transforms'
 import type { AdapterContext, HarnessAdapter, HarnessId, Policy, Surface } from './types'
 
 export type EntryClass =
@@ -68,6 +74,8 @@ export interface ScanResult {
   ownership: OwnershipRef[]
   surfaces: SurfaceReport[]
   entries: ScannedEntry[]
+  /** Directory-level store-to-local mappings for surfaces whose transforms re-key paths. */
+  pathMap: PathMapping[]
 }
 
 export interface ScanOptions {
@@ -107,6 +115,8 @@ interface ScanState {
   boundary: Set<string>
   matchers: Map<SurfaceId, ((candidate: string) => boolean)[]>
   filePolicyMatchers: Map<SurfaceId, PolicyMatcher[]>
+  pathMap: Map<string, PathMapping>
+  tokenEnv: TokenEnv
 }
 
 interface WalkTarget {
@@ -225,28 +235,52 @@ function recordFile(
     state.entries.push(entry)
     return
   }
-  const storePath = joinStorePath(target.surface.path, relPosix)
-  let data: Buffer
+  let raw: string
   try {
-    data = fs.readFileSync(localPath)
+    raw = fs.readFileSync(localPath, 'utf8')
   } catch {
     entry.classification = 'unreadable'
     target.counters.errors += 1
     state.entries.push(entry)
     return
   }
-  entry.storePath = storePath
-  entry.hash = sha256Hex(data)
+  const projected = projectEntryPath(target.surface, relPosix, localPath, state.tokenEnv)
+  let projection: string
+  try {
+    projection = applyTransforms({
+      surface: target.surface,
+      storePath: projected.storePath,
+      direction: 'toStore',
+      tokenEnv: state.tokenEnv,
+      content: raw,
+    }).content
+    // Hashes must cover the bytes an upload would carry, secret indirection included.
+    projection = enforceUploadRules(target.surface, projected.storePath, projection).content
+  } catch {
+    // A file that cannot be projected must not upload raw; the surface report shows it.
+    entry.classification = 'unsupported'
+    target.counters.unsupported += 1
+    state.entries.push(entry)
+    return
+  }
+  if (projected.mapping !== null) {
+    state.pathMap.set(projected.mapping.storePrefix, projected.mapping)
+  }
+  const size = Buffer.byteLength(projection)
+  entry.storePath = projected.storePath
+  entry.hash = sha256Hex(Buffer.from(projection, 'utf8'))
+  entry.size = size
   // Opt-in surfaces hash like sync surfaces; DevicePolicy filters them when a plan is built.
   entry.classification = policy === 'opt-in' ? 'opt-in' : 'sync'
   target.counters.files += 1
-  target.counters.bytes += stat.size
+  target.counters.bytes += size
   state.manifest.push({
     surfaceId: target.surfaceId,
-    path: storePath,
+    path: projected.storePath,
     kind: 'file',
+    policy: policy === 'opt-in' ? 'opt-in' : 'sync',
     hash: entry.hash,
-    size: stat.size,
+    size,
     mode: entry.mode,
   })
   state.entries.push(entry)
@@ -394,6 +428,8 @@ export function scan(options: ScanOptions): ScanResult {
     boundary: new Set(ownership.surfaces.map((surface) => surface.declaredPath)),
     matchers: new Map(),
     filePolicyMatchers: new Map(),
+    pathMap: new Map(),
+    tokenEnv: { home: options.ctx.home, platform: options.ctx.platform, env: options.ctx.env },
   }
 
   const surfaces: SurfaceReport[] = []
@@ -424,6 +460,10 @@ export function scan(options: ScanOptions): ScanResult {
     (a, b) => compareStrings(a.surfaceId, b.surfaceId) || compareStrings(a.localPath, b.localPath),
   )
   const layoutEntries = [...state.layout.values()].sort((a, b) => compareStrings(a.path, b.path))
+  const pathMap = [...state.pathMap.values()].sort(
+    (a, b) =>
+      compareStrings(a.surfaceId, b.surfaceId) || compareStrings(a.storePrefix, b.storePrefix),
+  )
 
   return {
     home: options.ctx.home,
@@ -438,5 +478,6 @@ export function scan(options: ScanOptions): ScanResult {
     ownership: ownership.refs,
     surfaces,
     entries,
+    pathMap,
   }
 }

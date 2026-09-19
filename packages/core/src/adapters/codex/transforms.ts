@@ -1,4 +1,4 @@
-import { parse, type TomlTable } from 'smol-toml'
+import { parse, stringify, type TomlTable } from 'smol-toml'
 import { type TokenEnv, tokenize, tokenValue } from '../../paths'
 
 export type CodexKeyClass = 'portable' | 'machine' | 'ignored' | 'mixed'
@@ -217,6 +217,37 @@ export function codexTomlSplit(text: string): CodexConfigSplit {
 export function codexAutomationSplit(text: string): CodexAutomationSplit {
   const split = splitToml(parse(text), classifyCodexAutomationKey)
   return { definition: split.portable, device: split.machine, ignored: split.ignored }
+}
+
+/** Deep key merge for TOML tables: tables merge, every other value in the patch wins. */
+function mergeTables(base: TomlTable, patch: TomlTable): TomlTable {
+  const merged: TomlTable = { ...base }
+  for (const [key, value] of Object.entries(patch)) {
+    const existing = merged[key]
+    merged[key] = isTable(existing) && isTable(value) ? mergeTables(existing, value) : value
+  }
+  return merged
+}
+
+function applySplit(machineText: string | null, projectionText: string): string {
+  const projection = parse(projectionText)
+  if (machineText === null || machineText.trim() === '') return stringify(projection)
+  const merged = mergeTables(parse(machineText), projection)
+  return stringify(merged)
+}
+
+/**
+ * Apply-side inverse of `codexTomlSplit`: merge the portable projection into the local
+ * file so machine keys (`[projects.*]` trust, `[hooks.state.*]` hashes, marketplace
+ * sources, `shell_environment_policy.set`) survive the download.
+ */
+export function codexTomlApply(machineText: string | null, projectionText: string): string {
+  return applySplit(machineText, projectionText)
+}
+
+/** Apply-side inverse of `codexAutomationSplit`: definition keys land, device keys stay. */
+export function codexAutomationApply(machineText: string | null, projectionText: string): string {
+  return applySplit(machineText, projectionText)
 }
 
 const absolutePathPattern = /\/(?:[A-Za-z0-9._~@+-]+\/)*[A-Za-z0-9._~@+-]+/g
