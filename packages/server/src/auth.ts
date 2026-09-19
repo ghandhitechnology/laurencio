@@ -8,7 +8,7 @@ import type { Database } from './db/client'
 import * as schema from './db/schema'
 import { authenticateDeviceToken, touchDevice } from './devices'
 import type { ServerEnv } from './env'
-import { unauthenticated } from './http/errors'
+import { tokenExpired, unauthenticated } from './http/errors'
 import { asUserId } from './ids'
 
 export function createAuth(options: { db: Database; env: ServerEnv }) {
@@ -58,10 +58,13 @@ export function createAuthMiddleware(deps: { auth: Auth; db: Database }) {
     const header = c.req.header('authorization')
     const token = header?.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : null
     if (token?.startsWith('lrn_')) {
-      const deviceAuth = await authenticateDeviceToken(deps.db, token)
-      if (!deviceAuth) throw unauthenticated('device token is unknown, revoked, or expired')
-      await touchDevice(deps.db, deviceAuth)
-      c.set('principal', deviceAuth.principal)
+      const result = await authenticateDeviceToken(deps.db, token)
+      if (!result.ok) {
+        if (result.reason === 'expired') throw tokenExpired()
+        throw unauthenticated('device token is unknown or revoked')
+      }
+      await touchDevice(deps.db, result.auth)
+      c.set('principal', result.auth.principal)
       await next()
       return
     }

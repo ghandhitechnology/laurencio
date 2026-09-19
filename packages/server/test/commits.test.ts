@@ -1,4 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
+import { writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { newId } from '@laurencio/protocol'
 import { and, count, eq } from 'drizzle-orm'
 import { auditLog, revisionBlobs, revisions } from '../src/db/schema'
@@ -230,6 +232,27 @@ describe('POST /v1/stores/:id/commits', () => {
     const { response } = await postCommit(user, { manifest })
     expect(response.status).toBe(200)
     expect(await response.json()).toMatchObject({ accepted: false, missing: [manifest.id] })
+    expect(await countRows(server, user.storeId, 'revisions')).toBe(0)
+  })
+
+  test('fails a commit whose stored object was corrupted after upload', async () => {
+    const user = await createUser(server, 'commit-corrupt@example.com')
+    const honest = bytesFor('honest ciphertext')
+    const forged = bytesFor('forged ciphertext')
+    expect(forged.byteLength).toBe(honest.byteLength)
+    const manifest = { id: blobIdFor(honest), size: honest.byteLength }
+    await uploadBlob(user.client, user.token, user.storeId, honest, manifest.id)
+    const path = join(server.dataDir, 'blobs', 'u', user.storeId, 'b', manifest.id)
+    await writeFile(path, forged)
+
+    const { response } = await postCommit(user, { manifest })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: 'invalid_request',
+        details: { reason: 'blob_checksum_mismatch', blobId: manifest.id },
+      },
+    })
     expect(await countRows(server, user.storeId, 'revisions')).toBe(0)
   })
 

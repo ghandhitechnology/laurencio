@@ -1,11 +1,13 @@
 import { DeviceId } from '@laurencio/protocol'
-import { Hono } from 'hono'
+import { type Context, Hono } from 'hono'
 import { type Auth, getSession } from '../auth'
 import type { AppBindings } from '../context'
 import type { Database } from '../db/client'
 import { listDevices, renameDevice, revokeDevice } from '../devices'
 import type { ServerEnv } from '../env'
+import { forbidden } from '../http/errors'
 import { asUserId } from '../ids'
+import { enforceRateLimit, type RateLimiter } from '../rate'
 import {
   deviceConfirmPage,
   deviceDonePage,
@@ -18,6 +20,15 @@ export interface WebDeps {
   env: ServerEnv
   db: Database
   auth: Auth
+  rateLimiter: RateLimiter
+}
+
+const SECURITY_HEADERS: Record<string, string> = {
+  'content-security-policy':
+    "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+  'x-frame-options': 'DENY',
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'same-origin',
 }
 
 interface SessionUser {
@@ -28,6 +39,30 @@ interface SessionUser {
 
 export function createWebRoutes(deps: WebDeps): Hono<AppBindings> {
   const app = new Hono<AppBindings>()
+  const allowedOrigins = collectOrigins(deps.env)
+
+  // Forms are cookie-authenticated, so every browser POST has to come from an
+  // origin this deployment owns. /api/auth keeps its own checks because the
+  // CLI talks to it without an Origin header.
+  app.use('*', async (c, next) => {
+    if (c.req.method === 'POST' && !c.req.path.startsWith('/api/auth')) {
+      const origin = c.req.header('origin')
+      if (!origin || !allowedOrigins.has(origin)) {
+        throw forbidden('cross-origin form submission rejected')
+      }
+      if (c.req.path === '/device' || c.req.path === '/device/decision') {
+        enforceRateLimit(deps.rateLimiter, `device-approval:${clientAddress(c)}`)
+      }
+    }
+    await next()
+  })
+
+  app.use('*', async (c, next) => {
+    await next()
+    for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+      c.res.headers.set(name, value)
+    }
+  })
 
   app.get('/', async (c) => {
     const user = await sessionUser(deps, c.req.raw.headers)
@@ -263,7 +298,53 @@ function signInPageWithError(deps: WebDeps, next: string): string {
   })
 }
 
-function safeNext(value: string | null | undefined): string {
-  if (!value?.startsWith('/') || value.startsWith('//')) return '/account/devices'
-  return value
+function collectOrigins(env: ServerEnv): Set<string> {
+  const origins = new Set<string>()
+  const base = originOf(env.publicUrl)
+  if (base) origins.add(base)
+  for (const trusted of env.trustedOrigins) {
+    const origin = originOf(trusted) ?? trusted
+    if (origin.length > 0) origins.add(origin)
+  }
+  return origins
+}
+
+function originOf(value: string): string | null {
+  try {
+    return new URL(value).origin
+  } catch {
+    return null
+  }
+}
+
+function clientAddress(c: Context<AppBindings>): string {
+  const forwarded = c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
+  return forwarded || c.req.header('x-real-ip') || 'unknown'
+}
+
+const FALLBACK_NEXT = '/account/devices'
+const MAX_DECODE_PASSES = 3
+
+/**
+ * Only same-origin relative paths starting with a single slash survive.
+ * Absolute URLs, scheme-relative paths, backslashes, control characters, and
+ * their percent-encoded variants all fall back to the devices page.
+ */
+export function safeNext(value: string | null | undefined): string {
+  if (!value) return FALLBACK_NEXT
+  let decoded = value
+  for (let pass = 0; pass < MAX_DECODE_PASSES; pass += 1) {
+    let next: string
+    try {
+      next = decodeURIComponent(decoded)
+    } catch {
+      return FALLBACK_NEXT
+    }
+    if (next === decoded) break
+    decoded = next
+  }
+  if (!decoded.startsWith('/') || decoded.startsWith('//')) return FALLBACK_NEXT
+  if (decoded.includes('\\')) return FALLBACK_NEXT
+  if (/\s|\p{Cc}/u.test(decoded)) return FALLBACK_NEXT
+  return decoded
 }

@@ -1,11 +1,13 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import {
   BLOB_CONTENT_TYPE,
+  type BlobHead,
   type BlobStore,
   type PresignedDownload,
   type PresignedUpload,
+  sha256Hex,
 } from './types'
 
 export interface FsBlobStoreOptions {
@@ -17,6 +19,8 @@ export interface FsBlobStoreOptions {
 }
 
 export type LocalSignatureCheck = { ok: true } | { ok: false; reason: string }
+
+export class ChecksumMismatchError extends Error {}
 
 /**
  * Filesystem storage for local development and tests. Presigned URLs point
@@ -33,29 +37,30 @@ export class FsBlobStore implements BlobStore {
     this.now = options.now ?? (() => Date.now())
   }
 
-  private sign(method: string, key: string, expires: number): string {
-    return createHmac('sha256', this.options.secret)
-      .update(`${method}:${key}:${expires}`)
-      .digest('base64url')
+  private sign(method: string, key: string, expires: number, extra?: string): string {
+    const payload = `${method}:${key}:${expires}${extra ? `:${extra}` : ''}`
+    return createHmac('sha256', this.options.secret).update(payload).digest('base64url')
   }
 
-  private url(method: 'put' | 'get', key: string, expires: number, size?: number): string {
-    const url = new URL(`/local-blob/${method}`, this.options.baseUrl)
-    url.searchParams.set('key', key)
-    url.searchParams.set('expires', String(expires))
-    url.searchParams.set('sig', this.sign(method, key, expires))
-    if (size !== undefined) url.searchParams.set('size', String(size))
-    return url.toString()
+  private putSignature(key: string, expires: number, sha256: string): string {
+    return this.sign('put', key, expires, sha256)
   }
 
   async presignPut(input: {
     key: string
     size: number
+    sha256: string
     expiresInSeconds: number
   }): Promise<PresignedUpload> {
     const expires = this.now() + input.expiresInSeconds * 1000
+    const url = new URL('/local-blob/put', this.options.baseUrl)
+    url.searchParams.set('key', input.key)
+    url.searchParams.set('expires', String(expires))
+    url.searchParams.set('size', String(input.size))
+    url.searchParams.set('sha256', input.sha256)
+    url.searchParams.set('sig', this.putSignature(input.key, expires, input.sha256))
     return {
-      url: this.url('put', input.key, expires, input.size),
+      url: url.toString(),
       method: 'PUT',
       headers: { 'content-type': BLOB_CONTENT_TYPE },
       expiresAt: new Date(expires),
@@ -64,22 +69,39 @@ export class FsBlobStore implements BlobStore {
 
   async presignGet(input: { key: string; expiresInSeconds: number }): Promise<PresignedDownload> {
     const expires = this.now() + input.expiresInSeconds * 1000
-    return { url: this.url('get', input.key, expires), expiresAt: new Date(expires) }
+    const url = new URL('/local-blob/get', this.options.baseUrl)
+    url.searchParams.set('key', input.key)
+    url.searchParams.set('expires', String(expires))
+    url.searchParams.set('sig', this.sign('get', input.key, expires))
+    return { url: url.toString(), expiresAt: new Date(expires) }
   }
 
-  verify(
-    method: 'put' | 'get',
-    key: string,
-    expires: number,
-    signature: string,
-  ): LocalSignatureCheck {
-    if (!Number.isFinite(expires)) return { ok: false, reason: 'expires is not a number' }
-    if (expires < this.now()) return { ok: false, reason: 'link expired' }
-    const expected = Buffer.from(this.sign(method, key, expires))
+  verifyPut(input: {
+    key: string
+    expires: number
+    sig: string
+    sha256: string
+  }): LocalSignatureCheck {
+    return this.checkSignature(
+      this.putSignature(input.key, input.expires, input.sha256),
+      input.expires,
+      input.sig,
+    )
+  }
+
+  verifyGet(input: { key: string; expires: number; sig: string }): LocalSignatureCheck {
+    return this.checkSignature(this.sign('get', input.key, input.expires), input.expires, input.sig)
+  }
+
+  private checkSignature(expectedPayload: string, expires: number, signature: string) {
+    if (!Number.isFinite(expires)) return { ok: false as const, reason: 'expires is not a number' }
+    if (expires < this.now()) return { ok: false as const, reason: 'link expired' }
+    const expected = Buffer.from(expectedPayload)
     const presented = Buffer.from(signature)
-    if (expected.length !== presented.length) return { ok: false, reason: 'bad signature' }
-    if (!timingSafeEqual(expected, presented)) return { ok: false, reason: 'bad signature' }
-    return { ok: true }
+    if (expected.length !== presented.length) return { ok: false as const, reason: 'bad signature' }
+    if (!timingSafeEqual(expected, presented))
+      return { ok: false as const, reason: 'bad signature' }
+    return { ok: true as const }
   }
 
   /** Rejects keys that would escape the storage root. */
@@ -90,7 +112,14 @@ export class FsBlobStore implements BlobStore {
     return path
   }
 
-  async localPut(key: string, bytes: Uint8Array): Promise<void> {
+  /** Writes only after the bytes match the checksum the upload URL was signed for. */
+  async localPut(key: string, bytes: Uint8Array, sha256?: string): Promise<void> {
+    if (sha256 !== undefined) {
+      const actual = sha256Hex(bytes)
+      if (actual !== sha256) {
+        throw new ChecksumMismatchError(`sha256 mismatch for ${key}: expected ${sha256}`)
+      }
+    }
     const path = this.pathFor(key)
     if (!path) throw new Error(`refusing to write outside the storage root: ${key}`)
     await mkdir(dirname(path), { recursive: true })
@@ -113,12 +142,13 @@ export class FsBlobStore implements BlobStore {
     await rm(path, { force: true })
   }
 
-  async head(key: string): Promise<{ size: number } | null> {
+  /** Recomputed from the stored bytes so commit verification catches corruption. */
+  async head(key: string): Promise<BlobHead | null> {
     const path = this.pathFor(key)
     if (!path) return null
     try {
-      const info = await stat(path)
-      return { size: info.size }
+      const bytes = await readFile(path)
+      return { size: bytes.byteLength, sha256: sha256Hex(bytes) }
     } catch {
       return null
     }

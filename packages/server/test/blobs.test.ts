@@ -69,10 +69,11 @@ describe('POST /v1/stores/:id/blobs/presign', () => {
     const second = await presign(user, id, bytes.byteLength)
     expect(first.response.status).toBe(200)
     expect(second.response.status).toBe(200)
+    // An upload that never lands in a commit does not count yet.
     const me = await user.client.json<{ quotas: { blobs: number; bytes: number } }>('/v1/me', {
       headers: authHeaders(user.token),
     })
-    expect(me.quotas).toMatchObject({ blobs: 1, bytes: bytes.byteLength })
+    expect(me.quotas).toMatchObject({ blobs: 0, bytes: 0 })
   })
 
   test('refuses the same blob id with a different size', async () => {
@@ -134,6 +135,27 @@ describe('uploading through the presigned URL', () => {
     expect(right.status).toBe(200)
   })
 
+  test('rejects bytes that do not match the presigned sha256', async () => {
+    const user = await createUser(server, 'blob-checksum@example.com')
+    const honest = bytesFor('checksum-one')
+    const forged = bytesFor('checksum-two')
+    expect(forged.byteLength).toBe(honest.byteLength)
+    const { body } = await presign(user, blobIdFor(honest), honest.byteLength)
+    const response = await user.client.request(pathOf(body.url), { method: 'PUT', body: forged })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({
+      error: { code: 'invalid_request', details: { reason: 'blob_checksum_mismatch' } },
+    })
+
+    // The object was never written, so a download for the row 404s.
+    const meta = await user.client.json<{ url: string }>(
+      `/v1/stores/${user.storeId}/blobs/${blobIdFor(honest)}`,
+      { headers: authHeaders(user.token) },
+    )
+    const download = await user.client.request(pathOf(meta.url))
+    expect(download.status).toBe(404)
+  })
+
   test('rejects a tampered signature or key', async () => {
     const user = await createUser(server, 'blob-tamper@example.com')
     const bytes = bytesFor('signed bytes')
@@ -164,10 +186,10 @@ describe('uploading through the presigned URL', () => {
     const key = `u/${user.storeId}/b/${id}`
     const expires = Date.now() - 1000
     const signature = createHmac('sha256', server.env.storage.secret)
-      .update(`put:${key}:${expires}`)
+      .update(`put:${key}:${expires}:${id}`)
       .digest('base64url')
     const response = await user.client.request(
-      `/local-blob/put?key=${encodeURIComponent(key)}&expires=${expires}&sig=${signature}&size=${bytes.byteLength}`,
+      `/local-blob/put?key=${encodeURIComponent(key)}&expires=${expires}&sha256=${id}&sig=${signature}&size=${bytes.byteLength}`,
       { method: 'PUT', body: bytes },
     )
     expect(response.status).toBe(400)

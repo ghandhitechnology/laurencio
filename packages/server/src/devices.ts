@@ -19,6 +19,8 @@ export type StoreRow = typeof stores.$inferSelect
 export type DeviceTokenRow = typeof deviceTokens.$inferSelect
 
 const TOKEN_PREFIX = 'lrn_'
+/** Device tokens have to be re-minted at re-enrollment; the CLI already prompts. */
+export const TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000
 
 export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex')
@@ -104,6 +106,7 @@ export async function mintDeviceToken(
     deviceId: input.deviceId,
     userId: input.userId,
     tokenHash: hashToken(token),
+    expiresAt: new Date(Date.now() + TOKEN_TTL_MS),
   })
   return token
 }
@@ -114,11 +117,17 @@ export interface DeviceAuth {
   token: DeviceTokenRow
 }
 
-/** Resolves a device token, or returns null when it is unknown, revoked, or expired. */
+export type DeviceAuthFailure = 'unknown' | 'revoked' | 'expired'
+
+export type DeviceAuthResult =
+  | { ok: true; auth: DeviceAuth }
+  | { ok: false; reason: DeviceAuthFailure }
+
+/** Resolves a device token so the caller can tell expired from unknown or revoked. */
 export async function authenticateDeviceToken(
   db: Database,
   token: string,
-): Promise<DeviceAuth | null> {
+): Promise<DeviceAuthResult> {
   const found = await db
     .select({ token: deviceTokens, device: devices })
     .from(deviceTokens)
@@ -126,17 +135,22 @@ export async function authenticateDeviceToken(
     .where(eq(deviceTokens.tokenHash, hashToken(token)))
     .limit(1)
   const row = found.at(0)
-  if (!row) return null
-  if (row.token.revokedAt || row.device.revokedAt) return null
-  if (row.token.expiresAt && row.token.expiresAt.getTime() <= Date.now()) return null
+  if (!row) return { ok: false, reason: 'unknown' }
+  if (row.token.revokedAt || row.device.revokedAt) return { ok: false, reason: 'revoked' }
+  if (row.token.expiresAt && row.token.expiresAt.getTime() <= Date.now()) {
+    return { ok: false, reason: 'expired' }
+  }
   return {
-    principal: {
-      userId: asUserId(row.token.userId),
-      deviceId: asDeviceId(row.device.id),
-      tokenId: row.token.id,
+    ok: true,
+    auth: {
+      principal: {
+        userId: asUserId(row.token.userId),
+        deviceId: asDeviceId(row.device.id),
+        tokenId: row.token.id,
+      },
+      device: row.device,
+      token: row.token,
     },
-    device: row.device,
-    token: row.token,
   }
 }
 

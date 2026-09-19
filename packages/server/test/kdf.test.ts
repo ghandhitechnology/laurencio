@@ -1,5 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { authHeaders, createTestServer, createUser, readJson } from './helpers'
+import { and, eq } from 'drizzle-orm'
+import { kdfParamVersions } from '../src/db/schema'
+import { authHeaders, createTestServer, createUser } from './helpers'
 
 const server = await createTestServer()
 afterAll(() => server.close())
@@ -52,31 +54,90 @@ describe('KDF parameters', () => {
       headers: authHeaders(user.token),
       body: JSON.stringify(params),
     })
-    expect(await repeat.json()).toMatchObject({ kdf: params })
+    expect(await repeat.json()).toMatchObject({ kdf: params, generation: 1 })
   })
 
-  test('a different parameter set conflicts and the stored values survive', async () => {
-    const user = await createUser(server, 'kdf-immutable@example.com')
-    await user.client.expectStatus(`/v1/stores/${user.storeId}/kdf-params`, 200, {
-      method: 'PUT',
-      headers: authHeaders(user.token),
-      body: JSON.stringify(params),
-    })
-    const changed = await user.client.request(`/v1/stores/${user.storeId}/kdf-params`, {
-      method: 'PUT',
-      headers: authHeaders(user.token),
-      body: JSON.stringify({ ...params, salt: 'b3RoZXItc2FsdC1vdGhlcg==' }),
-    })
-    expect(changed.status).toBe(409)
-    const body = await readJson<{ error: { code: string; details?: { setAt?: string } } }>(changed)
-    expect(body.error.code).toBe('conflict')
-    expect(typeof body.error.details?.setAt).toBe('string')
+  test('a changed parameter set publishes a new generation and keeps the old one', async () => {
+    const user = await createUser(server, 'kdf-rotate@example.com')
+    const rotated = { ...params, salt: 'b3RoZXItc2FsdC1vdGhlcg==' }
+    const first = await user.client.json<{ generation: number; kdf: typeof params }>(
+      `/v1/stores/${user.storeId}/kdf-params`,
+      { method: 'PUT', headers: authHeaders(user.token), body: JSON.stringify(params) },
+    )
+    expect(first.generation).toBe(1)
 
-    const read = await user.client.json<{ kdf: typeof params }>(
+    const second = await user.client.json<{ generation: number; kdf: typeof params }>(
+      `/v1/stores/${user.storeId}/kdf-params`,
+      { method: 'PUT', headers: authHeaders(user.token), body: JSON.stringify(rotated) },
+    )
+    expect(second.generation).toBe(2)
+    expect(second.kdf).toEqual(rotated)
+
+    const latest = await user.client.json<{ generation: number; kdf: typeof params }>(
       `/v1/stores/${user.storeId}/kdf-params`,
       { headers: authHeaders(user.token) },
     )
-    expect(read.kdf?.salt).toBe(params.salt)
+    expect(latest.generation).toBe(2)
+    expect(latest.kdf).toEqual(rotated)
+
+    // The superseded generation still resolves so an enrolling device that was
+    // handed the old parameters can finish.
+    const historical = await user.client.json<{ generation: number; kdf: typeof params }>(
+      `/v1/stores/${user.storeId}/kdf-params?version=1`,
+      { headers: authHeaders(user.token) },
+    )
+    expect(historical.generation).toBe(1)
+    expect(historical.kdf).toEqual(params)
+
+    const latestByVersion = await user.client.json<{ generation: number; kdf: typeof params }>(
+      `/v1/stores/${user.storeId}/kdf-params?version=2`,
+      { headers: authHeaders(user.token) },
+    )
+    expect(latestByVersion.kdf).toEqual(rotated)
+
+    const missing = await user.client.request(`/v1/stores/${user.storeId}/kdf-params?version=9`, {
+      headers: authHeaders(user.token),
+    })
+    expect(missing.status).toBe(404)
+
+    const me = await user.client.json<{ kdf: typeof params; kdfGeneration: number }>('/v1/me', {
+      headers: authHeaders(user.token),
+    })
+    expect(me.kdf).toEqual(rotated)
+    expect(me.kdfGeneration).toBe(2)
+
+    const auditRows = await server.db
+      .select()
+      .from(kdfParamVersions)
+      .where(and(eq(kdfParamVersions.storeId, user.storeId), eq(kdfParamVersions.generation, 1)))
+    expect(auditRows).toHaveLength(1)
+    expect(auditRows[0]?.salt).toBe(params.salt)
+  })
+
+  test('rejects Argon2id parameters below the minimum and outside the maximum', async () => {
+    const user = await createUser(server, 'kdf-bounds@example.com')
+    const put = (patch: Record<string, unknown>) =>
+      user.client.request(`/v1/stores/${user.storeId}/kdf-params`, {
+        method: 'PUT',
+        headers: authHeaders(user.token),
+        body: JSON.stringify({ ...params, ...patch }),
+      })
+    expect((await put({ m: 19_455 })).status).toBe(400)
+    expect((await put({ t: 1 })).status).toBe(400)
+    expect((await put({ p: 0 })).status).toBe(400)
+    expect((await put({ m: 4_000_001 })).status).toBe(400)
+    expect((await put({ t: 101 })).status).toBe(400)
+    expect((await put({ p: 65 })).status).toBe(400)
+    // The minimum is accepted.
+    const accepted = await user.client.json<{ generation: number }>(
+      `/v1/stores/${user.storeId}/kdf-params`,
+      {
+        method: 'PUT',
+        headers: authHeaders(user.token),
+        body: JSON.stringify({ ...params, m: 19_456, t: 2, p: 1 }),
+      },
+    )
+    expect(accepted.generation).toBe(1)
   })
 
   test('a second device of the same user sees the same parameters', async () => {

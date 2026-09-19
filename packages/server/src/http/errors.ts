@@ -33,6 +33,11 @@ export class HttpError extends Error {
 export const unauthenticated = (message = 'sign in or present a device token') =>
   new HttpError(401, 'unauthenticated', message)
 
+export const tokenExpired = () =>
+  new HttpError(401, 'unauthenticated', 'device token has expired; enroll the device again', {
+    reason: 'token_expired',
+  })
+
 export const forbidden = (message = 'not allowed for this account') =>
   new HttpError(403, 'forbidden', message)
 

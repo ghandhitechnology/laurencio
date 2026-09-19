@@ -16,7 +16,7 @@ import { parseParam, readJson } from '../http/parse'
 import { assertWithinQuota, limitsFor } from '../quota'
 import { enforceRateLimit } from '../rate'
 import type { FsBlobStore } from '../storage'
-import { blobKey } from '../storage/types'
+import { blobKey, sha256Hex } from '../storage/types'
 
 /** Short-lived links: the client uploads or downloads immediately. */
 export const PRESIGN_TTL_SECONDS = 10 * 60
@@ -54,6 +54,8 @@ export function createBlobRoutes(deps: RouteDeps): Hono<AppBindings> {
       })
     }
     if (!existing) {
+      // Optimistic only: the row is a storage registry for GC and size checks,
+      // not a quota reservation, so an abandoned upload never consumes quota.
       await assertWithinQuota(deps.db, storeId, limitsFor(deps.env, store), {
         bytes: size,
         blobs: 1,
@@ -64,6 +66,8 @@ export function createBlobRoutes(deps: RouteDeps): Hono<AppBindings> {
     const upload = await deps.storage.presignPut({
       key: blobKey(storeId, blobId),
       size,
+      // Blob ids are the sha256 of the ciphertext; uploads must prove it.
+      sha256: blobId,
       expiresInSeconds: PRESIGN_TTL_SECONDS,
     })
     const response = PresignResponse.parse({
@@ -116,8 +120,9 @@ export function createLocalBlobRoutes(
 
   app.put('/local-blob/put', async (c) => {
     const query = localQuery(c.req.query('key'), c.req.query('expires'), c.req.query('sig'))
-    if (!query) throw badRequest('key, expires, and sig are required')
-    const verdict = storage.verify('put', query.key, query.expires, query.sig)
+    const sha256 = c.req.query('sha256')
+    if (!query || !sha256) throw badRequest('key, expires, sig, and sha256 are required')
+    const verdict = storage.verifyPut({ ...query, sha256 })
     if (!verdict.ok) throw badRequest(verdict.reason)
     const declared = Number(c.req.query('size'))
     if (!Number.isInteger(declared) || declared < 0 || declared > maxBlobBytes) {
@@ -130,14 +135,22 @@ export function createLocalBlobRoutes(
         received: body.byteLength,
       })
     }
-    await storage.localPut(query.key, body)
+    const actual = sha256Hex(body)
+    if (actual !== sha256) {
+      throw badRequest('uploaded bytes do not match the presigned checksum', {
+        reason: 'blob_checksum_mismatch',
+        expected: sha256,
+        received: actual,
+      })
+    }
+    await storage.localPut(query.key, body, sha256)
     return c.body(null, 200)
   })
 
   app.get('/local-blob/get', async (c) => {
     const query = localQuery(c.req.query('key'), c.req.query('expires'), c.req.query('sig'))
     if (!query) throw badRequest('key, expires, and sig are required')
-    const verdict = storage.verify('get', query.key, query.expires, query.sig)
+    const verdict = storage.verifyGet(query)
     if (!verdict.ok) throw badRequest(verdict.reason)
     const bytes = await storage.localGet(query.key)
     if (!bytes) throw notFound('unknown object')

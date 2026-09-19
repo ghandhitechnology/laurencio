@@ -1,6 +1,15 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { sql } from 'drizzle-orm'
-import { claimDeviceCode, createClient, createTestServer, enrollDevice, signInDev } from './helpers'
+import { eq, sql } from 'drizzle-orm'
+import { deviceTokens } from '../src/db/schema'
+import { hashToken, TOKEN_TTL_MS } from '../src/devices'
+import {
+  authHeaders,
+  claimDeviceCode,
+  createClient,
+  createTestServer,
+  enrollDevice,
+  signInDev,
+} from './helpers'
 
 const server = await createTestServer()
 afterAll(() => server.close())
@@ -211,5 +220,38 @@ describe('revoked device tokens', () => {
       headers: { authorization: 'Bearer lrn_not-a-real-token' },
     })
     expect(response.status).toBe(401)
+  })
+})
+
+describe('device token lifetime', () => {
+  test('mints a 90-day token and records last use', async () => {
+    const client = createClient(server.app)
+    const device = await enrollDevice(client, { name: 'expiring' })
+    const rows = await server.db
+      .select()
+      .from(deviceTokens)
+      .where(eq(deviceTokens.tokenHash, hashToken(device.token)))
+    expect(rows).toHaveLength(1)
+    const expiresAt = rows[0]?.expiresAt
+    const remaining = (expiresAt?.getTime() ?? 0) - Date.now()
+    expect(remaining).toBeGreaterThan(TOKEN_TTL_MS - 60_000)
+    expect(remaining).toBeLessThanOrEqual(TOKEN_TTL_MS)
+    // Enrollment ends with a /v1/me call, which touches the token.
+    expect(rows[0]?.lastUsedAt).not.toBeNull()
+  })
+
+  test('an expired token fails with the expired error, not a crash', async () => {
+    const client = createClient(server.app)
+    const device = await enrollDevice(client, { name: 'expired' })
+    await server.db
+      .update(deviceTokens)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(deviceTokens.tokenHash, hashToken(device.token)))
+
+    const response = await client.request('/v1/me', { headers: authHeaders(device.token) })
+    expect(response.status).toBe(401)
+    expect(await response.json()).toMatchObject({
+      error: { code: 'unauthenticated', details: { reason: 'token_expired' } },
+    })
   })
 })

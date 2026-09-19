@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { auditLog, devices, stores, users } from '../src/db/schema'
+import { safeNext } from '../src/web/routes'
 import {
   authHeaders,
   claimDeviceCode,
@@ -269,6 +270,92 @@ describe('development sign-in safety', () => {
       body: JSON.stringify({ email: user.email, password: DEV_PASSWORD }),
     })
     expect(right.status).toBe(200)
+  })
+})
+
+describe('web hardening', () => {
+  test('safeNext only keeps same-origin relative paths', () => {
+    expect(safeNext('/account/devices')).toBe('/account/devices')
+    expect(safeNext('/account/devices?flash=ok')).toBe('/account/devices?flash=ok')
+    expect(safeNext('https://evil.example/steal')).toBe('/account/devices')
+    expect(safeNext('//evil.example/steal')).toBe('/account/devices')
+    expect(safeNext('/\\evil.example')).toBe('/account/devices')
+    expect(safeNext('/%5Cevil.example')).toBe('/account/devices')
+    expect(safeNext('/%2F%2Fevil.example')).toBe('/account/devices')
+    expect(safeNext('/%252F%252Fevil.example')).toBe('/account/devices')
+    expect(safeNext('/path\u0000evil')).toBe('/account/devices')
+    expect(safeNext(undefined)).toBe('/account/devices')
+  })
+
+  test('a backslash next value is not followed after sign-in', async () => {
+    const client = createClient(server.app)
+    const response = await client.request('/sign-in/dev', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        email: 'web-next@example.com',
+        next: '/\\evil.example',
+      }).toString(),
+    })
+    expect(response.status).toBe(303)
+    expect(response.headers.get('location')).toBe('/account/devices')
+  })
+
+  test('rejects a cross-origin form POST and a missing Origin', async () => {
+    const client = createClient(server.app)
+    const crossOrigin = await client.request('/sign-in/dev', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        origin: 'http://evil.example',
+      },
+      body: new URLSearchParams({ email: 'csrf@example.com' }).toString(),
+    })
+    expect(crossOrigin.status).toBe(403)
+    expect(await crossOrigin.json()).toMatchObject({ error: { code: 'forbidden' } })
+
+    const missing = await client.request('/sign-in/dev', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', origin: '' },
+      body: new URLSearchParams({ email: 'csrf@example.com' }).toString(),
+    })
+    expect(missing.status).toBe(403)
+  })
+
+  test('answers HTML with a CSP and frame denial', async () => {
+    const client = createClient(server.app)
+    const response = await client.expectStatus('/sign-in', 200)
+    const csp = response.headers.get('content-security-policy') ?? ''
+    expect(csp).toContain("default-src 'none'")
+    expect(csp).toContain("frame-ancestors 'none'")
+    expect(response.headers.get('x-frame-options')).toBe('DENY')
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+  })
+
+  test('rate limits repeated device approval attempts', async () => {
+    const limited = await createTestServer({
+      DEVICE_APPROVAL_RATE_CAPACITY: '2',
+      DEVICE_APPROVAL_RATE_REFILL_PER_SECOND: '0',
+    })
+    try {
+      const client = createClient(limited.app)
+      await signInDev(client, 'web-limited@example.com')
+      const attempt = () =>
+        client.request('/device', {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ user_code: 'ZZZZZZZZ' }).toString(),
+        })
+      expect((await attempt()).status).toBe(400)
+      expect((await attempt()).status).toBe(400)
+      const blocked = await attempt()
+      expect(blocked.status).toBe(429)
+      expect(await blocked.json()).toMatchObject({
+        error: { code: 'rate_limited', details: { retryAfterSeconds: 60 } },
+      })
+    } finally {
+      await limited.close()
+    }
   })
 })
 
