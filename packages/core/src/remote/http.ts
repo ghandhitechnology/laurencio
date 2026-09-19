@@ -349,9 +349,12 @@ export function createHttpRemote(options: HttpRemoteOptions): HttpRemote {
       all.push(...fetched)
     }
     const seen = new Set<string>()
-    const ordered = all
-      .reverse()
-      .filter((revision) => (seen.has(revision.id) ? false : (seen.add(revision.id), true)))
+    const ordered: RevisionMeta[] = []
+    for (const revision of all) {
+      if (seen.has(revision.id)) continue
+      seen.add(revision.id)
+      ordered.push(revision)
+    }
     const allIds = new Set(ordered.map((revision) => revision.id as string))
     const parentIds = new Set<string>()
     for (const revision of ordered) {
