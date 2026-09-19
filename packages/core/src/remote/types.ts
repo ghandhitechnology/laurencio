@@ -95,6 +95,8 @@ function parseManifestEntry(value: unknown): Manifest['entries'][number] {
   if (typeof record.surfaceId !== 'string') throw new Error('manifest entry surfaceId is missing')
   if (typeof record.path !== 'string') throw new Error('manifest entry path is missing')
   const kind = record.kind === 'tombstone' ? 'tombstone' : 'file'
+  // Older manifests carry no policy; anything that reached a manifest was syncable then.
+  const policy = record.policy === 'opt-in' ? 'opt-in' : 'sync'
   if (typeof record.hash !== 'string') throw new Error('manifest entry hash is missing')
   if (typeof record.size !== 'number') throw new Error('manifest entry size is missing')
   if (typeof record.mode !== 'number') throw new Error('manifest entry mode is missing')
@@ -102,6 +104,7 @@ function parseManifestEntry(value: unknown): Manifest['entries'][number] {
     surfaceId: record.surfaceId as Manifest['entries'][number]['surfaceId'],
     path: record.path,
     kind,
+    policy,
     hash: record.hash,
     size: record.size,
     mode: record.mode,

@@ -389,3 +389,21 @@ export function memoryIdentityKey(identity: MemoryIdentity): string {
   if (identity.repoRelativePath === '') return base
   return `${base}-${identity.repoRelativePath.replace(/[^A-Za-z0-9._-]+/g, '_')}`
 }
+
+/** Claude's project slug: every non-alphanumeric character in a path becomes `-`. */
+export function claudeSlug(value: string): string {
+  return value.replace(/[^A-Za-z0-9]/g, '-')
+}
+
+/**
+ * Re-key a `projects/<slug>/memory` tree when no git metadata is available. The
+ * home-relative slug is hashed, so the same project keys identically on a machine with a
+ * different username while the absolute path never reaches storage. Callers with git
+ * information should prefer {@link claudeSlugRekey}.
+ */
+export function claudeMemoryRekey(slug: string, home: string): MemoryRekey {
+  const prefix = claudeSlug(home)
+  const relative = slug.startsWith(`${prefix}-`) ? slug.slice(prefix.length + 1) : slug
+  const identity: MemoryIdentity = { repoRelativePath: '', fallbackHash: sha256Hex(relative) }
+  return { slug, identity, storePrefix: `memory/${memoryIdentityKey(identity)}` }
+}

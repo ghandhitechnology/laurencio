@@ -191,11 +191,16 @@ describe('claude surface map', () => {
 
     const memory = entryFor(result, home.path('.claude/projects/-Users-test-repo/memory/MEMORY.md'))
     expect(memory.classification).toBe('opt-in')
-    expect(memory.storePath).toBe(`${CONFIG_ROOT}/projects/-Users-test-repo/memory/MEMORY.md`)
+    // The slug is re-keyed by home-relative identity, so no username or project path lands in storage.
+    expect(memory.storePath).toMatch(
+      /^\$\{CLAUDE_CONFIG_DIR\}\/projects\/memory\/path-[0-9a-f]{32}\/MEMORY\.md$/,
+    )
     expect(memory.hash).toMatch(/^[0-9a-f]{64}$/)
 
     const manifestPaths = result.manifest.entries.map((entry) => entry.path)
-    expect(manifestPaths).toContain(`${CONFIG_ROOT}/projects/-Users-test-repo/memory/MEMORY.md`)
+    expect(manifestPaths.some((path) => path.startsWith(`${CONFIG_ROOT}/projects/memory/`))).toBe(
+      true,
+    )
     expect(manifestPaths.some((path) => path.endsWith('.jsonl'))).toBe(false)
     home.cleanup()
   })

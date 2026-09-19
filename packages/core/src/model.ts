@@ -1,11 +1,17 @@
 import type { BlobId, BlobRef, DeviceId, RevisionId, SurfaceId } from '@laurencio/protocol'
-import type { HarnessId, Platform } from './types'
+import type { HarnessId, Platform, SyncPolicy } from './types'
 
 /** A single tracked path inside a surface. `hash` is over the plaintext projection. */
 export interface ManifestEntry {
   surfaceId: SurfaceId
   path: string
   kind: 'file' | 'tombstone'
+  /**
+   * The effective per-file policy the scan applied, after tree `filePolicy` overrides.
+   * The engine filters on this rather than the surface policy, so a sync override inside
+   * a `never` tree (Codex profile files) still travels.
+   */
+  policy: SyncPolicy
   hash: string
   size: number
   mode: number

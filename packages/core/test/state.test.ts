@@ -36,6 +36,7 @@ function entry(overrides: Partial<ManifestEntry> = {}): ManifestEntry {
     surfaceId,
     path: '$HOME/.claude/settings.json',
     kind: 'file',
+    policy: 'sync',
     hash: 'h1',
     size: 10,
     mode: 0o644,
