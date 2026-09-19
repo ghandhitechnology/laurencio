@@ -70,7 +70,8 @@ function defaultWarn(message: string): void {
   process.emitWarning(message, { code: 'LAURENCIO_KEY_CACHE' })
 }
 
-async function resolveKeychainStore(): Promise<CredentialStore> {
+/** Resolves the OS keychain backend. Throws when the native store is unavailable. */
+export async function resolveKeychainStore(): Promise<CredentialStore> {
   const keyring = (await import('@napi-rs/keyring')) as {
     Entry: new (
       service: string,
