@@ -20,7 +20,7 @@ import { type CredentialStore, openKeyCache } from '../packages/core/src/crypto/
 import { rotateStore } from '../packages/core/src/crypto/rotate'
 import { createHttpRemote, ProtocolVersionError } from '../packages/core/src/remote/http'
 import type { Remote } from '../packages/core/src/remote/types'
-import { parseManifest } from '../packages/core/src/remote/types'
+import { KdfGenerationConflictError, parseManifest } from '../packages/core/src/remote/types'
 import { SyncState, stateDbPath } from '../packages/core/src/state'
 import {
   type DeviceLoginResult,
@@ -405,7 +405,7 @@ async function main(): Promise<void> {
         authorization: `Bearer ${loginA.token}`,
         'x-laurencio-protocol-version': String(PROTOCOL_VERSION),
       },
-      body: JSON.stringify(kdfParamsToWire(KDF, NOW)),
+      body: JSON.stringify({ ...kdfParamsToWire(KDF, NOW), generation: null }),
     })
     check('kdf parameters are published', kdfResponse.ok, String(kdfResponse.status))
 
@@ -644,6 +644,23 @@ async function main(): Promise<void> {
       epoch: 1,
       calibrate: () => ROTATED_KDF,
     })
+    let staleRejected = false
+    try {
+      await rotateRemote.putKdfParams({
+        params: rotated.epoch.kdf,
+        calibratedAt: rotated.epoch.createdAt,
+        expectedGeneration: 2,
+      })
+    } catch (error) {
+      staleRejected = error instanceof KdfGenerationConflictError && error.actual === 1
+    }
+    check('a stale KDF generation is rejected with 409', staleRejected)
+    const afterStale = await rotateRemote.getKdfParams()
+    check(
+      'the rejected write changed nothing',
+      afterStale?.generation === 1 && afterStale.kdf.salt === KDF.salt,
+    )
+
     const published = await rotateRemote.putKdfParams({
       params: rotated.epoch.kdf,
       calibratedAt: rotated.epoch.createdAt,

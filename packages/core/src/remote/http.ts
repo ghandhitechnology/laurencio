@@ -25,6 +25,8 @@ import {
   DeviceListResponse,
   ErrorResponse,
   KdfResponse,
+  KdfWriteRequest,
+  KdfWriteResponse,
   MeResponse,
   PROTOCOL_VERSION,
   PresignResponse,
@@ -486,16 +488,15 @@ export function createHttpRemote(options: HttpRemoteOptions): HttpRemote {
   }
 
   const putKdfParams = async (input: PublishKdfParamsInput): Promise<PublishedKdfParams> => {
-    let wire: ReturnType<typeof kdfParamsToWire>
+    let request: KdfWriteRequest
     try {
-      wire = kdfParamsToWire(input.params, input.calibratedAt ?? new Date().toISOString())
+      request = KdfWriteRequest.parse({
+        ...kdfParamsToWire(input.params, input.calibratedAt ?? new Date().toISOString()),
+        generation: input.expectedGeneration ?? null,
+      })
     } catch (error) {
       throw new KdfValidationError(reasonFor(error))
     }
-    const request =
-      input.expectedGeneration === undefined
-        ? wire
-        : { ...wire, generation: input.expectedGeneration }
     let body: unknown
     try {
       body = await apiJson<unknown>('kdf publish', `/v1/stores/${storeId}/kdf-params`, {
@@ -514,16 +515,10 @@ export function createHttpRemote(options: HttpRemoteOptions): HttpRemote {
       throw error
     }
     assertServerProtocol(body)
-    const parsed = parseWire(KdfResponse, body, 'kdf publish response')
-    if (parsed.kdf === null) {
-      throw new RemoteError(
-        'corrupt-store',
-        'the server accepted KDF parameters but published none',
-      )
-    }
+    const parsed = parseWire(KdfWriteResponse, body, 'kdf publish response')
     return {
       kdf: kdfParamsFromWire(parsed.kdf),
-      generation: parsed.generation ?? (input.expectedGeneration ?? 0) + 1,
+      generation: parsed.generation,
     }
   }
 

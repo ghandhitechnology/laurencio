@@ -92,6 +92,8 @@ back, or generated when absent. Client requests must send
 
 ## 8. Operational notes
 
+KDF writes are compare-and-set: a PUT carries the generation the writer read, `null` for the first write, and a stale one comes back as `409` with the current generation in `details`.
+
 The rate limiter is in-memory and per instance. The app runs a single Railway
 instance today; a second instance would double the configured burst, not the
 long-term rate.

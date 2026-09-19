@@ -9,7 +9,7 @@ import {
   ProtocolVersionError,
   QuotaExceededError,
 } from '../src/remote/http'
-import { KdfGenerationConflictError, RemoteError } from '../src/remote/types'
+import { RemoteError } from '../src/remote/types'
 
 const baseUrl = 'http://server.test'
 const storageUrl = 'http://storage.test'
@@ -140,7 +140,11 @@ describe('HttpRemote', () => {
     })
     await expect(
       makeRemote(conflict).putKdfParams({ params: kdf, expectedGeneration: 1 }),
-    ).rejects.toBeInstanceOf(KdfGenerationConflictError)
+    ).rejects.toMatchObject({
+      name: 'KdfGenerationConflictError',
+      expected: 1,
+      actual: 4,
+    })
 
     const invalid = makeFetch({
       'PUT /v1/stores/00000000000000000000000001/kdf-params': () =>
@@ -150,6 +154,19 @@ describe('HttpRemote', () => {
       name: 'KdfValidationError',
       message: expect.stringContaining('m must be at least 19456'),
     })
+  })
+
+  test('sends a null generation when the caller has none, as a first write', async () => {
+    const server = makeFetch({
+      'PUT /v1/stores/00000000000000000000000001/kdf-params': () =>
+        json({ protocolVersion: 1, kdf: wireKdf, generation: 1 }),
+    })
+    expect(await makeRemote(server).putKdfParams({ params: kdf })).toEqual({
+      kdf,
+      generation: 1,
+    })
+    const body = JSON.parse(server.calls[0]?.body ?? '{}') as Record<string, unknown>
+    expect(body.generation).toBeNull()
   })
 
   test('returns null kdf before enrollment', async () => {

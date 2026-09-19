@@ -29,11 +29,16 @@ describe('KDF parameters', () => {
 
   test('are written once and read back unchanged', async () => {
     const user = await createUser(server, 'kdf-write@example.com')
-    const written = await user.client.json<{ kdf: typeof params }>(
+    const written = await user.client.json<{ kdf: typeof params; generation: number }>(
       `/v1/stores/${user.storeId}/kdf-params`,
-      { method: 'PUT', headers: authHeaders(user.token), body: JSON.stringify(params) },
+      {
+        method: 'PUT',
+        headers: authHeaders(user.token),
+        body: JSON.stringify({ ...params, generation: null }),
+      },
     )
     expect(written.kdf).toEqual(params)
+    expect(written.generation).toBe(1)
 
     const read = await user.client.json<{ kdf: typeof params }>(
       `/v1/stores/${user.storeId}/kdf-params`,
@@ -42,19 +47,82 @@ describe('KDF parameters', () => {
     expect(read.kdf).toEqual(params)
   })
 
+  test('the first write requires a null generation', async () => {
+    const user = await createUser(server, 'kdf-first-write@example.com')
+    const premature = await user.client.request(`/v1/stores/${user.storeId}/kdf-params`, {
+      method: 'PUT',
+      headers: authHeaders(user.token),
+      body: JSON.stringify({ ...params, generation: 1 }),
+    })
+    expect(premature.status).toBe(409)
+    const body = (await premature.json()) as {
+      error: { code: string; details?: { generation: number | null } }
+    }
+    expect(body.error.code).toBe('conflict')
+    expect(body.error.details?.generation).toBeNull()
+  })
+
+  test('a stale generation is rejected with the current generation and changes nothing', async () => {
+    const user = await createUser(server, 'kdf-stale@example.com')
+    await user.client.expectStatus(`/v1/stores/${user.storeId}/kdf-params`, 200, {
+      method: 'PUT',
+      headers: authHeaders(user.token),
+      body: JSON.stringify({ ...params, generation: null }),
+    })
+    const rotated = { ...params, salt: 'b3RoZXItc2FsdC1vdGhlcg==' }
+    const stale = await user.client.request(`/v1/stores/${user.storeId}/kdf-params`, {
+      method: 'PUT',
+      headers: authHeaders(user.token),
+      body: JSON.stringify({ ...rotated, generation: 2 }),
+    })
+    expect(stale.status).toBe(409)
+    const conflictBody = (await stale.json()) as {
+      error: { code: string; details?: { generation: number } }
+    }
+    expect(conflictBody.error.code).toBe('conflict')
+    expect(conflictBody.error.details?.generation).toBe(1)
+
+    // Null is stale too once a row exists.
+    const nullStale = await user.client.request(`/v1/stores/${user.storeId}/kdf-params`, {
+      method: 'PUT',
+      headers: authHeaders(user.token),
+      body: JSON.stringify({ ...rotated, generation: null }),
+    })
+    expect(nullStale.status).toBe(409)
+
+    const read = await user.client.json<{ kdf: typeof params; generation: number }>(
+      `/v1/stores/${user.storeId}/kdf-params`,
+      { headers: authHeaders(user.token) },
+    )
+    expect(read.kdf).toEqual(params)
+    expect(read.generation).toBe(1)
+    const versions = await server.db
+      .select()
+      .from(kdfParamVersions)
+      .where(eq(kdfParamVersions.storeId, user.storeId))
+    expect(versions).toHaveLength(0)
+  })
+
   test('a repeat write with identical values is a no-op', async () => {
     const user = await createUser(server, 'kdf-idempotent@example.com')
     await user.client.expectStatus(`/v1/stores/${user.storeId}/kdf-params`, 200, {
       method: 'PUT',
       headers: authHeaders(user.token),
-      body: JSON.stringify(params),
+      body: JSON.stringify({ ...params, generation: null }),
     })
     const repeat = await user.client.expectStatus(`/v1/stores/${user.storeId}/kdf-params`, 200, {
       method: 'PUT',
       headers: authHeaders(user.token),
-      body: JSON.stringify(params),
+      body: JSON.stringify({ ...params, generation: 1 }),
     })
     expect(await repeat.json()).toMatchObject({ kdf: params, generation: 1 })
+    // A retried first write still carries null and must not conflict.
+    const retried = await user.client.expectStatus(`/v1/stores/${user.storeId}/kdf-params`, 200, {
+      method: 'PUT',
+      headers: authHeaders(user.token),
+      body: JSON.stringify({ ...params, generation: null }),
+    })
+    expect(await retried.json()).toMatchObject({ kdf: params, generation: 1 })
   })
 
   test('a changed parameter set publishes a new generation and keeps the old one', async () => {
@@ -62,13 +130,21 @@ describe('KDF parameters', () => {
     const rotated = { ...params, salt: 'b3RoZXItc2FsdC1vdGhlcg==' }
     const first = await user.client.json<{ generation: number; kdf: typeof params }>(
       `/v1/stores/${user.storeId}/kdf-params`,
-      { method: 'PUT', headers: authHeaders(user.token), body: JSON.stringify(params) },
+      {
+        method: 'PUT',
+        headers: authHeaders(user.token),
+        body: JSON.stringify({ ...params, generation: null }),
+      },
     )
     expect(first.generation).toBe(1)
 
     const second = await user.client.json<{ generation: number; kdf: typeof params }>(
       `/v1/stores/${user.storeId}/kdf-params`,
-      { method: 'PUT', headers: authHeaders(user.token), body: JSON.stringify(rotated) },
+      {
+        method: 'PUT',
+        headers: authHeaders(user.token),
+        body: JSON.stringify({ ...rotated, generation: 1 }),
+      },
     )
     expect(second.generation).toBe(2)
     expect(second.kdf).toEqual(rotated)
@@ -120,7 +196,7 @@ describe('KDF parameters', () => {
       user.client.request(`/v1/stores/${user.storeId}/kdf-params`, {
         method: 'PUT',
         headers: authHeaders(user.token),
-        body: JSON.stringify({ ...params, ...patch }),
+        body: JSON.stringify({ ...params, generation: null, ...patch }),
       })
     expect((await put({ m: 19_455 })).status).toBe(400)
     expect((await put({ t: 1 })).status).toBe(400)
@@ -134,7 +210,7 @@ describe('KDF parameters', () => {
       {
         method: 'PUT',
         headers: authHeaders(user.token),
-        body: JSON.stringify({ ...params, m: 19_456, t: 2, p: 1 }),
+        body: JSON.stringify({ ...params, m: 19_456, t: 2, p: 1, generation: null }),
       },
     )
     expect(accepted.generation).toBe(1)
@@ -145,7 +221,7 @@ describe('KDF parameters', () => {
     await user.client.expectStatus(`/v1/stores/${user.storeId}/kdf-params`, 200, {
       method: 'PUT',
       headers: authHeaders(user.token),
-      body: JSON.stringify(params),
+      body: JSON.stringify({ ...params, generation: null }),
     })
     const second = await user.client.json<{ token: string }>('/v1/devices', {
       method: 'POST',
@@ -164,16 +240,23 @@ describe('KDF parameters', () => {
     const shortSalt = await user.client.request(`/v1/stores/${user.storeId}/kdf-params`, {
       method: 'PUT',
       headers: authHeaders(user.token),
-      body: JSON.stringify({ ...params, salt: 'short' }),
+      body: JSON.stringify({ ...params, salt: 'short', generation: null }),
     })
     expect(shortSalt.status).toBe(400)
 
     const absurd = await user.client.request(`/v1/stores/${user.storeId}/kdf-params`, {
       method: 'PUT',
       headers: authHeaders(user.token),
-      body: JSON.stringify({ ...params, m: 999_999_999 }),
+      body: JSON.stringify({ ...params, m: 999_999_999, generation: null }),
     })
     expect(absurd.status).toBe(400)
+
+    const missingGeneration = await user.client.request(`/v1/stores/${user.storeId}/kdf-params`, {
+      method: 'PUT',
+      headers: authHeaders(user.token),
+      body: JSON.stringify(params),
+    })
+    expect(missingGeneration.status).toBe(400)
 
     const missing = await user.client.request(`/v1/stores/${user.storeId}/kdf-params`, {
       method: 'PUT',
@@ -193,7 +276,7 @@ describe('KDF parameters', () => {
     const write = await bob.client.request(`/v1/stores/${alice.storeId}/kdf-params`, {
       method: 'PUT',
       headers: authHeaders(bob.token),
-      body: JSON.stringify(params),
+      body: JSON.stringify({ ...params, generation: null }),
     })
     expect(write.status).toBe(403)
 

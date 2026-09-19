@@ -1,4 +1,10 @@
-import { KdfParams, PROTOCOL_VERSION, StoreId } from '@laurencio/protocol'
+import {
+  type KdfParams,
+  KdfWriteRequest,
+  KdfWriteResponse,
+  PROTOCOL_VERSION,
+  StoreId,
+} from '@laurencio/protocol'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppBindings, RouteDeps } from '../context'
@@ -6,7 +12,7 @@ import { rateLimitKey, requirePrincipal } from '../context'
 import type { Database } from '../db/client'
 import { kdfParams, kdfParamVersions } from '../db/schema'
 import { recordAudit, requireStore } from '../devices'
-import { badRequest, notFound } from '../http/errors'
+import { badRequest, conflict, notFound } from '../http/errors'
 import { parseParam, readJson } from '../http/parse'
 import { enforceRateLimit } from '../rate'
 import { type KdfRowFields, toKdfParams } from './me'
@@ -22,7 +28,7 @@ const MAX_T = 100
 const MAX_P = 64
 
 /** Bounds keep a malicious device from poisoning enrollment with junk costs. */
-const KdfWriteRequest = KdfParams.refine(
+const KdfWriteBody = KdfWriteRequest.refine(
   (value) => value.m >= MIN_M && value.m <= MAX_M,
   `m must be between ${MIN_M} and ${MAX_M} KiB`,
 )
@@ -81,10 +87,13 @@ export function createKdfRoutes(deps: RouteDeps): Hono<AppBindings> {
     enforceRateLimit(deps.rateLimiter, `kdf:${rateLimitKey(principal)}`)
     const storeId = parseParam(StoreId, c.req.param('id'), 'store id')
     await requireStore(deps.db, principal.userId, storeId)
-    const body = KdfWriteRequest.safeParse(await readJson(c))
+    const body = KdfWriteBody.safeParse(await readJson(c))
     if (!body.success) throw badRequest('invalid KDF parameters', { issues: body.error.issues })
 
     const result = await writeLatest(deps.db, storeId, body.data)
+    if (result.kind === 'conflict') {
+      throw conflict('store KDF generation changed', { generation: result.generation })
+    }
     if (result.rotated) {
       await recordAudit(deps.db, {
         actorUserId: principal.userId,
@@ -107,11 +116,13 @@ export function createKdfRoutes(deps: RouteDeps): Hono<AppBindings> {
         meta: { generation: result.row.generation, m: body.data.m, t: body.data.t, p: body.data.p },
       })
     }
-    return c.json({
-      protocolVersion: PROTOCOL_VERSION,
-      kdf: toKdfParams(result.row),
-      generation: result.row.generation,
-    })
+    return c.json(
+      KdfWriteResponse.parse({
+        protocolVersion: PROTOCOL_VERSION,
+        kdf: toKdfParams(result.row),
+        generation: result.row.generation,
+      }),
+    )
   })
 
   return app
@@ -141,15 +152,26 @@ interface WriteResult {
   rotated: boolean
 }
 
-/** Retries the compare-and-set so two concurrent rotations cannot lose a version. */
+type WriteOutcome =
+  | ({ kind: 'written' } & WriteResult)
+  | { kind: 'conflict'; generation: number | null }
+
+/**
+ * Compare-and-set on the generation the writer read. Identical parameters are
+ * a no-op, so a retry of a write that already landed still succeeds. The
+ * three-attempt loop retries a lost race before reporting a conflict.
+ */
 async function writeLatest(
   db: Database,
   storeId: string,
-  incoming: KdfParams,
-): Promise<WriteResult> {
+  incoming: KdfWriteRequest,
+): Promise<WriteOutcome> {
+  const expected = incoming.generation
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const existing = await readKdf(db, storeId)
     if (!existing) {
+      // Null means first write; any other generation expected a row.
+      if (expected !== null) return { kind: 'conflict', generation: null }
       await db
         .insert(kdfParams)
         .values({
@@ -165,12 +187,19 @@ async function writeLatest(
         .onConflictDoNothing()
       const stored = await readKdf(db, storeId)
       if (!stored) throw new Error('kdf parameters vanished between insert and read')
-      if (matches(stored, incoming)) return { row: stored, created: true, rotated: false }
+      if (matches(stored, incoming)) {
+        return { kind: 'written', row: stored, created: true, rotated: false }
+      }
       continue
     }
-    if (matches(existing, incoming)) return { row: existing, created: false, rotated: false }
+    if (matches(existing, incoming)) {
+      return { kind: 'written', row: existing, created: false, rotated: false }
+    }
+    if (existing.generation !== expected) {
+      return { kind: 'conflict', generation: existing.generation }
+    }
     const rotated = await rotate(db, existing, incoming)
-    if (rotated) return { row: rotated, created: false, rotated: true }
+    if (rotated) return { kind: 'written', row: rotated, created: false, rotated: true }
   }
   throw new Error('kdf rotation kept losing the compare-and-set race')
 }

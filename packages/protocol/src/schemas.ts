@@ -81,6 +81,20 @@ export const KdfResponse = z.object({
 })
 export type KdfResponse = z.infer<typeof KdfResponse>
 
+export const KdfWriteRequest = KdfParams.extend({
+  /** Generation the writer read; null asserts the store has no parameters yet. */
+  generation: z.number().int().positive().nullable(),
+})
+export type KdfWriteRequest = z.infer<typeof KdfWriteRequest>
+
+export const KdfWriteResponse = z.object({
+  protocolVersion: z.number().int().positive(),
+  kdf: KdfParams,
+  /** Generation the write produced. */
+  generation: z.number().int().positive(),
+})
+export type KdfWriteResponse = z.infer<typeof KdfWriteResponse>
+
 export const BlobRef = z.object({
   id: BlobId,
   size: z.number().int().nonnegative(),
