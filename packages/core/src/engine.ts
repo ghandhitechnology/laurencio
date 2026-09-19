@@ -31,7 +31,7 @@ import { parseLocalBlocks, reinsertLocalBlocks, stripLocalBlocks } from './marke
 import { merge } from './merge'
 import {
   ConflictLedger,
-  conflictRecord,
+  conflictStoreRecord,
   createConflictArtifact,
   isConflictCopyPath,
 } from './merge/conflict'
@@ -48,7 +48,7 @@ import type {
 import { expand, type TokenEnv } from './paths'
 import { QuiescenceGate, type QuiescenceOptions } from './quiescence'
 import type { Remote } from './remote/types'
-import { parseManifest } from './remote/types'
+import { parseManifest, StaleParentsError } from './remote/types'
 import { type ScannedEntry, scan } from './scan'
 import { scanFiles } from './secrets/scan'
 import { acquireLock, releaseLock, type SyncState } from './state'
@@ -252,18 +252,41 @@ export interface SyncOptions {
 
 export const CONFLICT_LEDGER_META_KEY = 'conflict_ledger'
 export const MAX_MERGE_ATTEMPTS = 3
+/** Bounded re-pull/re-merge cycles when the remote head advances mid-run. */
+export const MAX_SYNC_ATTEMPTS = 3
+
+/** A store with several incomparable heads the engine cannot merge safely. */
+export class RemoteForkError extends Error {
+  readonly heads: readonly RevisionId[]
+  readonly storePaths: readonly string[]
+
+  constructor(heads: readonly RevisionId[], storePaths: readonly string[] = []) {
+    super(`remote store is forked across heads: ${heads.join(', ')}`)
+    this.name = 'RemoteForkError'
+    this.heads = heads
+    this.storePaths = storePaths
+  }
+}
 
 export async function sync(options: SyncOptions): Promise<SyncReport> {
   const now = options.now ?? (() => new Date())
   const createRevisionId = options.createRevisionId ?? (() => newId() as RevisionId)
   const home = options.ctx.home
 
-  options.state.reconcile()
-  acquireLock(home)
+  // The lock comes first: a second process must not reconcile a first
+  // process's journal, which would roll back writes that are still in flight.
+  const holder = acquireLock(home)
   try {
-    return await runSync(options, now, createRevisionId)
+    options.state.reconcile()
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await runSync(options, now, createRevisionId)
+      } catch (error) {
+        if (!(error instanceof StaleParentsError) || attempt >= MAX_SYNC_ATTEMPTS) throw error
+      }
+    }
   } finally {
-    releaseLock(home)
+    releaseLock(home, holder.pid, holder)
   }
 }
 
@@ -373,15 +396,25 @@ async function runSync(
   const baseRevisionId = state.getBaseRevision()
   const baseManifest = baseRevisionId === null ? null : state.getManifest(baseRevisionId)
   const revisionList = await remote.listRevisions()
-  const headId = revisionList.head
-  let remoteManifest: Manifest | null = null
-  if (headId !== null && headId !== baseRevisionId) {
-    remoteManifest = parseManifest(
-      JSON.parse(openText(key, 'manifest', await remote.getManifest(headId), manifestContext)),
-    )
-  } else if (headId !== null) {
-    remoteManifest = baseManifest
-  }
+  const headIds =
+    revisionList.heads.length > 0
+      ? [...revisionList.heads]
+      : revisionList.head === null
+        ? []
+        : [revisionList.head]
+  if (headIds.length > 4) throw new RemoteForkError(headIds)
+  const resolved = await resolveRemoteView({
+    headIds,
+    baseRevisionId,
+    baseManifest,
+    key,
+    remote,
+    manifestContext,
+    fileContext,
+    surfaces,
+  })
+  const remoteManifest = resolved.manifest
+  const headUploads = resolved.uploads
 
   const plan = computeSyncPlan({
     base: baseManifest,
@@ -447,11 +480,15 @@ async function runSync(
   const blocked: string[] = []
   const deferred: string[] = []
   const tombstones = new Set<string>()
-  const uploadedRefs = new Map<string, BlobRef>()
-  let uploaded = 0
+  // Hints queued by the previous run's deferrals. The scan just rediscovered
+  // what still needs work, so the rows are consumed instead of left to pile up.
+  state.drainPendingOps('retry')
+  const uploadedRefs = new Map<string, BlobRef>(headUploads)
+  let uploaded = headUploads.size
   let downloaded = 0
 
   const defer = (storePath: string, reason: string): void => {
+    if (deferred.includes(storePath)) return
     deferred.push(storePath)
     state.enqueueOp({
       kind: 'retry',
@@ -590,12 +627,17 @@ async function runSync(
       }
       const localText = readTextOrNull(declaredPath)
       if (localText === null) break
+      const localMtimeMs = current?.mtimeMs ?? before?.mtimeMs
       const result = merge(
         {
           strategy: surface.merge,
           base: baseText,
           local: localText,
           remote: remoteText,
+          ...(localMtimeMs !== undefined
+            ? { localTimestamp: new Date(localMtimeMs).toISOString() }
+            : {}),
+          ...(remoteManifest !== null ? { remoteTimestamp: remoteManifest.createdAt } : {}),
         },
         { markerBlocks: markerSurface(surface) },
       )
@@ -614,7 +656,7 @@ async function runSync(
             content: copy.content,
           })
         }
-        ledger.add(conflictRecord(copy, declaredPath))
+        ledger.add(conflictStoreRecord(file.storePath, copy))
         state.setMeta(CONFLICT_LEDGER_META_KEY, ledger.toJSON())
         conflicts.push(copy)
         if (await uploadLocalFile(file, declaredPath)) merged = true
@@ -763,22 +805,39 @@ async function runSync(
     downloaded,
   }
 
-  const headMeta = headId === null ? undefined : revisionList.revisions.at(-1)
+  // A deferred path whose remote side moved is unresolved work: committing now
+  // would either revert the remote edit or adopt a base the local copy does not
+  // match. Let the next run merge it first.
+  const unresolvedRemote = [...new Set(deferred)].some((storePath) => {
+    const remoteEntry = remoteByPath.get(storePath) ?? null
+    const baseEntry = baseByPath.get(storePath) ?? null
+    if (remoteEntry === null || baseEntry === null) return remoteEntry !== baseEntry
+    return !sameEntryContent(remoteEntry, baseEntry)
+  })
+  if (unresolvedRemote) return report
+
   const filesOnly = (entries: readonly ManifestEntry[]): ManifestEntry[] =>
     entries.filter((entry) => entry.kind === 'file')
   const remoteMatches =
     remoteManifest !== null && sameEntries(filesOnly(newEntries), filesOnly(remoteManifest.entries))
   const baseMatches =
     baseManifest !== null && sameEntries(filesOnly(newEntries), filesOnly(baseManifest.entries))
-  if (remoteMatches && headMeta !== undefined) {
-    state.saveManifest(revisionRecord(headMeta, 'base'), newEntries)
-    state.setBaseRevision(headMeta.id)
-    report.revisionId = headMeta.id
-    return report
-  }
-  if (baseMatches && headId === baseRevisionId) {
-    report.revisionId = baseRevisionId
-    return report
+  // A forked store is always resolved with a real merge revision, never by
+  // adopting one head and dropping the other.
+  if (headIds.length === 1) {
+    const headId = headIds[0] ?? null
+    const headMeta =
+      headId === null ? undefined : revisionList.revisions.find((r) => r.id === headId)
+    if (remoteMatches && headMeta !== undefined) {
+      state.saveManifest(revisionRecord(headMeta, 'base'), newEntries)
+      state.setBaseRevision(headMeta.id)
+      report.revisionId = headMeta.id
+      return report
+    }
+    if (baseMatches && headId === baseRevisionId) {
+      report.revisionId = baseRevisionId
+      return report
+    }
   }
 
   const revisionId = createRevisionId()
@@ -786,7 +845,7 @@ async function runSync(
   const manifest: Manifest = { revisionId, deviceId, createdAt, entries: newEntries }
   const sealed = sealText(key, 'manifest', JSON.stringify(manifest), manifestContext)
   await remote.putBlob({ blobId: sealed.blobId, bytes: sealed.bytes })
-  const parents = [headId, baseRevisionId]
+  const parents = [...headIds, baseRevisionId]
     .filter((value): value is RevisionId => value !== null && value !== revisionId)
     .filter((value, index, values) => values.indexOf(value) === index)
     .slice(0, 4)
@@ -802,6 +861,7 @@ async function runSync(
   const digest = surfaceDigest(newEntries)
   const result = await remote.commit({ revision, blobs, digest })
   if (!result.accepted) {
+    if (result.reason === 'stale-parents') throw new StaleParentsError(result.heads ?? [])
     throw new Error(`remote rejected the commit; missing blobs: ${result.missing.join(', ')}`)
   }
   state.saveManifest(
@@ -819,6 +879,144 @@ async function runSync(
   state.setBaseRevision(revisionId)
   report.revisionId = revisionId
   return report
+}
+
+interface RemoteView {
+  manifest: Manifest | null
+  /** Blobs sealed while folding a fork, keyed by plaintext hash. */
+  uploads: Map<string, BlobRef>
+}
+
+async function loadRemoteManifest(
+  remote: Remote,
+  key: KeyMaterial,
+  revisionId: RevisionId,
+  manifestContext: BlobContext,
+): Promise<Manifest> {
+  return parseManifest(
+    JSON.parse(openText(key, 'manifest', await remote.getManifest(revisionId), manifestContext)),
+  )
+}
+
+/**
+ * The remote side for planning. One head is just its manifest; several
+ * incomparable heads are folded with each surface's merge strategy, so a fork
+ * resolves instead of silently dropping one device's edit.
+ */
+async function resolveRemoteView(args: {
+  headIds: readonly RevisionId[]
+  baseRevisionId: RevisionId | null
+  baseManifest: Manifest | null
+  key: KeyMaterial
+  remote: Remote
+  manifestContext: BlobContext
+  fileContext: BlobContext
+  surfaces: Map<SurfaceId, Surface>
+}): Promise<RemoteView> {
+  const uploads = new Map<string, BlobRef>()
+  if (args.headIds.length === 0) return { manifest: null, uploads }
+  if (args.headIds.length === 1) {
+    const only = args.headIds[0]
+    if (only === undefined) return { manifest: null, uploads }
+    if (only === args.baseRevisionId) return { manifest: args.baseManifest, uploads }
+    return {
+      manifest: await loadRemoteManifest(args.remote, args.key, only, args.manifestContext),
+      uploads,
+    }
+  }
+
+  const baseByPath = entryMap(args.baseManifest)
+  let folded: Manifest | null = null
+  for (const headId of args.headIds) {
+    const manifest =
+      headId === args.baseRevisionId && args.baseManifest !== null
+        ? args.baseManifest
+        : await loadRemoteManifest(args.remote, args.key, headId, args.manifestContext)
+    if (folded === null) {
+      folded = { ...manifest, entries: [...manifest.entries] }
+      continue
+    }
+    const foldedManifest: Manifest = folded
+    const foldedByPath = entryMap(foldedManifest)
+    const unresolved: string[] = []
+    for (const entry of manifest.entries) {
+      const previous = foldedByPath.get(entry.path)
+      if (previous === undefined || sameEntryContent(previous, entry)) continue
+      if (
+        !isFile(previous) ||
+        !isFile(entry) ||
+        previous.blob === undefined ||
+        entry.blob === undefined
+      ) {
+        unresolved.push(entry.path)
+        continue
+      }
+      const surface = args.surfaces.get(entry.surfaceId) ?? args.surfaces.get(previous.surfaceId)
+      const baseEntry = baseByPath.get(entry.path) ?? null
+      const previousText = openText(
+        args.key,
+        'content',
+        await args.remote.getBlob(previous.blob.id),
+        args.fileContext,
+      )
+      const nextText = openText(
+        args.key,
+        'content',
+        await args.remote.getBlob(entry.blob.id),
+        args.fileContext,
+      )
+      const baseText =
+        isFile(baseEntry) && baseEntry.blob !== undefined
+          ? openText(
+              args.key,
+              'content',
+              await args.remote.getBlob(baseEntry.blob.id),
+              args.fileContext,
+            )
+          : ''
+      const result = merge(
+        {
+          strategy: surface?.merge ?? 'text3way',
+          base: baseText,
+          local: previousText,
+          remote: nextText,
+          localTimestamp: foldedManifest.createdAt,
+          remoteTimestamp: manifest.createdAt,
+        },
+        { markerBlocks: surface !== undefined && markerSurface(surface) },
+      )
+      if (result.status === 'unchanged') continue
+      if (result.status === 'conflicted') {
+        unresolved.push(entry.path)
+        continue
+      }
+      const hash = hashContent(result.content)
+      let ref = uploads.get(hash)
+      if (ref === undefined) {
+        const sealed = sealText(args.key, 'content', result.content, args.fileContext)
+        ref = await args.remote.putBlob({ blobId: sealed.blobId, bytes: sealed.bytes })
+        uploads.set(hash, ref)
+      }
+      foldedByPath.set(entry.path, {
+        ...previous,
+        hash,
+        size: Buffer.byteLength(result.content),
+        blob: ref,
+      })
+    }
+    if (unresolved.length > 0) throw new RemoteForkError(args.headIds, unresolved)
+    folded = {
+      ...foldedManifest,
+      entries: [...foldedByPath.values()].sort(
+        (a, b) => a.surfaceId.localeCompare(b.surfaceId) || a.path.localeCompare(b.path),
+      ),
+    }
+  }
+  return { manifest: folded, uploads }
+}
+
+function sameEntryContent(a: ManifestEntry, b: ManifestEntry): boolean {
+  return a.kind === b.kind && a.hash === b.hash
 }
 
 function uniqueBlobs(entries: readonly ManifestEntry[]): BlobRef[] {

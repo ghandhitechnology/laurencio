@@ -173,15 +173,26 @@ describe('SyncState', () => {
     const lockPath = lockFilePath(home)
     fs.writeFileSync(lockPath, JSON.stringify({ pid: 2, startedAt: 'then' }))
 
-    expect(clearStaleLock(home, () => true)).toBeNull()
-    const removed = clearStaleLock(home, () => false)
+    expect(
+      clearStaleLock(
+        home,
+        () => true,
+        () => 'then',
+      ),
+    ).toBeNull()
+    const removed = clearStaleLock(
+      home,
+      () => false,
+      () => 'then',
+    )
     expect(removed?.pid).toBe(2)
     expect(fs.existsSync(lockPath)).toBe(false)
 
     acquireLock(home, {
       pid: 42,
       isAlive: () => true,
-      now: () => new Date('2026-01-01T00:00:00.000Z'),
+      processStart: () => 'start-42',
+      startedAt: 'start-42',
     })
     expect(() => acquireLock(home, { isAlive: () => true })).toThrow(LockHeldError)
     releaseLock(home, 7)
@@ -190,10 +201,46 @@ describe('SyncState', () => {
     expect(fs.existsSync(lockPath)).toBe(false)
 
     fs.writeFileSync(lockPath, JSON.stringify({ pid: 424242, startedAt: 'then' }))
-    acquireLock(home, { pid: 43, isAlive: (pid) => pid === 43 })
+    acquireLock(home, { pid: 43, isAlive: (pid) => pid === 43, processStart: () => 'start-43' })
     const holder = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { pid: number }
     expect(holder.pid).toBe(43)
     releaseLock(home, 43)
+    fs.rmSync(home, { recursive: true, force: true })
+  })
+
+  test('draining pending ops consumes the previous run retries exactly once', () => {
+    const home = tempHome()
+    const state = openState(home)
+    const first = state.enqueueOp({ kind: 'retry', payload: '{"storePath":"a"}', createdAt: 'now' })
+    const second = state.enqueueOp({
+      kind: 'retry',
+      payload: '{"storePath":"b"}',
+      createdAt: 'now',
+    })
+    state.enqueueOp({ kind: 'other', payload: '{}', createdAt: 'now' })
+
+    const drained = state.drainPendingOps('retry')
+    expect(drained.map((op) => op.opId).sort()).toEqual([first, second].sort())
+    expect(state.listPendingOps().map((op) => op.kind)).toEqual(['other'])
+    expect(state.drainPendingOps('retry')).toEqual([])
+    state.close()
+    fs.rmSync(home, { recursive: true, force: true })
+  })
+
+  test('a live PID with a different start time is a reused PID, so the lock is stale', () => {
+    const home = tempHome()
+    fs.mkdirSync(path.join(home, '.laurencio'), { recursive: true })
+    const lockPath = lockFilePath(home)
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 55, startedAt: 'the-old-process' }))
+
+    acquireLock(home, {
+      pid: 56,
+      isAlive: (pid) => pid === 55 || pid === 56,
+      processStart: (pid) => (pid === 55 ? 'a-different-process' : 'start-56'),
+    })
+    const holder = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { pid: number }
+    expect(holder.pid).toBe(56)
+    releaseLock(home, 56)
     fs.rmSync(home, { recursive: true, force: true })
   })
 

@@ -47,16 +47,22 @@ const MARKER_FILE = '.agents/skills/notes.md'
 interface CrashChildArgs {
   home: string
   remoteDir: string
+  /** Which point in the atomic write to kill: before the rename, or after. */
+  point: 'before' | 'after'
 }
 
 function crashChildArgs(argv: readonly string[]): CrashChildArgs | null {
   if (argv[0] !== '--crash-child') return null
   const home = argv[1]
   const remoteDir = argv[2]
+  const point = argv[3] ?? 'before'
   if (home === undefined || remoteDir === undefined) {
     throw new Error('--crash-child needs a home and a remote directory')
   }
-  return { home, remoteDir }
+  if (point !== 'before' && point !== 'after') {
+    throw new Error('--crash-child point must be before or after')
+  }
+  return { home, remoteDir, point }
 }
 
 function surfaces(): Surface[] {
@@ -429,6 +435,59 @@ async function main(): Promise<void> {
       'homes converge on the same settings',
       a.read('.claude/settings.json') === b.read('.claude/settings.json'),
     )
+
+    step('crash recovery: SIGKILL after the rename, before the journal update')
+    a.write('.claude/settings.json', '{\n  "model": "opus",\n  "theme": "solarized"\n}\n')
+    await runSync(a.home, remoteDir, DEVICE_A)
+    b.write(
+      '.claude/settings.json',
+      '{\n  "model": "sonnet",\n  "theme": "solarized",\n  "autoMemoryEnabled": true\n}\n',
+    )
+    const revisionsBeforeSecondCrash = (await remote.listRevisions()).revisions.length
+    const childAfter = spawnSync(
+      process.execPath,
+      [SCRIPT_PATH, '--crash-child', b.home, remoteDir, 'after'],
+      { stdio: 'inherit' },
+    )
+    check(
+      'child died by SIGKILL after the rename',
+      childAfter.signal === 'SIGKILL',
+      String(childAfter.signal ?? childAfter.status),
+    )
+    const crashedAfterState = SyncState.open({ path: stateDbPath(b.home) })
+    const rowsAfter = crashedAfterState.listJournal()
+    crashedAfterState.close()
+    check(
+      'journal still says intent after the rename',
+      rowsAfter.length >= 1 && rowsAfter.every((row) => row.state === 'intent'),
+      String(rowsAfter.length),
+    )
+    const settingsAfterCrash = b.read('.claude/settings.json')
+    check(
+      'renamed merge landed before the kill',
+      settingsAfterCrash.includes('"model": "opus"') &&
+        settingsAfterCrash.includes('"autoMemoryEnabled": true'),
+    )
+    check(
+      'no temp files after the rename',
+      leftovers(b.path('.claude')).length === 0 && leftovers(b.path('.agents')).length === 0,
+    )
+
+    const recoveredAfter = await runSync(b.home, remoteDir, DEVICE_B)
+    check('rerun committed after adopting the renamed write', recoveredAfter.revisionId !== null)
+    check(
+      'exactly one new revision after the second crash',
+      (await remote.listRevisions()).revisions.length === revisionsBeforeSecondCrash + 1,
+    )
+    const repairedAfterState = SyncState.open({ path: stateDbPath(b.home) })
+    check('journal is empty after adoption', repairedAfterState.listJournal().length === 0)
+    repairedAfterState.close()
+    await runSync(a.home, remoteDir, DEVICE_A)
+    check(
+      'homes converge after the after-rename crash',
+      a.read('.claude/settings.json') === b.read('.claude/settings.json') &&
+        a.read('.claude/settings.json').includes('"autoMemoryEnabled": true'),
+    )
   } finally {
     a.cleanup()
     b.cleanup()
@@ -446,11 +505,16 @@ async function main(): Promise<void> {
 }
 
 async function crashChild(args: CrashChildArgs): Promise<never> {
-  await runSync(args.home, args.remoteDir, DEVICE_B, {
-    beforeRename: () => {
-      process.kill(process.pid, 'SIGKILL')
-    },
-  })
+  const kill = (): never => {
+    process.kill(process.pid, 'SIGKILL')
+    throw new Error('crash injection did not fire')
+  }
+  await runSync(
+    args.home,
+    args.remoteDir,
+    DEVICE_B,
+    args.point === 'before' ? { beforeRename: kill } : { afterRename: kill },
+  )
   // Unreachable: the hook kills the process on the first write.
   throw new Error('crash injection did not fire')
 }

@@ -15,7 +15,10 @@ export interface QuiescenceOptions {
   now?: () => number
 }
 
-/** Pure rule: old enough to be safe to replace. */
+/**
+ * Pure rule: old enough to be safe to replace. A future mtime (a skewed
+ * clock) carries no age evidence, so it defers until two reads agree.
+ */
 export function isQuiescent(mtimeMs: number, nowMs: number, windowMs: number): boolean {
   return nowMs - mtimeMs >= windowMs
 }
@@ -42,6 +45,9 @@ export class QuiescenceGate {
     this.#seen.set(filePath, mtimeMs)
     if (previous === undefined) return 'pending'
     if (previous !== mtimeMs) return 'pending'
+    // Two identical reads outrank a future mtime: clamping the clock would
+    // keep the file (and its retry row) deferred forever.
+    if (mtimeMs > now) return 'quiescent'
     return isQuiescent(mtimeMs, now, this.windowMs) ? 'quiescent' : 'deferred'
   }
 
