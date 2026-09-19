@@ -40,6 +40,10 @@ Each device enrolls through the device authorization flow and holds its own toke
 
 ## Limits worth knowing
 
+- Two devices that commit between syncs can create two heads. When they edit
+  the same file, the engine reports the fork instead of guessing; restore one
+  side and sync again.
+
 - The daemon caches the derived key in the keychain; protecting your unlocked session is your operating system's job.
 - Conflict copies are local artifacts and are not synced, by design.
 - Codex memory (a SQLite store) and session transcripts are out of scope; they are reported as unsupported rather than guessed at.

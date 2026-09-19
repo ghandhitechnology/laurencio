@@ -14,6 +14,20 @@ bucket. Blobs are opaque ciphertext; the server never parses config.
    the repository root so the workspace lockfile is present; `railway.toml`
    sets the build, pre-deploy, and start commands.
 
+## Environments
+
+A **staging** environment sets `NODE_ENV=staging`, which binds all interfaces,
+allows the development sign-in fallback, and permits a single instance to run
+without the GitHub OAuth app. Use it to smoke-test a deployment:
+
+```
+bun scripts/smoke-live.ts --base-url https://<service>.up.railway.app
+```
+
+A **production** environment sets `NODE_ENV=production` and refuses the
+development sign-in path, so it needs the GitHub OAuth app from section 3
+before anyone can sign in.
+
 ## 2. Variables
 
 Copy `.env.example` into the service variables and set:
@@ -90,7 +104,16 @@ back, or generated when absent. Client requests must send
 `x-laurencio-protocol-version`; mismatches return the upgrade message from
 `@laurencio/protocol`.
 
-## 8. Operational notes
+## 8. Known limitations
+
+- Concurrent commits from two devices that touch the same path can create two
+  heads the engine refuses to fold on its own. The sync reports
+  `RemoteForkError` with the head ids; restore one side with
+  `laurencio restore <revision>` and sync again to converge.
+- Passphrase rotation reseals only the newest revision. Export before rotating
+  if older history matters.
+
+## 9. Operational notes
 
 KDF writes are compare-and-set: a PUT carries the generation the writer read, `null` for the first write, and a stale one comes back as `409` with the current generation in `details`.
 
