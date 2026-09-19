@@ -1,7 +1,7 @@
 /**
- * Read-only scan demo: registers a small inline adapter per harness (placeholders until
- * phases 4-6 ship the real ones) and prints the surface inventory, ownership, and link
- * topology for this machine. Never writes to disk.
+ * Read-only scan demo: registers the real OpenCode adapter plus inline placeholders for the
+ * harnesses whose phases have not shipped, and prints the surface inventory, ownership, and
+ * link topology for this machine. Never writes to disk.
  *
  * Usage:
  *   bun run scan:demo
@@ -12,12 +12,14 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { opencodeAdapter } from '../packages/core/src/adapters/opencode'
 import { type DetectionReport, detectionReport } from '../packages/core/src/adapters/types'
 import { type ScanResult, scan } from '../packages/core/src/scan'
 import type {
   AdapterContext,
   HarnessAdapter,
   HarnessId,
+  HarnessProbe,
   Surface,
   TreeSurface,
 } from '../packages/core/src/types'
@@ -115,6 +117,52 @@ function demoDetection(adapterId: HarnessId, configRoot: string): HarnessAdapter
   })
 }
 
+/** Version probe at the CLI edge; adapters stay pure. */
+function commandVersion(command: string): string | null {
+  try {
+    const result = Bun.spawnSync({
+      cmd: [command, '--version'],
+      stdout: 'pipe',
+      stderr: 'ignore',
+    })
+    if (result.exitCode !== 0) return null
+    const lines = new TextDecoder().decode(result.stdout).split('\n')
+    for (const line of lines) {
+      const match = /\bv?(\d[\w.-]*)/.exec(line.trim())
+      if (match?.[1] !== undefined) return match[1]
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** Probe: both binaries plus the config-dir file shapes the schema report keys off. */
+function opencodeProbe(home: string): HarnessProbe {
+  const notes: string[] = []
+  let version: string | undefined
+  for (const binary of ['opencode', 'opencode2'] as const) {
+    const reported = commandVersion(binary)
+    if (reported === null) continue
+    notes.push(`${binary} ${reported}`)
+    if (binary === 'opencode') version = reported
+  }
+  const configRoot = path.join(
+    process.env.XDG_CONFIG_HOME ?? path.join(home, '.config'),
+    'opencode',
+  )
+  try {
+    for (const name of fs.readdirSync(configRoot)) notes.push(`config:${name}`)
+  } catch {
+    // No config dir: the probe reports absence through the empty notes.
+  }
+  return {
+    installed: notes.length > 0,
+    ...(version === undefined ? {} : { version }),
+    notes,
+  }
+}
+
 const adapters: HarnessAdapter[] = [
   {
     id: 'claude',
@@ -140,19 +188,7 @@ const adapters: HarnessAdapter[] = [
       demoFile('codex', 'auth', '$HOME/.codex/auth.json', { policy: 'never' }),
     ],
   },
-  {
-    id: 'opencode',
-    displayName: 'OpenCode (demo)',
-    detect: demoDetection('opencode', '$HOME/.config/opencode'),
-    surfaces: () => [
-      demoTree('opencode', 'config-dir', '$HOME/.config/opencode', {
-        exclude: ['**/node_modules/**', '**/skills.pi-links.bak/**'],
-      }),
-      demoTree('opencode', 'agents-opencode', '$HOME/.agents-opencode', { shared: true }),
-      demoFile('opencode', 'service', '$HOME/.config/opencode/service.json', { policy: 'never' }),
-      demoFile('opencode', 'auth', '$HOME/.local/share/opencode/auth.json', { policy: 'never' }),
-    ],
-  },
+  opencodeAdapter,
 ]
 
 function report(result: ScanResult, detections: DetectionReport[]): void {
@@ -217,6 +253,7 @@ function main(): void {
     platform:
       process.platform === 'win32' ? 'win32' : process.platform === 'linux' ? 'linux' : 'darwin',
     env: { ...process.env },
+    probes: { opencode: opencodeProbe(options.home) },
   }
   const detections = selected.map((adapter) => detectionReport(adapter, ctx))
   const result = scan({

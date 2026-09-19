@@ -1,4 +1,5 @@
 import type { AdapterContext, HarnessAdapter, Surface } from '../types'
+import { opencodeAdapter } from './opencode'
 import type { RegisteredSurface } from './types'
 
 export type AdapterRegistryErrorKind = 'duplicate-adapter' | 'duplicate-surface' | 'duplicate-path'
@@ -94,3 +95,6 @@ export function createAdapterRegistry(adapters: readonly HarnessAdapter[]): Adap
     },
   }
 }
+
+/** Production adapters; each adapter phase appends its own. */
+export const coreAdapters: readonly HarnessAdapter[] = [opencodeAdapter]
