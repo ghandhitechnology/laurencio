@@ -52,8 +52,8 @@ const MARKER_LOCAL = 'A local secret'
 const KDF: KdfParams = {
   algo: 'argon2id',
   salt: '00000000000000000000000000000000',
-  m: 8,
-  t: 1,
+  m: 19_456,
+  t: 2,
   p: 1,
   version: 0x13,
 }
