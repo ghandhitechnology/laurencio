@@ -422,6 +422,7 @@ export const rotateCommand: CommandSpec = {
         `Re-encrypted ${plural(outcome.reEncrypted, 'blob')} (${outcome.bytesBefore} to ${outcome.bytesAfter} bytes); ${outcome.replaced} old blobs are now unreferenced.`,
         `Revision: ${outcome.revisionId}`,
         `Key cached in the ${outcome.keyBackend} store.`,
+        'Revisions committed before this rotation stay sealed with the old key and cannot be read or restored. Run `laurencio export` before rotating if you may need them.',
       ].join('\n')
     }
     return ok(data, human)
