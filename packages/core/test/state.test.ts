@@ -195,7 +195,11 @@ describe('SyncState', () => {
       processStart: () => 'start-42',
       startedAt: 'start-42',
     })
-    expect(() => acquireLock(home, { isAlive: () => true })).toThrow(LockHeldError)
+    // Both probes are stubbed: a real start-time probe would disagree with the
+    // stubbed liveness on a host where PID 42 exists, and steal the lock.
+    expect(() =>
+      acquireLock(home, { isAlive: () => true, processStart: () => 'start-42' }),
+    ).toThrow(LockHeldError)
     releaseLock(home, 7)
     expect(fs.existsSync(lockPath)).toBe(true)
     releaseLock(home, 42)
