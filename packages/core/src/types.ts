@@ -122,7 +122,3 @@ export function assertNever(value: never): never {
 export function isSyncable(surface: Surface): boolean {
   return surface.policy === 'sync' || surface.policy === 'opt-in'
 }
-
-export function surfaceLabel(surface: Surface): string {
-  return `${surface.harness}.${surface.id.split('.')[1] ?? surface.id}`
-}

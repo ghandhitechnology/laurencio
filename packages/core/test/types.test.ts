@@ -1,15 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { SurfaceId } from '@laurencio/protocol'
-import {
-  assertNever,
-  isSyncable,
-  type Surface,
-  surfaceLabel,
-  type TransformKind,
-} from '../src/index'
+import { assertNever, isSyncable, type Surface, type TransformKind } from '../src/index'
 
 const base = {
-  harness: 'claude' as const,
   policy: 'sync' as const,
   description: 'test surface',
   transforms: [],
@@ -20,6 +13,7 @@ const surfaces: Surface[] = [
   {
     ...base,
     id: SurfaceId.parse('claude.skills'),
+    harness: 'claude',
     kind: 'tree',
     path: '$HOME/.claude/skills',
     format: 'mixed',
@@ -29,6 +23,7 @@ const surfaces: Surface[] = [
   {
     ...base,
     id: SurfaceId.parse('claude.settings'),
+    harness: 'claude',
     kind: 'file',
     path: '$HOME/.claude/settings.json',
     format: 'json',
@@ -37,6 +32,7 @@ const surfaces: Surface[] = [
   {
     ...base,
     id: SurfaceId.parse('codex.config'),
+    harness: 'codex',
     kind: 'keyed-file',
     path: '$HOME/.codex/config.toml',
     format: 'toml',
@@ -46,14 +42,14 @@ const surfaces: Surface[] = [
 ]
 
 describe('surface helpers', () => {
-  test('syncable depends on policy only', () => {
+  test('policy decides syncability', () => {
     expect(surfaces.every(isSyncable)).toBe(true)
     const never: Surface = { ...surfaces[1]!, policy: 'never' }
     expect(isSyncable(never)).toBe(false)
   })
 
-  test('labels read as harness.name', () => {
-    expect(surfaces.map(surfaceLabel)).toEqual(['claude.skills', 'claude.settings', 'codex.config'])
+  test('every surface id reads as harness.surface', () => {
+    for (const surface of surfaces) expect(surface.id.startsWith(`${surface.harness}.`)).toBe(true)
   })
 })
 
