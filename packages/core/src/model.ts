@@ -1,6 +1,11 @@
 import type { BlobId, BlobRef, DeviceId, RevisionId, SurfaceId } from '@laurencio/protocol'
 import type { HarnessId, SyncPolicy } from './types'
 
+/** Permission bits a synced file may carry; setuid, setgid, and sticky stay out of manifests. */
+export const PERMISSION_MASK = 0o777
+export const DEFAULT_FILE_MODE = 0o644
+export const DEFAULT_DIRECTORY_MODE = 0o755
+
 /** A single tracked path inside a surface. `hash` is over the plaintext projection. */
 export interface ManifestEntry {
   surfaceId: SurfaceId

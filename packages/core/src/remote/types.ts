@@ -7,7 +7,19 @@ import type {
 } from '@laurencio/protocol'
 import { BlobId as BlobIdSchema } from '@laurencio/protocol'
 import type { KdfParams } from '../crypto/kdf'
-import type { Manifest, RevisionMeta, SurfaceDigest } from '../model'
+import {
+  DEFAULT_FILE_MODE,
+  type Manifest,
+  PERMISSION_MASK,
+  type RevisionMeta,
+  type SurfaceDigest,
+} from '../model'
+
+/** Bounds a decrypted manifest must respect before any entry is trusted. */
+export const MAX_MANIFEST_ENTRIES = 50_000
+export const MAX_MANIFEST_BYTES = 32 * 1024 * 1024
+export const MAX_MANIFEST_ENTRY_BYTES = 64 * 1024 * 1024
+export const MAX_STORE_PATH_LENGTH = 4096
 
 /** One content-addressed ciphertext blob, as uploaded. The remote never sees plaintext. */
 export interface BlobUpload {
@@ -21,6 +33,10 @@ export interface RemoteCommit {
   blobs: BlobRef[]
   /** Per-surface file counts and bytes, carried alongside the opaque manifest. */
   digest: SurfaceDigest[]
+  /**
+   * Legacy plaintext note. Kept for persisted queue entries, but never populated
+   * from user content and never sent on the wire.
+   */
   note?: string
 }
 
@@ -92,14 +108,116 @@ export interface Remote {
   listDevices(): Promise<DeviceRecord[]>
 }
 
-/** Parses a decrypted manifest blob, rejecting anything that is not a manifest. */
-export function parseManifest(value: unknown): Manifest {
-  if (typeof value !== 'object' || value === null) throw new Error('manifest must be an object')
+export type ManifestErrorCode =
+  | 'invalid-manifest'
+  | 'invalid-path'
+  | 'invalid-mode'
+  | 'entry-too-large'
+  | 'too-many-entries'
+  | 'manifest-too-large'
+
+/** A manifest a peer supplied that is malformed, hostile, or over the size bounds. */
+export class ManifestError extends Error {
+  readonly code: ManifestErrorCode
+
+  constructor(code: ManifestErrorCode, message: string) {
+    super(message)
+    this.name = 'ManifestError'
+    this.code = code
+  }
+}
+
+/**
+ * Store paths are tokenized paths inside a surface (`$HOME/.claude/CLAUDE.md`).
+ * A peer-supplied path must never leave that surface once the engine joins it to
+ * a real directory, so traversal, absolutes, and foreign separators are refused.
+ */
+export function assertSafeStorePath(value: string): string {
+  const reject = (reason: string): never => {
+    throw new ManifestError(
+      'invalid-path',
+      `manifest entry path ${reason}: ${JSON.stringify(value)}`,
+    )
+  }
+  if (value === '') reject('is empty')
+  if (value.length > MAX_STORE_PATH_LENGTH) {
+    reject(`is longer than ${MAX_STORE_PATH_LENGTH} characters`)
+  }
+  if (value.includes('\u0000')) reject('contains a null byte')
+  if (value.includes('\\')) reject('contains a backslash')
+  if (value.startsWith('/')) reject('is absolute')
+  if (/^[A-Za-z]:/.test(value)) reject('is absolute')
+  for (const segment of value.split('/')) {
+    if (segment === '') reject('has an empty segment')
+    if (segment === '.' || segment === '..') reject(`has a ${segment} segment`)
+  }
+  return value
+}
+
+function parseEntrySize(value: unknown, what: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new ManifestError(
+      'invalid-manifest',
+      `manifest entry ${what} must be a non-negative integer`,
+    )
+  }
+  if (value > MAX_MANIFEST_ENTRY_BYTES) {
+    throw new ManifestError(
+      'entry-too-large',
+      `manifest entry ${what} is ${value} bytes, over the ${MAX_MANIFEST_ENTRY_BYTES} byte limit`,
+    )
+  }
+  return value
+}
+
+function parseMode(value: unknown, fallback: number): number {
+  if (value === undefined) return fallback
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new ManifestError('invalid-mode', 'manifest entry mode must be a non-negative integer')
+  }
+  if ((value & ~PERMISSION_MASK) !== 0) {
+    throw new ManifestError(
+      'invalid-mode',
+      `manifest entry mode 0o${value.toString(8)} carries setuid, setgid, sticky, or file-type bits`,
+    )
+  }
+  return value
+}
+
+/**
+ * Parses a decrypted manifest blob, rejecting anything that is not a manifest.
+ * `byteLength` is the decrypted size when the caller has it, so an oversized
+ * blob fails before its entries are walked.
+ */
+export function parseManifest(value: unknown, byteLength?: number): Manifest {
+  if (byteLength !== undefined && byteLength > MAX_MANIFEST_BYTES) {
+    throw new ManifestError(
+      'manifest-too-large',
+      `manifest is ${byteLength} bytes, over the ${MAX_MANIFEST_BYTES} byte limit`,
+    )
+  }
+  if (typeof value !== 'object' || value === null) {
+    throw new ManifestError('invalid-manifest', 'manifest must be an object')
+  }
   const record = value as Record<string, unknown>
-  if (typeof record.revisionId !== 'string') throw new Error('manifest revisionId is missing')
-  if (typeof record.deviceId !== 'string') throw new Error('manifest deviceId is missing')
-  if (typeof record.createdAt !== 'string') throw new Error('manifest createdAt is missing')
-  if (!Array.isArray(record.entries)) throw new Error('manifest entries must be an array')
+  if (typeof record.revisionId !== 'string') {
+    throw new ManifestError('invalid-manifest', 'manifest revisionId is missing')
+  }
+  if (typeof record.deviceId !== 'string') {
+    throw new ManifestError('invalid-manifest', 'manifest deviceId is missing')
+  }
+  if (typeof record.createdAt !== 'string') {
+    throw new ManifestError('invalid-manifest', 'manifest createdAt is missing')
+  }
+  if (!Array.isArray(record.entries)) {
+    throw new ManifestError('invalid-manifest', 'manifest entries must be an array')
+  }
+  if (record.entries.length > MAX_MANIFEST_ENTRIES) {
+    throw new ManifestError(
+      'too-many-entries',
+      `manifest holds ${record.entries.length} entries, over the ${MAX_MANIFEST_ENTRIES} entry limit`,
+    )
+  }
   const entries = record.entries.map((entry) => parseManifestEntry(entry))
   return {
     revisionId: record.revisionId as Manifest['revisionId'],
@@ -110,29 +228,39 @@ export function parseManifest(value: unknown): Manifest {
 }
 
 function parseManifestEntry(value: unknown): Manifest['entries'][number] {
-  if (typeof value !== 'object' || value === null) throw new Error('manifest entry is malformed')
+  if (typeof value !== 'object' || value === null) {
+    throw new ManifestError('invalid-manifest', 'manifest entry is malformed')
+  }
   const record = value as Record<string, unknown>
-  if (typeof record.surfaceId !== 'string') throw new Error('manifest entry surfaceId is missing')
-  if (typeof record.path !== 'string') throw new Error('manifest entry path is missing')
+  if (typeof record.surfaceId !== 'string') {
+    throw new ManifestError('invalid-manifest', 'manifest entry surfaceId is missing')
+  }
+  if (typeof record.path !== 'string') {
+    throw new ManifestError('invalid-manifest', 'manifest entry path is missing')
+  }
   const kind = record.kind === 'tombstone' ? 'tombstone' : 'file'
   // Older manifests carry no policy; anything that reached a manifest was syncable then.
   const policy = record.policy === 'opt-in' ? 'opt-in' : 'sync'
-  if (typeof record.hash !== 'string') throw new Error('manifest entry hash is missing')
-  if (typeof record.size !== 'number') throw new Error('manifest entry size is missing')
-  if (typeof record.mode !== 'number') throw new Error('manifest entry mode is missing')
+  if (typeof record.hash !== 'string') {
+    throw new ManifestError('invalid-manifest', 'manifest entry hash is missing')
+  }
   const entry: Manifest['entries'][number] = {
     surfaceId: record.surfaceId as Manifest['entries'][number]['surfaceId'],
-    path: record.path,
+    path: assertSafeStorePath(record.path),
     kind,
     policy,
     hash: record.hash,
-    size: record.size,
-    mode: record.mode,
+    size: parseEntrySize(record.size, 'size'),
+    mode: parseMode(record.mode, kind === 'tombstone' ? 0 : DEFAULT_FILE_MODE),
   }
   if (typeof record.blob === 'object' && record.blob !== null) {
     const blob = record.blob as Record<string, unknown>
-    if (typeof blob.id === 'string' && typeof blob.size === 'number') {
-      entry.blob = { id: BlobIdSchema.parse(blob.id), size: blob.size }
+    if (typeof blob.id === 'string') {
+      const id = BlobIdSchema.safeParse(blob.id)
+      if (!id.success) {
+        throw new ManifestError('invalid-manifest', `manifest entry blob id is invalid: ${blob.id}`)
+      }
+      entry.blob = { id: id.data, size: parseEntrySize(blob.size, 'blob size') }
     }
   }
   return entry

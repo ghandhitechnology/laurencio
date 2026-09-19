@@ -173,6 +173,22 @@ describe('offline queue', () => {
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
+  test('drops a legacy note when parsing a queued commit', () => {
+    const { state, dir } = tempState()
+    const revision = '00000000000000000000000009' as RevisionId
+    state.enqueueOp({
+      kind: 'commit',
+      payload: JSON.stringify({ ...commitFor(revision), note: 'plaintext note' }),
+      createdAt: '2026-09-19T00:00:00.000Z',
+    })
+    const entry = parseQueueEntry(firstPending(state))
+    expect(entry.kind).toBe('commit')
+    if (entry.kind !== 'commit') throw new Error('expected a commit entry')
+    expect(entry.commit.note).toBeUndefined()
+    state.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
   test('keeps sync and retry markers until a successful pass clears them', async () => {
     const { state, dir } = tempState()
     enqueueSync(state, 'server unreachable', { createdAt: '2026-09-19T00:00:00.000Z' })

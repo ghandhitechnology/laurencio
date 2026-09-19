@@ -235,6 +235,31 @@ describe('HttpRemote', () => {
     expect(JSON.parse(call?.body ?? '{}').protocolVersion).toBe(1)
   })
 
+  test('never sends the plaintext note field in a commit', async () => {
+    const server = makeFetch({
+      'POST /v1/stores/00000000000000000000000001/commits': () =>
+        json({ revisionId: '00000000000000000000000009', accepted: true, missing: [] }),
+    })
+    const remote = makeRemote(server)
+    const result = await remote.commit({
+      revision: {
+        id: RevisionId.parse('00000000000000000000000009'),
+        storeId,
+        deviceId,
+        parents: [],
+        manifest: { id: BlobId.parse('a'.repeat(64)), size: 10 },
+        createdAt: '2026-09-19T00:00:00.000Z',
+      },
+      blobs: [],
+      digest: [],
+      note: 'hostname-and-repo-name',
+    })
+    expect(result.accepted).toBe(true)
+    const body = JSON.parse(server.calls[0]?.body ?? '{}') as Record<string, unknown>
+    expect(body.note).toBeUndefined()
+    expect(server.calls[0]?.body).not.toContain('hostname-and-repo-name')
+  })
+
   test('maps protocol errors onto typed classes', async () => {
     const unauthorized = makeRemote(
       makeFetch({

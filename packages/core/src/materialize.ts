@@ -7,7 +7,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import type { LayoutEntry, LocalLayout } from './model'
+import { DEFAULT_DIRECTORY_MODE, type LayoutEntry, type LocalLayout } from './model'
 import type { Platform } from './types'
 
 export interface LayoutTarget {
@@ -181,7 +181,7 @@ export function ensureLayoutLink(target: LayoutTarget): boolean {
 }
 
 export function ensureParentDirectories(filePath: string): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: DEFAULT_DIRECTORY_MODE })
 }
 
 function distinct(values: string[]): string[] {

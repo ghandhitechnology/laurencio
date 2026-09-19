@@ -9,13 +9,13 @@ import type { DeviceId, RevisionId, StoreId } from '@laurencio/protocol'
 import type { ApplyHooks } from '../apply'
 import { EnvelopeError } from '../crypto/aead'
 import type { KeyMaterial } from '../crypto/kdf'
-import { type SyncOptions, sync } from '../engine'
+import { RemoteRollbackError, type SyncOptions, sync } from '../engine'
 import type { DevicePolicy, SyncReport } from '../model'
 import { defaultPolicy } from '../model'
 import type { QuiescenceOptions } from '../quiescence'
 import { HttpRemoteError, isOfflineError } from '../remote/http'
 import type { Remote } from '../remote/types'
-import { RemoteError } from '../remote/types'
+import { ManifestError, RemoteError } from '../remote/types'
 import { LockHeldError, type SyncState } from '../state'
 import type { AdapterContext, HarnessAdapter } from '../types'
 import { activeAdapters } from './policy'
@@ -96,6 +96,8 @@ function isKnownSyncError(error: unknown): boolean {
   return (
     error instanceof EnvelopeError ||
     error instanceof RemoteError ||
+    error instanceof ManifestError ||
+    error instanceof RemoteRollbackError ||
     error instanceof LockHeldError ||
     error instanceof HttpRemoteError
   )

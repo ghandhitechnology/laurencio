@@ -450,13 +450,14 @@ export function createHttpRemote(options: HttpRemoteOptions): HttpRemote {
   }
 
   const commit = async (input: RemoteCommit): Promise<RemoteCommitResult> => {
+    // The plaintext note never leaves the device. The protocol keeps the wire
+    // field so older clients can still send it.
     const request = parseWire(
       CommitRequest,
       {
         protocolVersion,
         revision: input.revision,
         blobs: input.blobs,
-        ...(input.note === undefined ? {} : { note: input.note }),
       },
       'commit request',
     )

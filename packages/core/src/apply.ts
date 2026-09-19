@@ -16,7 +16,8 @@ import {
   type LayoutTarget,
   resolveLayoutTarget,
 } from './materialize'
-import type { LocalLayout } from './model'
+import { CONFLICT_COPY_PATTERN } from './merge/conflict'
+import { DEFAULT_FILE_MODE, type LocalLayout, PERMISSION_MASK } from './model'
 import type { JournalOp, SyncState } from './state'
 import type { Platform } from './types'
 
@@ -32,6 +33,17 @@ export class NotInPlanError extends Error {
   constructor(targetPath: string) {
     super(`refusing to write outside the plan: ${targetPath}`)
     this.name = 'NotInPlanError'
+    this.targetPath = targetPath
+  }
+}
+
+/** A declared path that resolves outside every surface root the plan may touch. */
+export class OutsideSurfaceError extends Error {
+  readonly targetPath: string
+
+  constructor(targetPath: string) {
+    super(`refusing to write outside the surface root: ${targetPath}`)
+    this.name = 'OutsideSurfaceError'
     this.targetPath = targetPath
   }
 }
@@ -75,6 +87,8 @@ export interface ApplierOptions {
   state: SyncState
   /** Absolute declared paths the plan may touch. */
   planPaths: readonly string[]
+  /** Surface roots every declared path must resolve inside; empty disables the check. */
+  roots?: readonly string[]
   layout?: LocalLayout | null
   platform?: Platform
   copyMode?: boolean
@@ -116,6 +130,30 @@ function tryRealpath(candidate: string): string | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Realpath of the deepest existing ancestor plus the remaining segments, so a
+ * path that does not exist yet resolves the way it will once it is created.
+ */
+export function resolvePhysicalPath(target: string): string {
+  const rest: string[] = []
+  let current = path.resolve(target)
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current)
+    if (parent === current) break
+    rest.unshift(path.basename(current))
+    current = parent
+  }
+  const real = tryRealpath(current) ?? current
+  return rest.length === 0 ? real : path.join(real, ...rest)
+}
+
+/** True when `candidate` resolves inside `root` after following existing symlinks. */
+export function isWithinRoot(candidate: string, root: string): boolean {
+  const resolvedRoot = resolvePhysicalPath(root)
+  const resolved = resolvePhysicalPath(candidate)
+  return resolved === resolvedRoot || resolved.startsWith(`${resolvedRoot}${path.sep}`)
 }
 
 /**
@@ -191,6 +229,7 @@ export class Applier {
   readonly copyMode: boolean
   readonly layout: LocalLayout | null
   #allowed: string[]
+  #roots: string[]
   #hooks: ApplyHooks
   #now: () => Date
 
@@ -200,8 +239,18 @@ export class Applier {
     this.copyMode = options.copyMode ?? this.platform === 'win32'
     this.layout = options.layout ?? null
     this.#allowed = allowlist(options.planPaths)
+    this.#roots = [...(options.roots ?? [])]
     this.#hooks = options.hooks ?? {}
     this.#now = options.now ?? (() => new Date())
+  }
+
+  /** Refuses a declared path that resolves outside every surface root. */
+  #assertWithinRoots(declaredPath: string): void {
+    if (this.#roots.length === 0) return
+    // A conflict copy lives beside its source, which itself must be in a root.
+    const base = declaredPath.replace(CONFLICT_COPY_PATTERN, '')
+    if (this.#roots.some((root) => isWithinRoot(base, root))) return
+    throw new OutsideSurfaceError(declaredPath)
   }
 
   isAllowed(candidate: string): boolean {
@@ -242,11 +291,12 @@ export class Applier {
   /** Atomic replace with the CAS guard applied to every path. Returns the new hash. */
   write(op: ApplyWrite): ApplyResult {
     const target = this.resolve(op.declaredPath)
+    this.#assertWithinRoots(target.declaredPath)
     if (target.linkMissing) ensureLayoutLink(target)
     const expected = op.expected
     const declaredResolved = path.resolve(target.declaredPath)
     const hash = hashContent(op.content)
-    const mode = op.mode ?? 0o644
+    const mode = (op.mode ?? DEFAULT_FILE_MODE) & PERMISSION_MASK
     const baseOpId = `write_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
     // When the declared path itself is written, its slot check already covers
     // it; the extra guard exists for writes that go through a link chain.
@@ -360,6 +410,7 @@ export class Applier {
    */
   remove(op: ApplyDelete): void {
     const target = this.resolve(op.declaredPath)
+    this.#assertWithinRoots(target.declaredPath)
     const tombstoned = op.baseRevision !== undefined && op.baseRevision !== null
     for (const [index, writePath] of target.writePaths.entries()) {
       if (!this.isAllowed(writePath)) throw new NotInPlanError(writePath)

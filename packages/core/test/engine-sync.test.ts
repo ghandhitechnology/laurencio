@@ -2,15 +2,21 @@ import { describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { DeviceId, RevisionId, StoreId } from '@laurencio/protocol'
+import { DeviceId, RevisionId, StoreId, SurfaceId } from '@laurencio/protocol'
 import { hashContent } from '../src/apply'
 import { open, sealText } from '../src/crypto/aead'
 import { deriveMasterKey, type KdfParams, kdfParamsToWire } from '../src/crypto/kdf'
-import { CONFLICT_LEDGER_META_KEY, type SyncOptions, sync } from '../src/engine'
+import {
+  CONFLICT_LEDGER_META_KEY,
+  RemoteRollbackError,
+  type SyncOptions,
+  sync,
+} from '../src/engine'
 import { ConflictLedger } from '../src/merge/conflict'
 import type { Manifest, SyncReport } from '../src/model'
 import { createFileRemote, type FileRemote } from '../src/remote/file'
 import type { Remote, RemoteCommit, RemoteCommitResult } from '../src/remote/types'
+import { ManifestError } from '../src/remote/types'
 import { SyncState, stateDbPath } from '../src/state'
 import type { Surface } from '../src/types'
 import { file, testAdapter, tree } from './helpers/adapter-fixtures'
@@ -697,6 +703,103 @@ describe('engine sync', () => {
     expect(joined.heads).toHaveLength(1)
     const merged = joined.revisions.find((revision) => revision.id === joined.heads[0])
     expect([...(merged?.parents ?? [])].sort()).toEqual([forkA, forkB, baseId].sort())
+    a.cleanup()
+    b.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('a hostile manifest path is refused and nothing outside the surface is written', async () => {
+    const h = harness()
+    const a = engineHome(baseEntries)
+    const escapeDir = tempDir()
+    const hostileId = RevisionId.parse('00000000000000000000000061')
+    const content = 'pwned\n'
+    const storePath = `$HOME/.claude/../../${path.basename(escapeDir)}/owned.txt`
+
+    const fileContext = { storeId, blobType: 'file' as const, protocolVersion: 1 }
+    const sealedContent = sealText(key, 'content', content, fileContext)
+    await h.remote.putBlob({ blobId: sealedContent.blobId, bytes: sealedContent.bytes })
+    const hostile: Manifest = {
+      revisionId: hostileId,
+      deviceId: deviceA,
+      createdAt: '2026-01-02T00:00:00.000Z',
+      entries: [
+        {
+          surfaceId: SurfaceId.parse('claude.instructions'),
+          path: storePath,
+          kind: 'file',
+          policy: 'sync',
+          hash: hashContent(content),
+          size: Buffer.byteLength(content),
+          mode: 0o644,
+          blob: { id: sealedContent.blobId, size: sealedContent.bytes.length },
+        },
+      ],
+    }
+    const manifestContext = { storeId, blobType: 'manifest' as const, protocolVersion: 1 }
+    const sealedManifest = sealText(key, 'manifest', JSON.stringify(hostile), manifestContext)
+    await h.remote.putBlob({ blobId: sealedManifest.blobId, bytes: sealedManifest.bytes })
+    fs.writeFileSync(
+      path.join(h.remoteDir, 'revisions', `${hostileId}.json`),
+      JSON.stringify({
+        id: hostileId,
+        parents: [],
+        deviceId: deviceA,
+        createdAt: '2026-01-02T00:00:00.000Z',
+        manifest: { id: sealedManifest.blobId, size: sealedManifest.bytes.length },
+        digest: [],
+      }),
+    )
+
+    const before = a.read('.claude/CLAUDE.md')
+    await expect(h.run(a, deviceA)).rejects.toBeInstanceOf(ManifestError)
+    expect(fs.existsSync(path.join(escapeDir, 'owned.txt'))).toBe(false)
+    expect(a.read('.claude/CLAUDE.md')).toBe(before)
+    a.cleanup()
+    fs.rmSync(escapeDir, { recursive: true, force: true })
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('a remote that hides the newest revision is refused as a rollback', async () => {
+    const h = harness()
+    const a = engineHome(baseEntries)
+    const b = engineHome(baseEntries)
+    await h.run(a, deviceA)
+    await h.run(b, deviceB)
+    a.write('.claude/CLAUDE.md', '# shared rules\nA made the newest revision\n')
+    await h.run(a, deviceA)
+    const newest = (await h.remote.listRevisions()).heads[0]
+    if (newest === undefined) throw new Error('missing head revision')
+
+    const hiding: Remote = {
+      ...h.remote,
+      async listRevisions(options = {}) {
+        const list = await h.remote.listRevisions(options)
+        const revisions = list.revisions.filter((revision) => revision.id !== newest)
+        const referenced = new Set<string>()
+        for (const revision of revisions) {
+          for (const parent of revision.parents) referenced.add(parent)
+        }
+        const heads = revisions
+          .filter((revision) => !referenced.has(revision.id))
+          .map((revision) => revision.id)
+        return { revisions, head: heads.length === 1 ? (heads[0] ?? null) : null, heads }
+      },
+    }
+
+    try {
+      await h.run(a, deviceA, { remote: hiding })
+      throw new Error('expected a rollback refusal')
+    } catch (error) {
+      expect(error).toBeInstanceOf(RemoteRollbackError)
+      expect((error as RemoteRollbackError).lastKnown).toEqual([newest])
+    }
+    expect(a.read('.claude/CLAUDE.md')).toBe('# shared rules\nA made the newest revision\n')
+
+    const recovered = await h.run(a, deviceA)
+    expect(recovered.revisionId).not.toBeNull()
+    await h.run(b, deviceB)
+    expect(b.read('.claude/CLAUDE.md')).toBe('# shared rules\nA made the newest revision\n')
     a.cleanup()
     b.cleanup()
     fs.rmSync(h.remoteDir, { recursive: true, force: true })

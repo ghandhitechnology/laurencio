@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import type { BlobId, BlobRef, DeviceId, RevisionId, SurfaceId } from '@laurencio/protocol'
+import type { BlobId, BlobRef, DeviceId, RevisionId, StoreId, SurfaceId } from '@laurencio/protocol'
 import type { LocalBlock } from './markers'
 import type { LocalLayout, Manifest, ManifestEntry, SurfaceDigest } from './model'
 import { LAURENCIO_DIR } from './secrets/scan'
@@ -435,6 +435,26 @@ export class SyncState {
       .query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'base_revision'")
       .get()
     return row === null ? null : (row.value as RevisionId)
+  }
+
+  /**
+   * Remote heads this device last observed for a store. They gate every pull:
+   * a remote graph that no longer descends from them is a rollback, not news.
+   */
+  getKnownHeads(storeId: StoreId): RevisionId[] {
+    const raw = this.getMeta(`known_heads:${storeId}`)
+    if (raw === null) return []
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (!Array.isArray(parsed)) return []
+      return parsed.filter((item): item is string => typeof item === 'string') as RevisionId[]
+    } catch {
+      return []
+    }
+  }
+
+  setKnownHeads(storeId: StoreId, heads: readonly RevisionId[]): void {
+    this.setMeta(`known_heads:${storeId}`, JSON.stringify([...heads]))
   }
 
   getMeta(key: string): string | null {

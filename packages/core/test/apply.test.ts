@@ -8,6 +8,7 @@ import {
   hashContent,
   NonEmptyDirectoryError,
   NotInPlanError,
+  OutsideSurfaceError,
   StaleWriteError,
 } from '../src/apply'
 import { SyncState, stateDbPath } from '../src/state'
@@ -37,6 +38,7 @@ function leftoverTemps(dir: string): string[] {
 function makeApplier(options: {
   home: string
   planPaths: string[]
+  roots?: string[]
   hooks?: ConstructorParameters<typeof Applier>[0]['hooks']
 }) {
   const home = options.home
@@ -45,6 +47,7 @@ function makeApplier(options: {
   const applier = new Applier({
     state,
     planPaths: options.planPaths,
+    roots: options.roots ?? [],
     platform: 'darwin',
     ...(options.hooks !== undefined ? { hooks: options.hooks } : {}),
   })
@@ -106,6 +109,45 @@ describe('Applier', () => {
     expect(applier.isAllowed(path.join(home, 'other.txt'))).toBe(false)
     state.close()
     fs.rmSync(home, { recursive: true, force: true })
+  })
+
+  test('refuses a declared path that resolves outside every surface root', () => {
+    const home = tempDir()
+    const outside = tempDir()
+    const escaped = path.join(outside, 'owned.txt')
+    const { state, applier } = makeApplier({
+      home,
+      planPaths: [escaped],
+      roots: [path.join(home, '.claude')],
+    })
+    expect(() => applier.write({ storePath: 's', declaredPath: escaped, content: 'x' })).toThrow(
+      OutsideSurfaceError,
+    )
+    expect(fs.existsSync(escaped)).toBe(false)
+    state.close()
+    fs.rmSync(home, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  })
+
+  test('accepts a declared path inside a symlinked surface root', () => {
+    const home = buildFakeHome({
+      entries: [
+        { kind: 'dir', path: '.agents/skills' },
+        { kind: 'dir', path: '.claude' },
+        { kind: 'dir', path: '.claude/skills', link: '$HOME/.agents/skills' },
+      ],
+    })
+    const declared = home.path('.claude/skills/SKILL.md')
+    const owner = home.path('.agents/skills/SKILL.md')
+    const { state, applier } = makeApplier({
+      home: home.home,
+      planPaths: [declared, owner],
+      roots: [home.path('.claude/skills')],
+    })
+    applier.write({ storePath: 'skills.SKILL', declaredPath: declared, content: '# skill\n' })
+    expect(fs.readFileSync(owner, 'utf8')).toBe('# skill\n')
+    state.close()
+    home.cleanup()
   })
 
   test('writes through a symlink and never replaces the link', () => {

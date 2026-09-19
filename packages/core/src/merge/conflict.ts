@@ -1,7 +1,7 @@
 import type { ConflictArtifact } from '../model'
 
 /** Suffix shape written by {@link conflictCopyPath}; the scanner matches this to skip copies. */
-const CONFLICT_COPY_PATTERN = /\.conflict-[A-Za-z0-9._-]+-\d{8}T\d{6}Z$/
+export const CONFLICT_COPY_PATTERN = /\.conflict-[A-Za-z0-9._-]+-\d{8}T\d{6}Z$/
 
 /** One conflict copy, recorded so later scans can exclude it from manifests. */
 export interface ConflictRecord {

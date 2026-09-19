@@ -113,7 +113,6 @@ function parseCommit(payload: string): RemoteCommit | null {
     blobs,
     digest: parseDigest(record.digest),
   }
-  if (typeof record.note === 'string') commit.note = record.note
   return commit
 }
 

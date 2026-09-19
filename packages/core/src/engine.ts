@@ -23,6 +23,7 @@ import {
   type ApplyHooks,
   type FileFingerprint,
   hashContent,
+  isWithinRoot,
   StaleWriteError,
 } from './apply'
 import { type BlobContext, openText, sealText } from './crypto/aead'
@@ -48,7 +49,7 @@ import type {
 import { expand, type TokenEnv } from './paths'
 import { QuiescenceGate, type QuiescenceOptions } from './quiescence'
 import type { Remote } from './remote/types'
-import { parseManifest, StaleParentsError } from './remote/types'
+import { ManifestError, parseManifest, StaleParentsError } from './remote/types'
 import { scan } from './scan'
 import { acquireLock, releaseLock, type SyncState } from './state'
 import {
@@ -273,6 +274,60 @@ export class RemoteForkError extends Error {
   }
 }
 
+/**
+ * The remote graph no longer descends from a revision this device already
+ * applied, so a pull would replay an older manifest over newer local state.
+ */
+export class RemoteRollbackError extends Error {
+  readonly lastKnown: readonly RevisionId[]
+  readonly remoteHeads: readonly RevisionId[]
+
+  constructor(lastKnown: readonly RevisionId[], remoteHeads: readonly RevisionId[]) {
+    const heads = remoteHeads.length > 0 ? remoteHeads.join(', ') : 'none'
+    super(
+      `remote store does not descend from the last known revision ${lastKnown.join(', ')}; refusing to apply a stale manifest (remote heads: ${heads})`,
+    )
+    this.name = 'RemoteRollbackError'
+    this.lastKnown = lastKnown
+    this.remoteHeads = remoteHeads
+  }
+}
+
+/**
+ * Revision ids reachable from the remote heads through server-supplied parents.
+ * A parent without its own revision row earns no credit: otherwise a server
+ * could claim a hidden head as an ancestor and replay an older manifest.
+ */
+function remoteAncestry(
+  revisions: readonly RevisionMeta[],
+  heads: readonly RevisionId[],
+): Set<string> {
+  const parentsById = new Map<string, readonly RevisionId[]>()
+  for (const revision of revisions) parentsById.set(revision.id, revision.parents)
+  const reachable = new Set<string>()
+  const queue: RevisionId[] = [...heads]
+  while (queue.length > 0) {
+    const id = queue.pop()
+    if (id === undefined || reachable.has(id)) continue
+    const parents = parentsById.get(id)
+    if (parents === undefined) continue
+    reachable.add(id)
+    for (const parent of parents) queue.push(parent)
+  }
+  return reachable
+}
+
+function assertRemoteDescendsFromKnownHeads(
+  knownHeads: readonly RevisionId[],
+  headIds: readonly RevisionId[],
+  revisions: readonly RevisionMeta[],
+): void {
+  if (knownHeads.length === 0) return
+  const reachable = remoteAncestry(revisions, headIds)
+  const lost = knownHeads.filter((head) => !reachable.has(head))
+  if (lost.length > 0) throw new RemoteRollbackError(lost, headIds)
+}
+
 export async function sync(options: SyncOptions): Promise<SyncReport> {
   const now = options.now ?? (() => new Date())
   const createRevisionId = options.createRevisionId ?? (() => newId() as RevisionId)
@@ -395,6 +450,8 @@ async function runSync(
         ? []
         : [revisionList.head]
   if (headIds.length > 4) throw new RemoteForkError(headIds)
+  assertRemoteDescendsFromKnownHeads(state.getKnownHeads(storeId), headIds, revisionList.revisions)
+  state.setKnownHeads(storeId, headIds)
   const resolved = await resolveRemoteView({
     headIds,
     baseRevisionId,
@@ -459,10 +516,13 @@ async function runSync(
     const surface = surfaces.get(file.surfaceId)
     if (surface === undefined) return null
     const root = surface.path.replace(/[/\\]+$/, '')
-    if (file.storePath === root) return expand(root, tokenEnv)
+    const localRoot = expand(root, tokenEnv)
+    if (file.storePath === root) return localRoot
     if (!file.storePath.startsWith(`${root}/`)) return null
     const relative = file.storePath.slice(root.length + 1)
-    return path.join(expand(root, tokenEnv), ...relative.split('/'))
+    const declared = path.join(localRoot, ...relative.split('/'))
+    // Store paths are peer-supplied; the joined path must stay under its surface root.
+    return isWithinRoot(declared, localRoot) ? declared : null
   }
   const planPaths = new Set<string>()
   for (const entry of scanResult.entries) planPaths.add(entry.localPath)
@@ -475,9 +535,15 @@ async function runSync(
     const declared = declaredPathFor(file)
     if (declared !== null) planPaths.add(declared)
   }
+  const surfaceRoots = new Set<string>()
+  for (const report of scanResult.surfaces) {
+    surfaceRoots.add(report.declaredPath)
+    surfaceRoots.add(report.resolvedPath)
+  }
   const applier = new Applier({
     state,
     planPaths: [...planPaths],
+    roots: [...surfaceRoots],
     layout,
     platform: ctx.platform,
     ...(options.hooks !== undefined ? { hooks: options.hooks } : {}),
@@ -978,6 +1044,7 @@ async function runSync(
     newEntries,
   )
   state.setBaseRevision(revisionId)
+  state.setKnownHeads(storeId, [revisionId])
   report.revisionId = revisionId
   return report
 }
@@ -994,9 +1061,15 @@ async function loadRemoteManifest(
   revisionId: RevisionId,
   manifestContext: BlobContext,
 ): Promise<Manifest> {
-  return parseManifest(
-    JSON.parse(openText(key, 'manifest', await remote.getManifest(revisionId), manifestContext)),
-  )
+  const text = openText(key, 'manifest', await remote.getManifest(revisionId), manifestContext)
+  const manifest = parseManifest(JSON.parse(text), text.length)
+  if (manifest.revisionId !== revisionId) {
+    throw new ManifestError(
+      'invalid-manifest',
+      `manifest fetched for revision ${revisionId} declares ${manifest.revisionId}`,
+    )
+  }
+  return manifest
 }
 
 /**
