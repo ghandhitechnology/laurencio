@@ -1,3 +1,5 @@
+export * as crypto from './crypto'
 export * from './merge'
 export * from './model'
+export * as secrets from './secrets'
 export * from './types'

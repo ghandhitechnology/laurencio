@@ -15,7 +15,8 @@
     "e2e:two-home": "bun scripts/two-home-e2e.ts",
     "e2e:server": "bun scripts/e2e-server.ts",
     "merge:demo": "bun scripts/merge-demo.ts",
-    "auth:demo": "bun scripts/auth-demo.ts"
+    "auth:demo": "bun scripts/auth-demo.ts",
+    "secret:demo": "bun scripts/secret-scan-demo.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",
