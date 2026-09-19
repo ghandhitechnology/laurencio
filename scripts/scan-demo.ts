@@ -1,7 +1,7 @@
 /**
- * Read-only scan demo: registers a small inline adapter per harness (placeholders until
- * phases 4-6 ship the real ones) and prints the surface inventory, ownership, and link
- * topology for this machine. Never writes to disk.
+ * Read-only scan demo: uses the registered adapter for harnesses that have one (Claude
+ * Code as of phase 4) and inline placeholders for the rest, then prints the surface
+ * inventory, ownership, and link topology for this machine. Never writes to disk.
  *
  * Usage:
  *   bun run scan:demo
@@ -12,12 +12,14 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { builtinAdapters } from '../packages/core/src/adapters/registry'
 import { type DetectionReport, detectionReport } from '../packages/core/src/adapters/types'
 import { type ScanResult, scan } from '../packages/core/src/scan'
 import type {
   AdapterContext,
   HarnessAdapter,
   HarnessId,
+  HarnessProbe,
   Surface,
   TreeSurface,
 } from '../packages/core/src/types'
@@ -115,19 +117,21 @@ function demoDetection(adapterId: HarnessId, configRoot: string): HarnessAdapter
   })
 }
 
-const adapters: HarnessAdapter[] = [
-  {
-    id: 'claude',
-    displayName: 'Claude Code (demo)',
-    detect: demoDetection('claude', '$HOME/.claude'),
-    surfaces: () => [
-      demoFile('claude', 'settings', '$HOME/.claude/settings.json', { format: 'json' }),
-      demoFile('claude', 'instructions', '$HOME/.claude/CLAUDE.md', { format: 'markdown' }),
-      demoTree('claude', 'skills', '$HOME/.claude/skills', { exclude: ['**/node_modules/**'] }),
-      demoFile('claude', 'credentials', '$HOME/.claude/.credentials.json', { policy: 'never' }),
-      demoTree('claude', 'transcripts', '$HOME/.claude/projects', { policy: 'never' }),
-    ],
-  },
+/** Version probe at the CLI edge; adapters never spawn processes themselves. */
+function claudeProbe(): HarnessProbe {
+  try {
+    const result = Bun.spawnSync(['claude', '--version'], { stdout: 'pipe', stderr: 'pipe' })
+    const output = result.stdout.toString().trim()
+    if (result.exitCode !== 0 || output === '') {
+      return { installed: result.exitCode === 0, notes: ['claude --version produced no version'] }
+    }
+    return { installed: true, version: output.split(/\s+/)[0] ?? output, notes: [] }
+  } catch {
+    return { installed: false, notes: ['claude is not on PATH'] }
+  }
+}
+
+const demoAdapters: HarnessAdapter[] = [
   {
     id: 'codex',
     displayName: 'Codex CLI (demo)',
@@ -153,6 +157,11 @@ const adapters: HarnessAdapter[] = [
       demoFile('opencode', 'auth', '$HOME/.local/share/opencode/auth.json', { policy: 'never' }),
     ],
   },
+]
+
+const adapters: HarnessAdapter[] = [
+  ...builtinAdapters,
+  ...demoAdapters.filter((demo) => !builtinAdapters.some((built) => built.id === demo.id)),
 ]
 
 function report(result: ScanResult, detections: DetectionReport[]): void {
@@ -217,6 +226,7 @@ function main(): void {
     platform:
       process.platform === 'win32' ? 'win32' : process.platform === 'linux' ? 'linux' : 'darwin',
     env: { ...process.env },
+    probes: { claude: claudeProbe() },
   }
   const detections = selected.map((adapter) => detectionReport(adapter, ctx))
   const result = scan({

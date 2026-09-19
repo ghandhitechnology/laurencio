@@ -1,5 +1,9 @@
 import type { AdapterContext, HarnessAdapter, Surface } from '../types'
+import { claudeAdapter } from './claude'
 import type { RegisteredSurface } from './types'
+
+/** Adapters shipped with the CLI. */
+export const builtinAdapters: readonly HarnessAdapter[] = [claudeAdapter]
 
 export type AdapterRegistryErrorKind = 'duplicate-adapter' | 'duplicate-surface' | 'duplicate-path'
 
