@@ -1,0 +1,2088 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`snapshots: help and version global help human 1`] = `
+"exit: 0
+--- stdout
+laurencio 0.1.0
+
+Usage: laurencio <command> [options]
+
+Commands:
+  init       Set up this device: sign in, select surfaces, and push
+  status     Show device, sync, queue, conflict, and drift state
+  sync       Run one sync pass
+  pause      Stop the daemon from running until resumed
+  resume     Let the daemon run again
+  diff       Compare local, remote, and base versions of a path
+  log        List revision history
+  restore    Restore a file, a surface, or everything from a revision
+  devices    List, rename, or revoke devices
+  resolve    Settle conflict copies by keeping local or remote content
+  export     Write an encrypted bundle of the current revision
+  doctor     Check harnesses, links, secrets, keychain, and protocol
+  surfaces   Show the surface inventory with policies
+  login      Sign in with the device flow and cache the store key
+  unlock     Cache the store key from the passphrase
+
+Global flags:
+  --json            Print machine-readable JSON
+  --verbose, -v     Include stack traces and extra detail
+  --help, -h        Show help
+  --version         Show the version
+  --home <path>     Use a different home (testing flag)
+
+Exit codes: 0 clean, 1 error, 2 conflicts present
+--- stderr
+"
+`;
+
+exports[`snapshots: help and version command help human 1`] = `
+"exit: 0
+--- stdout
+Usage: laurencio restore <revision> [path] [--yes] [--json]
+
+Restore a file, a surface, or everything from a revision
+--- stderr
+"
+`;
+
+exports[`snapshots: help and version version human 1`] = `
+"exit: 0
+--- stdout
+laurencio 0.1.0
+--- stderr
+"
+`;
+
+exports[`snapshots: init init offline human 1`] = `
+"exit: 0
+--- stdout
+Laurencio init
+Server: http://127.0.0.1:1
+Surfaces
+  codex: 22 surfaces, 9 sync, 0 opt-in, 13 never
+  Total: 22 surfaces: 9 sync, 0 opt-in, 13 never
+Sign-in: skipped, the server is not reachable
+Policy: ~/.laurencio/config.toml
+
+Login skipped. Run \`laurencio login\` when the server is reachable.
+--- stderr
+"
+`;
+
+exports[`snapshots: init init offline json 1`] = `
+"exit: 0
+--- stdout
+{
+  "home": "<HOME>",
+  "server": "http://127.0.0.1:1",
+  "login": "skipped-offline",
+  "device": null,
+  "key": null,
+  "policyPath": "<HOME>/.laurencio/config.toml",
+  "surfaces": [
+    {
+      "id": "codex.agents-skills",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "$HOME/.agents/skills",
+      "description": "shared agent skills read by Codex and OpenCode",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.agents-skills",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.archived-sessions",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/archived_sessions",
+      "description": "archived transcripts",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.archived-sessions",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.auth",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/auth.json",
+      "description": "tokens; Codex falls back to the OS keyring when this file is absent",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.auth",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.automations",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/automations",
+      "description": "scheduled task definitions; cwds and run history stay on the device",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.automations",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.cache",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/cache",
+      "description": "caches",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.cache",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.config",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "keyed-file",
+      "declaredPath": "\${CODEX_HOME}/config.toml",
+      "description": "portable preferences with trust, hook hashes, and marketplace sources stripped at the key level",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.config",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.default-profile",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "keyed-file",
+      "declaredPath": "\${CODEX_HOME}/.config.toml",
+      "description": "default profile-v2 overrides layered over config.toml",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.default-profile",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.global-state",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/.codex-global-state.json",
+      "description": "window and app state",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.global-state",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.history",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/history.jsonl",
+      "description": "prompt history",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.history",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.home",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}",
+      "description": "every other file under CODEX_HOME, including *_*.sqlite state and caches",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.home",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.hooks",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/hooks.json",
+      "description": "lifecycle commands with absolute paths tokenized",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.hooks",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.instructions",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/AGENTS.md",
+      "description": "global instruction chain",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.instructions",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.instructions-override",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/AGENTS.override.md",
+      "description": "global instructions override",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.instructions-override",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.log",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/log",
+      "description": "logs",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.log",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.managed",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "/etc/codex",
+      "description": "admin layer",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.managed",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.plugins",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/plugins",
+      "description": "plugin cache; enable flags live in config.toml",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.plugins",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.rules",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/rules/default.rules",
+      "description": "Starlark execpolicy with absolute paths tokenized",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.rules",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.session-index",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/session_index.jsonl",
+      "description": "session index",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.session-index",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.sessions",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/sessions",
+      "description": "transcripts",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.sessions",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.skills",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/skills",
+      "description": "user skills",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.skills",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.sqlite",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/sqlite",
+      "description": "sqlite sidecar files",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.sqlite",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.tmp",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/tmp",
+      "description": "scratch state",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.tmp",
+      "linkedBy": []
+    }
+  ],
+  "optIn": {
+    "enabled": [],
+    "disabled": []
+  },
+  "backup": null,
+  "enrollment": [],
+  "sync": null
+}
+--- stderr
+"
+`;
+
+exports[`snapshots: init init seeded human 1`] = `
+"exit: 0
+--- stdout
+Laurencio init
+Server: none
+Surfaces
+  codex: 22 surfaces, 9 sync, 0 opt-in, 13 never
+  Total: 22 surfaces: 9 sync, 0 opt-in, 13 never
+Sign-in: this device is already signed in
+Device: test-laptop (<ID>)
+Store key: cached in the file
+Policy: ~/.laurencio/config.toml
+
+Sync synced: 1 uploaded, 0 downloaded, 1 file changed
+
+Next: \`laurencio status\`
+--- stderr
+"
+`;
+
+exports[`snapshots: init init seeded json 1`] = `
+"exit: 0
+--- stdout
+{
+  "home": "<HOME>",
+  "server": null,
+  "login": "already-enrolled",
+  "device": {
+    "id": "<ID>",
+    "name": "test-laptop"
+  },
+  "key": {
+    "backend": "file",
+    "cached": true
+  },
+  "policyPath": "<HOME>/.laurencio/config.toml",
+  "surfaces": [
+    {
+      "id": "codex.agents-skills",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "$HOME/.agents/skills",
+      "description": "shared agent skills read by Codex and OpenCode",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.agents-skills",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.archived-sessions",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/archived_sessions",
+      "description": "archived transcripts",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.archived-sessions",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.auth",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/auth.json",
+      "description": "tokens; Codex falls back to the OS keyring when this file is absent",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.auth",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.automations",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/automations",
+      "description": "scheduled task definitions; cwds and run history stay on the device",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.automations",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.cache",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/cache",
+      "description": "caches",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.cache",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.config",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "keyed-file",
+      "declaredPath": "\${CODEX_HOME}/config.toml",
+      "description": "portable preferences with trust, hook hashes, and marketplace sources stripped at the key level",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.config",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.default-profile",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "keyed-file",
+      "declaredPath": "\${CODEX_HOME}/.config.toml",
+      "description": "default profile-v2 overrides layered over config.toml",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.default-profile",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.global-state",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/.codex-global-state.json",
+      "description": "window and app state",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.global-state",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.history",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/history.jsonl",
+      "description": "prompt history",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.history",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.home",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}",
+      "description": "every other file under CODEX_HOME, including *_*.sqlite state and caches",
+      "exists": true,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.home",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.hooks",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/hooks.json",
+      "description": "lifecycle commands with absolute paths tokenized",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.hooks",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.instructions",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/AGENTS.md",
+      "description": "global instruction chain",
+      "exists": true,
+      "files": 1,
+      "bytes": 14,
+      "role": "owner",
+      "owner": "codex.instructions",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.instructions-override",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/AGENTS.override.md",
+      "description": "global instructions override",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.instructions-override",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.log",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/log",
+      "description": "logs",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.log",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.managed",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "/etc/codex",
+      "description": "admin layer",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.managed",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.plugins",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/plugins",
+      "description": "plugin cache; enable flags live in config.toml",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.plugins",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.rules",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/rules/default.rules",
+      "description": "Starlark execpolicy with absolute paths tokenized",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.rules",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.session-index",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/session_index.jsonl",
+      "description": "session index",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.session-index",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.sessions",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/sessions",
+      "description": "transcripts",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.sessions",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.skills",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/skills",
+      "description": "user skills",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.skills",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.sqlite",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/sqlite",
+      "description": "sqlite sidecar files",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.sqlite",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.tmp",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/tmp",
+      "description": "scratch state",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.tmp",
+      "linkedBy": []
+    }
+  ],
+  "optIn": {
+    "enabled": [],
+    "disabled": []
+  },
+  "backup": null,
+  "enrollment": [],
+  "sync": {
+    "status": "synced",
+    "revisionId": "<ID>",
+    "uploaded": 1,
+    "downloaded": 0,
+    "changed": 1,
+    "conflicts": [],
+    "blocked": []
+  }
+}
+--- stderr
+"
+`;
+
+exports[`snapshots: status and sync status clean human 1`] = `
+"exit: 0
+--- stdout
+Device: test-laptop (<ID>)
+Server: none configured
+Last sync: <TIME> (2 changed, 2 uploaded, 0 downloaded)
+Pending: 0 operations
+Conflicts: none
+Drift: none
+Daemon: running
+--- stderr
+"
+`;
+
+exports[`snapshots: status and sync status with drift and a conflict json 1`] = `
+"exit: 2
+--- stdout
+
+--- stderr
+{
+  "enrolled": true,
+  "device": {
+    "id": "<ID>",
+    "name": "test-laptop"
+  },
+  "server": null,
+  "daemon": {
+    "paused": false,
+    "pausedAt": null
+  },
+  "lastSync": {
+    "at": "<TIME>",
+    "status": "synced",
+    "revisionId": "<ID>",
+    "changed": 2,
+    "uploaded": 2,
+    "downloaded": 0,
+    "conflicts": [],
+    "blocked": [],
+    "deferred": [],
+    "queue": {
+      "replayed": 0,
+      "failed": 0,
+      "pending": 0
+    },
+    "error": null
+  },
+  "pending": {
+    "count": 0,
+    "kinds": {}
+  },
+  "conflicts": {
+    "count": 1,
+    "paths": [
+      "<HOME>/.claude/CLAUDE.md"
+    ]
+  },
+  "secretOverrides": 0,
+  "drift": [
+    {
+      "storePath": "\${CLAUDE_CONFIG_DIR}/CLAUDE.md",
+      "status": "changed"
+    }
+  ]
+}"
+`;
+
+exports[`snapshots: status and sync sync dry run human 1`] = `
+"exit: 0
+--- stdout
+Dry run, nothing was written.
+Plan: 1 unchanged, 1 upload
+ACTION  SURFACE              PATH
+upload  claude.instructions  \${CLAUDE_CONFIG_DIR}/CLAUDE.md
+--- stderr
+"
+`;
+
+exports[`snapshots: status and sync sync dry run json 1`] = `
+"exit: 0
+--- stdout
+{
+  "dryRun": true,
+  "status": "planned",
+  "revisionId": null,
+  "changed": [],
+  "uploaded": 0,
+  "downloaded": 0,
+  "conflicts": [],
+  "blocked": [],
+  "deferred": [],
+  "queue": {
+    "replayed": 0,
+    "failed": 0,
+    "pending": 0,
+    "offline": false
+  },
+  "plan": {
+    "counts": {
+      "unchanged": 1,
+      "upload": 1,
+      "download": 0,
+      "merge": 0,
+      "delete-local": 0,
+      "delete-remote": 0
+    },
+    "files": [
+      {
+        "storePath": "\${CLAUDE_CONFIG_DIR}/CLAUDE.md",
+        "resolution": "upload",
+        "surfaceId": "claude.instructions"
+      },
+      {
+        "storePath": "\${CODEX_HOME}/AGENTS.md",
+        "resolution": "unchanged",
+        "surfaceId": "codex.instructions"
+      }
+    ]
+  },
+  "error": null
+}
+--- stderr
+"
+`;
+
+exports[`snapshots: status and sync sync human 1`] = `
+"exit: 0
+--- stdout
+Sync synced revision <ID>
+1 uploaded, 0 downloaded, 1 file changed
+--- stderr
+"
+`;
+
+exports[`snapshots: status and sync sync json 1`] = `
+"exit: 0
+--- stdout
+{
+  "dryRun": false,
+  "status": "synced",
+  "revisionId": "<ID>",
+  "changed": [
+    "\${CODEX_HOME}/AGENTS.md"
+  ],
+  "uploaded": 1,
+  "downloaded": 0,
+  "conflicts": [],
+  "blocked": [],
+  "deferred": [],
+  "queue": {
+    "replayed": 0,
+    "failed": 0,
+    "pending": 0,
+    "offline": false
+  },
+  "plan": null,
+  "error": null
+}
+--- stderr
+"
+`;
+
+exports[`snapshots: status and sync pause and resume human 1`] = `
+"exit: 0
+--- stdout
+Daemon paused at <TIME>. Run \`laurencio resume\` to continue.
+--- stderr
+"
+`;
+
+exports[`snapshots: status and sync pause and resume human 2`] = `
+"exit: 0
+--- stdout
+Daemon resumed.
+--- stderr
+"
+`;
+
+exports[`snapshots: status and sync pause and resume json 1`] = `
+"exit: 0
+--- stdout
+{
+  "paused": true,
+  "pausedAt": "<TIME>"
+}
+--- stderr
+"
+`;
+
+exports[`snapshots: status and sync pause and resume json 2`] = `
+"exit: 0
+--- stdout
+{
+  "paused": false,
+  "resumedAt": "<TIME>"
+}
+--- stderr
+"
+`;
+
+exports[`snapshots: diff, log, restore diff human 1`] = `
+"exit: 0
+--- stdout
+\${CLAUDE_CONFIG_DIR}/CLAUDE.md  local-changed
+--- base
++++ local
+@@ -1,1 +1,3 @@
+ # Instructions
++
++Changed.
+--- stderr
+"
+`;
+
+exports[`snapshots: diff, log, restore diff json 1`] = `
+"exit: 0
+--- stdout
+{
+  "remoteAvailable": true,
+  "selector": null,
+  "entries": [
+    {
+      "storePath": "\${CLAUDE_CONFIG_DIR}/CLAUDE.md",
+      "surfaceId": "claude.instructions",
+      "status": "local-changed",
+      "local": {
+        "exists": true,
+        "size": 25,
+        "hash": "<HASH>"
+      },
+      "remote": {
+        "exists": true,
+        "size": 15,
+        "hash": "<HASH>"
+      },
+      "base": {
+        "exists": true,
+        "size": 15,
+        "hash": "<HASH>"
+      },
+      "localDiff": "--- base\\n+++ local\\n@@ -1,1 +1,3 @@\\n # Instructions\\n+\\n+Changed.\\n",
+      "remoteDiff": "",
+      "binary": false
+    },
+    {
+      "storePath": "\${CODEX_HOME}/AGENTS.md",
+      "surfaceId": "codex.instructions",
+      "status": "unchanged",
+      "local": {
+        "exists": true,
+        "size": 14,
+        "hash": "<HASH>"
+      },
+      "remote": {
+        "exists": true,
+        "size": 14,
+        "hash": "<HASH>"
+      },
+      "base": {
+        "exists": true,
+        "size": 14,
+        "hash": "<HASH>"
+      },
+      "localDiff": "",
+      "remoteDiff": "",
+      "binary": false
+    }
+  ],
+  "truncated": 0
+}
+--- stderr
+"
+`;
+
+exports[`snapshots: diff, log, restore log human and json 1`] = `
+"exit: 0
+--- stdout
+REVISION     CREATED                   DEVICE       FILES  ROLE
+0100000000*  <TIME>  test-laptop  2      base
+0100000000   <TIME>  test-laptop  2
+* marks the store head; base is the last synced revision on this device.
+--- stderr
+"
+`;
+
+exports[`snapshots: diff, log, restore log human and json 2`] = `
+"exit: 0
+--- stdout
+{
+  "base": "<ID>",
+  "head": "<ID>",
+  "revisions": [
+    {
+      "id": "<ID>",
+      "shortId": "0100000000",
+      "createdAt": "<TIME>",
+      "deviceId": "<ID>",
+      "deviceName": "test-laptop",
+      "files": 2,
+      "bytes": 29,
+      "isBase": false,
+      "isHead": false,
+      "parents": []
+    },
+    {
+      "id": "<ID>",
+      "shortId": "0100000000",
+      "createdAt": "<TIME>",
+      "deviceId": "<ID>",
+      "deviceName": "test-laptop",
+      "files": 2,
+      "bytes": 38,
+      "isBase": true,
+      "isHead": true,
+      "parents": [
+        "<ID>"
+      ]
+    }
+  ]
+}
+--- stderr
+"
+`;
+
+exports[`snapshots: diff, log, restore restore human and json 1`] = `
+"exit: 0
+--- stdout
+Restored 1 file from 0100000000
+Backup: ~/.laurencio/backups/20260919T120000Z
+  ~/.claude/CLAUDE.md
+Run \`laurencio sync\` to publish the restored content.
+--- stderr
+"
+`;
+
+exports[`snapshots: diff, log, restore restore human and json 2`] = `
+"exit: 0
+--- stdout
+{
+  "revision": "<ID>",
+  "selector": "claude.instructions",
+  "restored": [
+    {
+      "storePath": "\${CLAUDE_CONFIG_DIR}/CLAUDE.md",
+      "localPath": "<HOME>/.claude/CLAUDE.md"
+    }
+  ],
+  "skipped": [],
+  "backup": "<HOME>/.laurencio/backups/20260919T120000Z"
+}
+--- stderr
+"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock devices human and json 1`] = `
+"exit: 0
+--- stdout
+DEVICE       NAME         PLATFORM  LAST SEEN
+0000000000*  test-laptop  darwin    never seen
+0000000000   old-laptop   darwin    never seen
+--- stderr
+"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock devices human and json 2`] = `
+"exit: 0
+--- stdout
+{
+  "currentDeviceId": "<ID>",
+  "devices": [
+    {
+      "id": "<ID>",
+      "name": "test-laptop",
+      "platform": "darwin",
+      "createdAt": "<TIME>",
+      "lastSeenAt": null,
+      "revokedAt": null,
+      "current": true
+    },
+    {
+      "id": "<ID>",
+      "name": "old-laptop",
+      "platform": "darwin",
+      "createdAt": "<TIME>",
+      "lastSeenAt": null,
+      "revokedAt": null,
+      "current": false
+    }
+  ]
+}
+--- stderr
+"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock devices human and json 3`] = `
+"exit: 0
+--- stdout
+Renamed 0000000000 to mac-mini.
+--- stderr
+"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock devices human and json 4`] = `
+"exit: 0
+--- stdout
+Revoked mac-mini (0000000000).
+--- stderr
+"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock resolve human and json 1`] = `
+"exit: 0
+--- stdout
+Resolved 1 conflict
+  ~/.claude/CLAUDE.md (keep-remote)
+Run \`laurencio sync\` to publish the resolved content.
+--- stderr
+"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock resolve human and json 2`] = `
+"exit: 0
+--- stdout
+{
+  "conflicts": [
+    {
+      "sourcePath": "<HOME>/.claude/CLAUDE.md",
+      "copyPath": "<HOME>/.claude/CLAUDE.md.conflict-other-device-20260919T120000Z",
+      "device": "other-device",
+      "createdAt": "<TIME>"
+    }
+  ],
+  "resolved": [
+    {
+      "sourcePath": "<HOME>/.claude/CLAUDE.md",
+      "copyPath": "<HOME>/.claude/CLAUDE.md.conflict-other-device-20260919T120000Z",
+      "choice": "keep-local"
+    }
+  ],
+  "remaining": []
+}
+--- stderr
+"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock export human and json 1`] = `
+"exit: 0
+--- stdout
+Exported 2 files from revision 0100000000 to ~/bundle.json
+Bundle: 1076 bytes, encrypted
+The bundle opens with the store passphrase.
+--- stderr
+"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock export human and json 2`] = `
+"exit: 0
+--- stdout
+{
+  "out": "<HOME>/bundle.json",
+  "mode": "encrypted",
+  "revision": "<ID>",
+  "files": 2,
+  "bytes": 1076
+}
+--- stderr
+"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock doctor human and json 1`] = `
+"exit: 0
+--- stdout
+Version: 0.1.0  Protocol: v1  Platform: darwin
+Home: ~
+Server: none configured
+Device: test-laptop (<ID>)
+Keychain: file, store key cached
+Daemon: running
+
+Harnesses
+  codex: not found
+    credentials: auth.json or OS keyring (not probed); values are never read or synced
+    unsupported: Codex memory (\${CODEX_HOME}/memories_*.sqlite): Codex memory is an opaque SQLite store; file-based memory sync is unsupported
+
+Link topology
+  no surfaces resolve through another surface
+
+Never sync
+  codex.archived-sessions (0 files) \${CODEX_HOME}/archived_sessions
+  codex.auth (0 files) \${CODEX_HOME}/auth.json
+  codex.cache (0 files) \${CODEX_HOME}/cache
+  codex.global-state (0 files) \${CODEX_HOME}/.codex-global-state.json
+  codex.history (0 files) \${CODEX_HOME}/history.jsonl
+  codex.home (0 files) \${CODEX_HOME}
+  codex.log (0 files) \${CODEX_HOME}/log
+  codex.managed (0 files) /etc/codex
+  codex.plugins (0 files) \${CODEX_HOME}/plugins
+  codex.session-index (0 files) \${CODEX_HOME}/session_index.jsonl
+  codex.sessions (0 files) \${CODEX_HOME}/sessions
+  codex.sqlite (0 files) \${CODEX_HOME}/sqlite
+  codex.tmp (0 files) \${CODEX_HOME}/tmp
+
+Secrets
+  0 files scanned, no findings
+--- stderr
+"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock doctor human and json 2`] = `
+"exit: 0
+--- stdout
+{
+  "version": "0.1.0",
+  "protocolVersion": 1,
+  "platform": "darwin",
+  "home": "<HOME>",
+  "server": null,
+  "enrolled": true,
+  "deviceId": "<ID>",
+  "deviceName": "test-laptop",
+  "daemonPaused": false,
+  "keychain": "file",
+  "keyCached": true,
+  "harnesses": [
+    {
+      "id": "codex",
+      "displayName": "Codex CLI",
+      "installed": false,
+      "version": null,
+      "configRoots": [
+        "\${CODEX_HOME}"
+      ],
+      "notes": [
+        "credentials: auth.json or OS keyring (not probed); values are never read or synced",
+        "unsupported: Codex memory (\${CODEX_HOME}/memories_*.sqlite): Codex memory is an opaque SQLite store; file-based memory sync is unsupported"
+      ]
+    }
+  ],
+  "topology": [
+    {
+      "surfaceId": "codex.agents-skills",
+      "role": "owner",
+      "owner": "codex.agents-skills",
+      "declaredPath": "$HOME/.agents/skills",
+      "resolvedPath": "<HOME>/.agents/skills",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.archived-sessions",
+      "role": "owner",
+      "owner": "codex.archived-sessions",
+      "declaredPath": "\${CODEX_HOME}/archived_sessions",
+      "resolvedPath": "<HOME>/.codex/archived_sessions",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.auth",
+      "role": "owner",
+      "owner": "codex.auth",
+      "declaredPath": "\${CODEX_HOME}/auth.json",
+      "resolvedPath": "<HOME>/.codex/auth.json",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.automations",
+      "role": "owner",
+      "owner": "codex.automations",
+      "declaredPath": "\${CODEX_HOME}/automations",
+      "resolvedPath": "<HOME>/.codex/automations",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.cache",
+      "role": "owner",
+      "owner": "codex.cache",
+      "declaredPath": "\${CODEX_HOME}/cache",
+      "resolvedPath": "<HOME>/.codex/cache",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.config",
+      "role": "owner",
+      "owner": "codex.config",
+      "declaredPath": "\${CODEX_HOME}/config.toml",
+      "resolvedPath": "<HOME>/.codex/config.toml",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.default-profile",
+      "role": "owner",
+      "owner": "codex.default-profile",
+      "declaredPath": "\${CODEX_HOME}/.config.toml",
+      "resolvedPath": "<HOME>/.codex/.config.toml",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.global-state",
+      "role": "owner",
+      "owner": "codex.global-state",
+      "declaredPath": "\${CODEX_HOME}/.codex-global-state.json",
+      "resolvedPath": "<HOME>/.codex/.codex-global-state.json",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.history",
+      "role": "owner",
+      "owner": "codex.history",
+      "declaredPath": "\${CODEX_HOME}/history.jsonl",
+      "resolvedPath": "<HOME>/.codex/history.jsonl",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.home",
+      "role": "owner",
+      "owner": "codex.home",
+      "declaredPath": "\${CODEX_HOME}",
+      "resolvedPath": "<HOME>/.codex",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.hooks",
+      "role": "owner",
+      "owner": "codex.hooks",
+      "declaredPath": "\${CODEX_HOME}/hooks.json",
+      "resolvedPath": "<HOME>/.codex/hooks.json",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.instructions",
+      "role": "owner",
+      "owner": "codex.instructions",
+      "declaredPath": "\${CODEX_HOME}/AGENTS.md",
+      "resolvedPath": "<HOME>/.codex/AGENTS.md",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.instructions-override",
+      "role": "owner",
+      "owner": "codex.instructions-override",
+      "declaredPath": "\${CODEX_HOME}/AGENTS.override.md",
+      "resolvedPath": "<HOME>/.codex/AGENTS.override.md",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.log",
+      "role": "owner",
+      "owner": "codex.log",
+      "declaredPath": "\${CODEX_HOME}/log",
+      "resolvedPath": "<HOME>/.codex/log",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.managed",
+      "role": "owner",
+      "owner": "codex.managed",
+      "declaredPath": "/etc/codex",
+      "resolvedPath": "/etc/codex",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.plugins",
+      "role": "owner",
+      "owner": "codex.plugins",
+      "declaredPath": "\${CODEX_HOME}/plugins",
+      "resolvedPath": "<HOME>/.codex/plugins",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.rules",
+      "role": "owner",
+      "owner": "codex.rules",
+      "declaredPath": "\${CODEX_HOME}/rules/default.rules",
+      "resolvedPath": "<HOME>/.codex/rules/default.rules",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.session-index",
+      "role": "owner",
+      "owner": "codex.session-index",
+      "declaredPath": "\${CODEX_HOME}/session_index.jsonl",
+      "resolvedPath": "<HOME>/.codex/session_index.jsonl",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.sessions",
+      "role": "owner",
+      "owner": "codex.sessions",
+      "declaredPath": "\${CODEX_HOME}/sessions",
+      "resolvedPath": "<HOME>/.codex/sessions",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.skills",
+      "role": "owner",
+      "owner": "codex.skills",
+      "declaredPath": "\${CODEX_HOME}/skills",
+      "resolvedPath": "<HOME>/.codex/skills",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.sqlite",
+      "role": "owner",
+      "owner": "codex.sqlite",
+      "declaredPath": "\${CODEX_HOME}/sqlite",
+      "resolvedPath": "<HOME>/.codex/sqlite",
+      "linkedBy": [],
+      "exists": false
+    },
+    {
+      "surfaceId": "codex.tmp",
+      "role": "owner",
+      "owner": "codex.tmp",
+      "declaredPath": "\${CODEX_HOME}/tmp",
+      "resolvedPath": "<HOME>/.codex/tmp",
+      "linkedBy": [],
+      "exists": false
+    }
+  ],
+  "neverSync": [
+    {
+      "surfaceId": "codex.archived-sessions",
+      "declaredPath": "\${CODEX_HOME}/archived_sessions",
+      "reason": "archived transcripts",
+      "files": 0
+    },
+    {
+      "surfaceId": "codex.auth",
+      "declaredPath": "\${CODEX_HOME}/auth.json",
+      "reason": "tokens; Codex falls back to the OS keyring when this file is absent",
+      "files": 0
+    },
+    {
+      "surfaceId": "codex.cache",
+      "declaredPath": "\${CODEX_HOME}/cache",
+      "reason": "caches",
+      "files": 0
+    },
+    {
+      "surfaceId": "codex.global-state",
+      "declaredPath": "\${CODEX_HOME}/.codex-global-state.json",
+      "reason": "window and app state",
+      "files": 0
+    },
+    {
+      "surfaceId": "codex.history",
+      "declaredPath": "\${CODEX_HOME}/history.jsonl",
+      "reason": "prompt history",
+      "files": 0
+    },
+    {
+      "surfaceId": "codex.home",
+      "declaredPath": "\${CODEX_HOME}",
+      "reason": "every other file under CODEX_HOME, including *_*.sqlite state and caches",
+      "files": 0
+    },
+    {
+      "surfaceId": "codex.log",
+      "declaredPath": "\${CODEX_HOME}/log",
+      "reason": "logs",
+      "files": 0
+    },
+    {
+      "surfaceId": "codex.managed",
+      "declaredPath": "/etc/codex",
+      "reason": "admin layer",
+      "files": 0
+    },
+    {
+      "surfaceId": "codex.plugins",
+      "declaredPath": "\${CODEX_HOME}/plugins",
+      "reason": "plugin cache; enable flags live in config.toml",
+      "files": 0
+    },
+    {
+      "surfaceId": "codex.session-index",
+      "declaredPath": "\${CODEX_HOME}/session_index.jsonl",
+      "reason": "session index",
+      "files": 0
+    },
+    {
+      "surfaceId": "codex.sessions",
+      "declaredPath": "\${CODEX_HOME}/sessions",
+      "reason": "transcripts",
+      "files": 0
+    },
+    {
+      "surfaceId": "codex.sqlite",
+      "declaredPath": "\${CODEX_HOME}/sqlite",
+      "reason": "sqlite sidecar files",
+      "files": 0
+    },
+    {
+      "surfaceId": "codex.tmp",
+      "declaredPath": "\${CODEX_HOME}/tmp",
+      "reason": "scratch state",
+      "files": 0
+    }
+  ],
+  "secrets": {
+    "scannedFiles": 0,
+    "findings": [],
+    "truncated": false
+  }
+}
+--- stderr
+"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock surfaces human and json 1`] = `
+"exit: 0
+--- stdout
+Codex CLI (codex)  not found
+  credentials: auth.json or OS keyring (not probed); values are never read or synced
+  unsupported: Codex memory (\${CODEX_HOME}/memories_*.sqlite): Codex memory is an opaque SQLite store; file-based memory sync is unsupported
+  SURFACE                      POLICY  STATE  PATH                                    FILES
+  codex.agents-skills          sync    on     $HOME/.agents/skills                    -
+  codex.archived-sessions      never   on     \${CODEX_HOME}/archived_sessions         -
+  codex.auth                   never   on     \${CODEX_HOME}/auth.json                 -
+  codex.automations            sync    on     \${CODEX_HOME}/automations               -
+  codex.cache                  never   on     \${CODEX_HOME}/cache                     -
+  codex.config                 sync    on     \${CODEX_HOME}/config.toml               -
+  codex.default-profile        sync    on     \${CODEX_HOME}/.config.toml              -
+  codex.global-state           never   on     \${CODEX_HOME}/.codex-global-state.json  -
+  codex.history                never   on     \${CODEX_HOME}/history.jsonl             -
+  codex.home                   never   on     \${CODEX_HOME}                           -
+  codex.hooks                  sync    on     \${CODEX_HOME}/hooks.json                -
+  codex.instructions           sync    on     \${CODEX_HOME}/AGENTS.md                 -
+  codex.instructions-override  sync    on     \${CODEX_HOME}/AGENTS.override.md        -
+  codex.log                    never   on     \${CODEX_HOME}/log                       -
+  codex.managed                never   on     /etc/codex                              -
+  codex.plugins                never   on     \${CODEX_HOME}/plugins                   -
+  codex.rules                  sync    on     \${CODEX_HOME}/rules/default.rules       -
+  codex.session-index          never   on     \${CODEX_HOME}/session_index.jsonl       -
+  codex.sessions               never   on     \${CODEX_HOME}/sessions                  -
+  codex.skills                 sync    on     \${CODEX_HOME}/skills                    -
+  codex.sqlite                 never   on     \${CODEX_HOME}/sqlite                    -
+  codex.tmp                    never   on     \${CODEX_HOME}/tmp                       -
+
+22 surfaces: 9 sync, 0 opt-in, 13 never, 22 enabled
+--- stderr
+"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock surfaces human and json 2`] = `
+"exit: 0
+--- stdout
+{
+  "harnesses": [
+    {
+      "id": "codex",
+      "displayName": "Codex CLI",
+      "installed": false,
+      "version": null,
+      "configRoots": [
+        "\${CODEX_HOME}"
+      ],
+      "notes": [
+        "credentials: auth.json or OS keyring (not probed); values are never read or synced",
+        "unsupported: Codex memory (\${CODEX_HOME}/memories_*.sqlite): Codex memory is an opaque SQLite store; file-based memory sync is unsupported"
+      ]
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "codex.agents-skills",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "$HOME/.agents/skills",
+      "description": "shared agent skills read by Codex and OpenCode",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.agents-skills",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.archived-sessions",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/archived_sessions",
+      "description": "archived transcripts",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.archived-sessions",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.auth",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/auth.json",
+      "description": "tokens; Codex falls back to the OS keyring when this file is absent",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.auth",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.automations",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/automations",
+      "description": "scheduled task definitions; cwds and run history stay on the device",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.automations",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.cache",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/cache",
+      "description": "caches",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.cache",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.config",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "keyed-file",
+      "declaredPath": "\${CODEX_HOME}/config.toml",
+      "description": "portable preferences with trust, hook hashes, and marketplace sources stripped at the key level",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.config",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.default-profile",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "keyed-file",
+      "declaredPath": "\${CODEX_HOME}/.config.toml",
+      "description": "default profile-v2 overrides layered over config.toml",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.default-profile",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.global-state",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/.codex-global-state.json",
+      "description": "window and app state",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.global-state",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.history",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/history.jsonl",
+      "description": "prompt history",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.history",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.home",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}",
+      "description": "every other file under CODEX_HOME, including *_*.sqlite state and caches",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.home",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.hooks",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/hooks.json",
+      "description": "lifecycle commands with absolute paths tokenized",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.hooks",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.instructions",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/AGENTS.md",
+      "description": "global instruction chain",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.instructions",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.instructions-override",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/AGENTS.override.md",
+      "description": "global instructions override",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.instructions-override",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.log",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/log",
+      "description": "logs",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.log",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.managed",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "/etc/codex",
+      "description": "admin layer",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.managed",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.plugins",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/plugins",
+      "description": "plugin cache; enable flags live in config.toml",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.plugins",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.rules",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/rules/default.rules",
+      "description": "Starlark execpolicy with absolute paths tokenized",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.rules",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.session-index",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "file",
+      "declaredPath": "\${CODEX_HOME}/session_index.jsonl",
+      "description": "session index",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.session-index",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.sessions",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/sessions",
+      "description": "transcripts",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.sessions",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.skills",
+      "harness": "codex",
+      "policy": "sync",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/skills",
+      "description": "user skills",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.skills",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.sqlite",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/sqlite",
+      "description": "sqlite sidecar files",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.sqlite",
+      "linkedBy": []
+    },
+    {
+      "id": "codex.tmp",
+      "harness": "codex",
+      "policy": "never",
+      "enabled": true,
+      "kind": "tree",
+      "declaredPath": "\${CODEX_HOME}/tmp",
+      "description": "scratch state",
+      "exists": false,
+      "files": 0,
+      "bytes": 0,
+      "role": "owner",
+      "owner": "codex.tmp",
+      "linkedBy": []
+    }
+  ]
+}
+--- stderr
+"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock unlock human and json 1`] = `
+"exit: 0
+--- stdout
+Store key cached for 0000000000 in the keychain.
+Argon2id 8 KiB memory, 1 passes, 1 lane
+--- stderr
+"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock unlock human and json 2`] = `
+"exit: 0
+--- stdout
+{
+  "storeId": "<ID>",
+  "kdf": {
+    "m": 8,
+    "t": 1,
+    "p": 1
+  },
+  "backend": "keychain"
+}
+--- stderr
+"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock login offline human 1`] = `
+"exit: 1
+--- stdout
+
+--- stderr
+laurencio: the server at http://127.0.0.1:1 is not reachable"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock unknown command human and json 1`] = `
+"exit: 1
+--- stdout
+
+--- stderr
+laurencio: unknown command: frobnicate
+Known commands: init, status, sync, pause, resume, diff, log, restore, devices, resolve, export, doctor, surfaces, login, unlock"
+`;
+
+exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock unknown command human and json 2`] = `
+"exit: 1
+--- stdout
+
+--- stderr
+{
+  "error": {
+    "code": "unknown-command",
+    "message": "unknown command: frobnicate",
+    "hint": "Known commands: init, status, sync, pause, resume, diff, log, restore, devices, resolve, export, doctor, surfaces, login, unlock"
+  }
+}"
+`;

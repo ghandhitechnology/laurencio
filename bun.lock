@@ -12,7 +12,19 @@
     },
     "packages/cli": {
       "name": "@laurencio/cli",
-      "version": "0.0.0",
+      "version": "0.1.0",
+      "bin": {
+        "laurencio": "./src/index.ts",
+      },
+      "dependencies": {
+        "@laurencio/core": "workspace:*",
+        "@laurencio/protocol": "workspace:*",
+        "picomatch": "^4.0.4",
+        "smol-toml": "^1.8.0",
+      },
+      "devDependencies": {
+        "@types/picomatch": "^4.0.2",
+      },
     },
     "packages/core": {
       "name": "@laurencio/core",

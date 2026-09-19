@@ -1,10 +1,25 @@
 {
   "name": "@laurencio/cli",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "laurencio command line interface",
+  "bin": {
+    "laurencio": "./src/index.ts"
+  },
   "exports": {
     ".": "./src/index.ts"
+  },
+  "scripts": {
+    "cli:test": "bash ../../scripts/cli-tests.sh"
+  },
+  "dependencies": {
+    "@laurencio/core": "workspace:*",
+    "@laurencio/protocol": "workspace:*",
+    "picomatch": "^4.0.4",
+    "smol-toml": "^1.8.0"
+  },
+  "devDependencies": {
+    "@types/picomatch": "^4.0.2"
   }
 }
