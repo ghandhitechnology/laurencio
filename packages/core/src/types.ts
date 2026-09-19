@@ -5,12 +5,21 @@ export type HarnessId = 'claude' | 'codex' | 'opencode'
 
 export type Platform = 'darwin' | 'linux' | 'win32'
 
+/** Result of a harness probe, supplied by the CLI so adapters stay pure. */
+export interface HarnessProbe {
+  installed: boolean
+  version?: string
+  notes: string[]
+}
+
 /** Directory context an adapter sees. Pure data; adapters never touch the filesystem themselves. */
 export interface AdapterContext {
   home: string
   platform: Platform
   /** Environment values used for token expansion and root overrides. */
   env: Record<string, string | undefined>
+  /** Version and install probes gathered at the CLI edge. */
+  probes?: Partial<Record<HarnessId, HarnessProbe>>
 }
 
 /** `sync` participates. `opt-in` requires explicit enablement. `never` is classified but excluded. */
