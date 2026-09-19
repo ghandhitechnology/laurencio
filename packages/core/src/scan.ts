@@ -414,18 +414,20 @@ export function scan(options: ScanOptions): ScanResult {
   const registry = createAdapterRegistry(options.adapters)
   const registered = registry.inventory(options.ctx)
   const ownership = resolveOwnership(registered, options.ctx)
+  const ownerSurfaces = ownership.surfaces.filter((surface) => surface.role === 'owner')
 
   const state: ScanState = {
     manifest: [],
     layout: new Map(),
     entries: [],
-    ownerRoots: ownership.surfaces
-      .filter((surface) => surface.role === 'owner')
-      .map((surface) => ({
-        surfaceId: surface.registered.surface.id,
-        resolvedPath: surface.resolvedPath,
-      })),
-    boundary: new Set(ownership.surfaces.map((surface) => surface.declaredPath)),
+    ownerRoots: ownerSurfaces.map((surface) => ({
+      surfaceId: surface.registered.surface.id,
+      resolvedPath: surface.resolvedPath,
+    })),
+    // Walks run in physical space, so the boundary that stops a parent tree at a
+    // nested surface root uses the resolved owner roots. A reference's resolved
+    // root is the owner's own content and must not be skipped.
+    boundary: new Set(ownerSurfaces.map((surface) => surface.resolvedPath)),
     matchers: new Map(),
     filePolicyMatchers: new Map(),
     pathMap: new Map(),

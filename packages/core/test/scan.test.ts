@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { DeviceId, RevisionId, SurfaceId } from '@laurencio/protocol'
 import { type ScannedEntry, type ScanResult, scan } from '../src/scan'
@@ -217,6 +218,42 @@ describe('scan manifest', () => {
     ).text()
     expect(`${JSON.stringify(result.manifest, null, 2)}\n`).toBe(expected)
     home.cleanup()
+  })
+
+  test('a symlinked HOME root still takes nested surfaces out of the enclosing tree', () => {
+    const home = buildFakeHome({
+      entries: [
+        { kind: 'file', path: '.claude/CLAUDE.md', content: '# x\n' },
+        { kind: 'file', path: '.claude/projects/a/session.jsonl', content: '{"line":1}\n' },
+      ],
+    })
+    const aliasDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'laurencio-alias-'))
+    const aliasHome = path.join(aliasDir, 'home')
+    fs.symlinkSync(home.home, aliasHome)
+    const result = scan({
+      adapters: [
+        testAdapter('claude', [
+          tree({ id: 'claude.dir', path: '$HOME/.claude' }),
+          tree({ id: 'claude.projects', path: '$HOME/.claude/projects', policy: 'never' }),
+        ]),
+      ],
+      ctx: { ...home.ctx, home: aliasHome },
+      deviceId,
+      revisionId,
+      createdAt,
+    })
+
+    expect(result.manifest.entries.map((entry) => entry.path)).toEqual(['$HOME/.claude/CLAUDE.md'])
+    const session = entryFor(result, home.path('.claude/projects/a/session.jsonl'))
+    expect(session.classification).toBe('never')
+    expect(session.storePath).toBeNull()
+    expect(
+      result.entries.filter(
+        (entry) => entry.localPath === home.path('.claude/projects/a/session.jsonl'),
+      ),
+    ).toHaveLength(1)
+    home.cleanup()
+    fs.rmSync(aliasDir, { recursive: true, force: true })
   })
 
   test('a missing surface root is reported and skipped', () => {
