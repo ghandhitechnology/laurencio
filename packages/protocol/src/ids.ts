@@ -14,7 +14,7 @@ export function newId(
   let timePart = ''
   let t = now
   for (let i = 0; i < 10; i += 1) {
-    timePart = ALPHABET[t % 32]! + timePart
+    timePart = ALPHABET.charAt(t % 32) + timePart
     t = Math.floor(t / 32)
   }
   let randomPart = ''
@@ -25,7 +25,7 @@ export function newId(
     bits += 8
     while (bits >= 5) {
       bits -= 5
-      randomPart += ALPHABET[(value >>> bits) & 31]!
+      randomPart += ALPHABET.charAt((value >>> bits) & 31)
     }
   }
   return timePart + randomPart.slice(0, 16)

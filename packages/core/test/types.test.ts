@@ -44,7 +44,9 @@ const surfaces: Surface[] = [
 describe('surface helpers', () => {
   test('policy decides syncability', () => {
     expect(surfaces.every(isSyncable)).toBe(true)
-    const never: Surface = { ...surfaces[1]!, policy: 'never' }
+    const settings = surfaces.find((s) => s.id === 'claude.settings')
+    expect(settings).toBeDefined()
+    const never: Surface = { ...(settings as Surface), policy: 'never' }
     expect(isSyncable(never)).toBe(false)
   })
 
