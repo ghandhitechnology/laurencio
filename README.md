@@ -6,7 +6,7 @@ Skills, instructions, agents, model preferences, MCP definitions, and optional m
 
 Harnesses: Claude Code, Codex CLI, OpenCode.
 
-Design: [DESIGN.md](DESIGN.md). Implementation plan: [plan/overview.md](plan/overview.md).
+Design: [DESIGN.md](DESIGN.md). Plan: [plan/overview.md](plan/overview.md). Docs: [quickstart](docs/quickstart.md), [security model](docs/security.md), [deploy](packages/server/docs/deploy.md).
 
 ## Development
 

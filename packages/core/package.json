@@ -6,5 +6,19 @@
   "description": "Adapters, sync engine, transforms, crypto",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@laurencio/protocol": "workspace:*",
+    "@napi-rs/keyring": "^2.1.0",
+    "@noble/ciphers": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "diff": "^9.0.0",
+    "jsonc-parser": "^3.3.1",
+    "node-diff3": "^3.2.1",
+    "picomatch": "^4.0.4",
+    "smol-toml": "^1.8.0"
+  },
+  "devDependencies": {
+    "@types/picomatch": "^4.0.2"
   }
 }

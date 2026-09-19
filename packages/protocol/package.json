@@ -6,5 +6,8 @@
   "description": "Wire protocol schemas and shared types",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
   }
 }

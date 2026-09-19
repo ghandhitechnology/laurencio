@@ -1,0 +1,52 @@
+{
+  "revisionId": "00000000000000000000000000",
+  "deviceId": "00000000000000000000000000",
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "entries": [
+    {
+      "surfaceId": "claude.instructions",
+      "path": "$HOME/.claude/CLAUDE.md",
+      "kind": "file",
+      "policy": "sync",
+      "hash": "b063d404f1417cfe60efad23a84eb7a9539b123ebc87f401aa0b7c3b86067df1",
+      "size": 8,
+      "mode": 420
+    },
+    {
+      "surfaceId": "claude.settings",
+      "path": "$HOME/.claude/settings.json",
+      "kind": "file",
+      "policy": "sync",
+      "hash": "3b6166240df66a70606cf24065eb39d43048ce465a20deb9a7f65f070e0a674f",
+      "size": 16,
+      "mode": 420
+    },
+    {
+      "surfaceId": "claude.shared-skills",
+      "path": "$HOME/.agents/skills/shared/SKILL.md",
+      "kind": "file",
+      "policy": "sync",
+      "hash": "cc542b6fb4c917cc65a684a21320e007fe307f184770866172c6f245c7d50729",
+      "size": 9,
+      "mode": 420
+    },
+    {
+      "surfaceId": "claude.skills",
+      "path": "$HOME/.claude/skills/commit/SKILL.md",
+      "kind": "file",
+      "policy": "sync",
+      "hash": "13afbb53ef95d35e27f10a9713e095ede5f23c123fdbb21d88b468c42c1f5af5",
+      "size": 9,
+      "mode": 420
+    },
+    {
+      "surfaceId": "claude.skills",
+      "path": "$HOME/.claude/skills/local-notes.md",
+      "kind": "file",
+      "policy": "sync",
+      "hash": "efb83f2a277e9f49b38efd505f5cbb93885e721b6bd16b788937c9396174c006",
+      "size": 6,
+      "mode": 420
+    }
+  ]
+}

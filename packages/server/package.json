@@ -6,5 +6,26 @@
   "description": "Sync service: auth, devices, blobs, revisions",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "bun src/index.ts",
+    "start": "bun src/index.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "bun src/db/migrate.ts",
+    "gc": "bun src/gc.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1136.0",
+    "@aws-sdk/s3-request-presigner": "^3.1136.0",
+    "@laurencio/protocol": "workspace:*",
+    "better-auth": "^1.7.5",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.13.8",
+    "postgres": "^3.4.9",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "drizzle-kit": "^0.31.10"
   }
 }

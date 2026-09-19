@@ -1,2 +1,3 @@
-export const name = '@laurencio/protocol'
-export const version = '0.0.0'
+export * from './ids'
+export * from './schemas'
+export * from './version'

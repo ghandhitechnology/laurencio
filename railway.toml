@@ -1,0 +1,22 @@
+# Railway service for the Laurencio sync server.
+#
+# Point the service at the repository root: the build needs the workspace
+# lockfile, and the start command runs one package inside it.
+# See packages/server/docs/deploy.md for the full walkthrough.
+
+[build]
+builder = "RAILPACK"
+buildCommand = "bun install --frozen-lockfile"
+
+[deploy]
+# Migrations run before the new release takes traffic.
+preDeployCommand = "bun packages/server/src/db/migrate.ts"
+startCommand = "bun packages/server/src/index.ts"
+healthcheckPath = "/health"
+healthcheckTimeout = 60
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+
+# The garbage collector is a separate service from the same repository with:
+#   startCommand = "bun packages/server/src/gc.ts"
+#   cronSchedule = "0 4 * * *"
