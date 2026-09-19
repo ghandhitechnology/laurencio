@@ -102,6 +102,31 @@ describe('resolveOwnership', () => {
     home.cleanup()
   })
 
+  test('two shared declarations elect the first surface id instead of colliding', () => {
+    const home = buildFakeHome({ entries: [{ kind: 'dir', path: '.agents/skills' }] })
+    const result = ownershipOf(
+      home,
+      [
+        tree({ id: 'opencode.agents-skills', path: '$HOME/.agents/skills', shared: true }),
+        tree({ id: 'codex.agents-skills', path: '$HOME/.agents/skills', shared: true }),
+      ],
+      'codex',
+    )
+    const owner = byId(result.surfaces, 'codex.agents-skills')
+    const reference = byId(result.surfaces, 'opencode.agents-skills')
+    expect(owner.role).toBe('owner')
+    expect(reference.role).toBe('reference')
+    expect(reference.owner).toBe(sid('codex.agents-skills'))
+    expect(result.refs).toEqual([
+      {
+        surfaceId: sid('codex.agents-skills'),
+        resolvedPath: home.path('.agents/skills'),
+        referencedBy: [sid('opencode.agents-skills')],
+      },
+    ])
+    home.cleanup()
+  })
+
   test('a file surface linked into an owned tree becomes a reference', () => {
     const home = buildFakeHome({
       entries: [{ kind: 'file', path: '.agents-opencode/agents.md', content: '# rules' }],

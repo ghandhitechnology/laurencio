@@ -142,14 +142,27 @@ export function resolveOwnership(
 
   for (const [resolvedPath, group] of groups) {
     if (group.length === 1) continue
-    const ordered = [...group].sort((a, b) => rank(a) - rank(b))
-    const owner = ordered[0]
+    let ordered = [...group].sort((a, b) => rank(a) - rank(b))
+    let owner = ordered[0]
     const runnerUp = ordered[1]
     if (owner === undefined || runnerUp === undefined) continue
     if (rank(owner) === rank(runnerUp)) {
-      const ids = group.map((surface) => surface.registered.surface.id).sort()
-      throw new OwnershipCollisionError(resolvedPath, ids, 'multiple-owners')
+      const allSharedTrees = group.every((surface) => {
+        const declared = surface.registered.surface
+        return declared.kind === 'tree' && declared.shared === true
+      })
+      if (!allSharedTrees) {
+        const ids = group.map((surface) => surface.registered.surface.id).sort()
+        throw new OwnershipCollisionError(resolvedPath, ids, 'multiple-owners')
+      }
+      // Several shared declarations and no direct owner: elect the first surface id
+      // deterministically so the tree has exactly one writer and the rest become references.
+      ordered = [...group].sort((a, b) =>
+        compareStrings(a.registered.surface.id, b.registered.surface.id),
+      )
+      owner = ordered[0]
     }
+    if (owner === undefined) continue
     for (const surface of group) {
       if (surface === owner) continue
       surface.role = 'reference'
