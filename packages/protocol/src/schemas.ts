@@ -76,6 +76,8 @@ export type KdfParams = z.infer<typeof KdfParams>
 export const KdfResponse = z.object({
   protocolVersion: z.number().int().positive(),
   kdf: KdfParams.nullable(),
+  /** KDF generation; increments on passphrase rotation. Null before enrollment. */
+  generation: z.number().int().nonnegative().nullable().optional(),
 })
 export type KdfResponse = z.infer<typeof KdfResponse>
 
@@ -137,6 +139,8 @@ export const MeResponse = z.object({
   storeId: StoreId,
   devices: z.array(DeviceRecord),
   kdf: KdfParams.nullable(),
+  /** KDF generation; increments on passphrase rotation. */
+  kdfGeneration: z.number().int().nonnegative().nullable().optional(),
   quotas: z.object({
     blobs: z.number().int().nonnegative(),
     bytes: z.number().int().nonnegative(),
