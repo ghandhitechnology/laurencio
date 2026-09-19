@@ -1,5 +1,5 @@
 import type { BlobId, BlobRef, DeviceId, RevisionId, SurfaceId } from '@laurencio/protocol'
-import type { HarnessId, Platform } from './types'
+import type { HarnessId } from './types'
 
 /** A single tracked path inside a surface. `hash` is over the plaintext projection. */
 export interface ManifestEntry {
@@ -122,11 +122,4 @@ export function defaultPolicy(): DevicePolicy {
     ignore: [],
     cadence: { watch: true, intervalSeconds: 300 },
   }
-}
-
-export interface DeviceIdentity {
-  id: DeviceId
-  name: string
-  platform: Platform
-  createdAt: string
 }
