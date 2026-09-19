@@ -13,12 +13,13 @@ import {
   sync,
 } from '../src/engine'
 import { ConflictLedger } from '../src/merge/conflict'
-import type { Manifest, SyncReport } from '../src/model'
+import type { DevicePolicy, Manifest, SyncReport } from '../src/model'
 import { createFileRemote, type FileRemote } from '../src/remote/file'
 import type { Remote, RemoteCommit, RemoteCommitResult } from '../src/remote/types'
 import { ManifestError } from '../src/remote/types'
 import { SyncState, stateDbPath } from '../src/state'
-import type { Surface } from '../src/types'
+import { activeAdapters } from '../src/sync/policy'
+import type { HarnessAdapter, Surface } from '../src/types'
 import { file, testAdapter, tree } from './helpers/adapter-fixtures'
 import { buildFakeHome, type FakeHome, type FakeHomeOptions } from './helpers/fake-home'
 
@@ -70,17 +71,29 @@ function engineHome(entries: FakeHomeOptions['entries'], linkMode?: 'symlink' | 
   return buildFakeHome({ entries, ...(linkMode !== undefined ? { linkMode } : {}) })
 }
 
+function policyWith(surfaces: Record<string, 'on' | 'off'>, harnessEnabled = true): DevicePolicy {
+  return {
+    version: 1,
+    harnesses: { claude: { enabled: harnessEnabled, surfaces } },
+    ignore: [],
+    cadence: { watch: false, intervalSeconds: 300 },
+  }
+}
+
 interface RunOptions {
   hooks?: SyncOptions['hooks']
   now?: () => Date
   remote?: Remote
   quiescence?: SyncOptions['quiescence']
+  policy?: DevicePolicy
+  adapters?: readonly HarnessAdapter[]
 }
 
 interface Harness {
   remote: FileRemote
   remoteDir: string
   ids: Ids
+  adapters: readonly HarnessAdapter[]
   run(home: FakeHome, deviceId: DeviceId, options?: RunOptions): Promise<SyncReport>
   revisionCount(): Promise<number>
   headManifest(): Promise<import('../src/model').Manifest>
@@ -101,11 +114,12 @@ function harness(surfaceList: Surface[] = surfaces()): Harness {
     remote,
     remoteDir,
     ids,
+    adapters,
     async run(home, deviceId, options = {}) {
       const state = SyncState.open({ path: stateDbPath(home.home) })
       try {
         return await sync({
-          adapters,
+          adapters: options.adapters ?? adapters,
           ctx: home.ctx,
           deviceId,
           storeId,
@@ -116,6 +130,7 @@ function harness(surfaceList: Surface[] = surfaces()): Harness {
           now: options.now ?? (() => new Date(createdAt)),
           createRevisionId: () => ids.revision(),
           ...(options.hooks !== undefined ? { hooks: options.hooks } : {}),
+          ...(options.policy !== undefined ? { policy: options.policy } : {}),
         })
       } finally {
         state.close()
@@ -354,6 +369,58 @@ describe('engine sync', () => {
     ).toBe('tombstone')
     await h.run(b, deviceB)
     expect(fs.existsSync(b.path('.claude/skills/old.md'))).toBe(false)
+    a.cleanup()
+    b.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('a device that disables a surface carries its entries forward instead of deleting them elsewhere', async () => {
+    const h = harness()
+    const entries: FakeHomeOptions['entries'] = [
+      ...baseEntries,
+      { kind: 'dir', path: '.agents/skills' },
+      { kind: 'file', path: '.agents/skills/from-a/SKILL.md', content: '# from A\n' },
+    ]
+    const a = engineHome(entries)
+    const b = engineHome(entries)
+    await h.run(a, deviceA)
+    await h.run(b, deviceB)
+    expect(b.read('.agents/skills/from-a/SKILL.md')).toBe('# from A\n')
+
+    const skillPath = '$HOME/.agents/skills/from-a/SKILL.md'
+    const revisions = await h.revisionCount()
+    const switchedOff = policyWith({ 'claude.shared-skills': 'off' })
+    const disabled = await h.run(a, deviceA, {
+      adapters: activeAdapters(h.adapters, switchedOff),
+      policy: switchedOff,
+    })
+    expect(disabled.changed).toEqual([])
+    expect(await h.revisionCount()).toBe(revisions)
+    expect((await h.headManifest()).entries.find((entry) => entry.path === skillPath)?.kind).toBe(
+      'file',
+    )
+
+    await h.run(b, deviceB)
+    expect(b.read('.agents/skills/from-a/SKILL.md')).toBe('# from A\n')
+
+    // Harness-level disable with the surfaces still declared: the engine must surrender them itself.
+    const harnessOff = policyWith({}, false)
+    const whole = await h.run(a, deviceA, { policy: harnessOff })
+    expect(whole.changed).toEqual([])
+    expect(await h.revisionCount()).toBe(revisions)
+    expect((await h.headManifest()).entries.map((entry) => entry.path)).toContain(skillPath)
+
+    await h.run(b, deviceB)
+    expect(b.read('.agents/skills/from-a/SKILL.md')).toBe('# from A\n')
+
+    // Re-enabled, a real local deletion still travels as a tombstone.
+    fs.rmSync(a.path('.agents/skills/from-a/SKILL.md'))
+    const removal = await h.run(a, deviceA)
+    expect(removal.changed).toContain(skillPath)
+    const manifest = await h.headManifest()
+    expect(manifest.entries.find((entry) => entry.path === skillPath)?.kind).toBe('tombstone')
+    await h.run(b, deviceB)
+    expect(fs.existsSync(b.path('.agents/skills/from-a/SKILL.md'))).toBe(false)
     a.cleanup()
     b.cleanup()
     fs.rmSync(h.remoteDir, { recursive: true, force: true })

@@ -405,9 +405,11 @@ async function runSync(
   }
   const policy = options.policy
   const ignores = (policy?.ignore ?? []).map((pattern) => pm(pattern))
-  const harnessDisabled = (surface: Surface): boolean => {
+  /** A harness toggle or a surface toggle takes the surface out of this device's graph. */
+  const surfaceDisabled = (surface: Surface): boolean => {
     const harness = policy?.harnesses?.[surface.harness]
-    return harness !== undefined && !harness.enabled
+    if (harness === undefined) return false
+    return !harness.enabled || harness.surfaces[surface.id] === 'off'
   }
   const excluded = (storePath: string): boolean =>
     isConflictCopyPath(storePath) || ignores.some((matches) => matches(storePath))
@@ -420,7 +422,7 @@ async function runSync(
   }
   /** The entry's effective policy decides, so Codex profile overrides inside `never` travel. */
   const entrySyncable = (entry: ManifestEntry, surface: Surface | undefined): boolean => {
-    if (surface === undefined || harnessDisabled(surface)) return false
+    if (surface === undefined || surfaceDisabled(surface)) return false
     return entry.policy !== 'opt-in' || optInEnabled(surface)
   }
 
@@ -439,6 +441,19 @@ async function runSync(
     localEntries.push(entry)
   }
   const localManifest: Manifest = { ...scanResult.manifest, entries: localEntries }
+
+  /**
+   * The surfaces this run gives the plan and the commit authority over: declared
+   * by this device's adapters and enabled by its policy. Entries for anything
+   * else, a harness this device does not run, a surface switched off, or an
+   * opt-in surface left off, carry forward instead of vanishing.
+   */
+  const liveSurfaces = new Set<SurfaceId>()
+  for (const report of scanResult.surfaces) {
+    const surface = surfaces.get(report.surfaceId)
+    if (surface === undefined || surfaceDisabled(surface)) continue
+    liveSurfaces.add(report.surfaceId)
+  }
 
   const baseRevisionId = state.getBaseRevision()
   const baseManifest = baseRevisionId === null ? null : state.getManifest(baseRevisionId)
@@ -948,12 +963,14 @@ async function runSync(
       mode: 0,
     })
   }
-  // A device that has an opt-in surface disabled still carries its remote entries
-  // forward. Dropping them would read as a remote deletion on every other device.
+  // Every entry this run cannot manage is carried forward unchanged: a harness
+  // or surface this device has switched off, a surface its adapters do not
+  // declare, or an opt-in surface left off. Dropping one would read as a remote
+  // deletion on every other device.
   const carried = new Map<string, ManifestEntry>()
   for (const entry of [...(baseManifest?.entries ?? []), ...(remoteManifest?.entries ?? [])]) {
     const surface = surfaces.get(entry.surfaceId)
-    if (surface === undefined || entry.policy !== 'opt-in' || optInEnabled(surface)) continue
+    if (liveSurfaces.has(entry.surfaceId) && entrySyncable(entry, surface)) continue
     carried.set(entry.path, entry)
   }
   const present = new Set(newEntries.map((entry) => entry.path))
