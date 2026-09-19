@@ -126,6 +126,7 @@ export function parsePolicyToml(raw: string, source = POLICY_FILE_NAME): DeviceP
     version: 1,
     harnesses,
     ignore: parseIgnore(table, source, base.ignore),
+    prune: booleanValue(table, 'prune', source, base.prune),
     cadence,
   }
 }
@@ -156,6 +157,7 @@ export function savePolicy(home: string, policy: DevicePolicy): string {
   }
   const body = stringify({
     ignore: [...policy.ignore],
+    ...(policy.prune ? { prune: true } : {}),
     cadence: { watch: policy.cadence.watch, intervalSeconds: policy.cadence.intervalSeconds },
     harnesses,
   })

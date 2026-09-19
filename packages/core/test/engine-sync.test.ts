@@ -76,6 +76,7 @@ function policyWith(surfaces: Record<string, 'on' | 'off'>, harnessEnabled = tru
     version: 1,
     harnesses: { claude: { enabled: harnessEnabled, surfaces } },
     ignore: [],
+    prune: false,
     cadence: { watch: false, intervalSeconds: 300 },
   }
 }
@@ -419,6 +420,101 @@ describe('engine sync', () => {
     expect(removal.changed).toContain(skillPath)
     const manifest = await h.headManifest()
     expect(manifest.entries.find((entry) => entry.path === skillPath)?.kind).toBe('tombstone')
+    await h.run(b, deviceB)
+    expect(fs.existsSync(b.path('.agents/skills/from-a/SKILL.md'))).toBe(false)
+    a.cleanup()
+    b.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('a device that ignores a path carries it forward instead of deleting it elsewhere', async () => {
+    const h = harness()
+    const entries: FakeHomeOptions['entries'] = [
+      ...baseEntries,
+      { kind: 'dir', path: '.agents/skills' },
+      { kind: 'file', path: '.agents/skills/from-a/SKILL.md', content: '# from A\n' },
+    ]
+    const a = engineHome(entries)
+    const b = engineHome(entries)
+    await h.run(a, deviceA)
+    await h.run(b, deviceB)
+
+    const skillPath = '$HOME/.agents/skills/from-a/SKILL.md'
+    const ignoring = { ...policyWith({}), ignore: [skillPath] }
+    const revisions = await h.revisionCount()
+    const ignored = await h.run(a, deviceA, { policy: ignoring })
+    expect(ignored.changed).toEqual([])
+    expect(await h.revisionCount()).toBe(revisions)
+    expect((await h.headManifest()).entries.find((entry) => entry.path === skillPath)?.kind).toBe(
+      'file',
+    )
+
+    await h.run(b, deviceB)
+    expect(b.read('.agents/skills/from-a/SKILL.md')).toBe('# from A\n')
+
+    // Pruning lifts the protection from an ignored path that is gone from this device.
+    fs.rmSync(a.path('.agents/skills/from-a/SKILL.md'))
+    const removal = await h.run(a, deviceA, { policy: { ...ignoring, prune: true } })
+    expect(removal.changed).toContain(skillPath)
+    expect((await h.headManifest()).entries.find((entry) => entry.path === skillPath)?.kind).toBe(
+      'tombstone',
+    )
+    await h.run(b, deviceB)
+    expect(fs.existsSync(b.path('.agents/skills/from-a/SKILL.md'))).toBe(false)
+    a.cleanup()
+    b.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('a device whose surface root is missing carries its entries forward instead of deleting them', async () => {
+    const h = harness()
+    const entries: FakeHomeOptions['entries'] = [
+      ...baseEntries,
+      { kind: 'dir', path: '.agents/skills' },
+      { kind: 'file', path: '.agents/skills/from-a/SKILL.md', content: '# from A\n' },
+    ]
+    const a = engineHome(entries)
+    const b = engineHome(entries)
+    await h.run(a, deviceA)
+    await h.run(b, deviceB)
+
+    const skillPath = '$HOME/.agents/skills/from-a/SKILL.md'
+    fs.rmSync(a.path('.agents/skills'), { recursive: true, force: true })
+    const revisions = await h.revisionCount()
+    const missing = await h.run(a, deviceA)
+    expect(missing.changed).toEqual([])
+    expect(await h.revisionCount()).toBe(revisions)
+    expect((await h.headManifest()).entries.find((entry) => entry.path === skillPath)?.kind).toBe(
+      'file',
+    )
+
+    await h.run(b, deviceB)
+    expect(b.read('.agents/skills/from-a/SKILL.md')).toBe('# from A\n')
+    a.cleanup()
+    b.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('a run with pruning propagates a deleted surface root to the other device', async () => {
+    const h = harness()
+    const entries: FakeHomeOptions['entries'] = [
+      ...baseEntries,
+      { kind: 'dir', path: '.agents/skills' },
+      { kind: 'file', path: '.agents/skills/from-a/SKILL.md', content: '# from A\n' },
+    ]
+    const a = engineHome(entries)
+    const b = engineHome(entries)
+    await h.run(a, deviceA)
+    await h.run(b, deviceB)
+
+    const skillPath = '$HOME/.agents/skills/from-a/SKILL.md'
+    fs.rmSync(a.path('.agents/skills'), { recursive: true, force: true })
+    const removal = await h.run(a, deviceA, { policy: { ...policyWith({}), prune: true } })
+    expect(removal.changed).toContain(skillPath)
+    expect((await h.headManifest()).entries.find((entry) => entry.path === skillPath)?.kind).toBe(
+      'tombstone',
+    )
+
     await h.run(b, deviceB)
     expect(fs.existsSync(b.path('.agents/skills/from-a/SKILL.md'))).toBe(false)
     a.cleanup()

@@ -192,6 +192,14 @@ assert_contains "does not open this store" "unlock with the old passphrase after
 run 0 sync
 assert_contains "Sync" "sync after rotate"
 
+echo "== prune =="
+run 0 sync
+rm -f "$HOME_DIR/.codex/AGENTS.md"
+run 0 sync
+assert_contains "Sync idle" "sync carries a missing file-surface root"
+run 0 sync --prune
+assert_contains "Sync synced" "sync --prune"
+
 echo "== offline init =="
 OFFLINE_HOME="$SCRATCH/offline-home"
 mkdir -p "$OFFLINE_HOME"

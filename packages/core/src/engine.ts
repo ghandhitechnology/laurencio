@@ -404,6 +404,7 @@ async function runSync(
     for (const surface of adapter.surfaces(ctx)) surfaces.set(surface.id, surface)
   }
   const policy = options.policy
+  const prune = policy?.prune === true
   const ignores = (policy?.ignore ?? []).map((pattern) => pm(pattern))
   /** A harness toggle or a surface toggle takes the surface out of this device's graph. */
   const surfaceDisabled = (surface: Surface): boolean => {
@@ -411,8 +412,6 @@ async function runSync(
     if (harness === undefined) return false
     return !harness.enabled || harness.surfaces[surface.id] === 'off'
   }
-  const excluded = (storePath: string): boolean =>
-    isConflictCopyPath(storePath) || ignores.some((matches) => matches(storePath))
 
   /** Opt-in surfaces participate only when the device policy names them `on` explicitly. */
   const optInEnabled = (surface: Surface): boolean => {
@@ -434,6 +433,19 @@ async function runSync(
     revisionId: createRevisionId(),
     createdAt: now().toISOString(),
   })
+
+  /**
+   * An ignore entry keeps its path out of this device's plan while the file is
+   * still here to protect, or while the run is not pruning. Pruning turns an
+   * ignored path that is already gone into a deletion, so it can travel.
+   */
+  const presentLocally = new Set<string>()
+  for (const entry of scanResult.manifest.entries) presentLocally.add(entry.path)
+  const ignoreProtects = (storePath: string): boolean =>
+    ignores.some((matches) => matches(storePath)) && (!prune || presentLocally.has(storePath))
+  const excluded = (storePath: string): boolean =>
+    isConflictCopyPath(storePath) || ignoreProtects(storePath)
+
   const localEntries: ManifestEntry[] = []
   for (const entry of scanResult.manifest.entries) {
     if (!entrySyncable(entry, surfaces.get(entry.surfaceId))) continue
@@ -444,14 +456,17 @@ async function runSync(
 
   /**
    * The surfaces this run gives the plan and the commit authority over: declared
-   * by this device's adapters and enabled by its policy. Entries for anything
-   * else, a harness this device does not run, a surface switched off, or an
-   * opt-in surface left off, carry forward instead of vanishing.
+   * by this device's adapters, enabled by its policy, and present on disk. A
+   * missing root is unknown ground, and its entries carry forward instead of
+   * reading as deletions, unless this run is pruning. Entries for anything the
+   * run does not own, a harness this device does not run, a surface switched
+   * off, or an opt-in surface left off, carry forward instead of vanishing.
    */
   const liveSurfaces = new Set<SurfaceId>()
   for (const report of scanResult.surfaces) {
     const surface = surfaces.get(report.surfaceId)
     if (surface === undefined || surfaceDisabled(surface)) continue
+    if (!report.exists && !prune) continue
     liveSurfaces.add(report.surfaceId)
   }
 
@@ -896,6 +911,9 @@ async function runSync(
 
   for (const file of active) {
     if (file.resolution === 'delete-remote') {
+      // A root that is missing cannot tell a deletion from an unmounted
+      // directory, so the entry carries forward unless this run is pruning.
+      if (!liveSurfaces.has(file.surfaceId)) continue
       tombstones.add(file.storePath)
       changed.push(file.storePath)
       continue
@@ -965,12 +983,19 @@ async function runSync(
   }
   // Every entry this run cannot manage is carried forward unchanged: a harness
   // or surface this device has switched off, a surface its adapters do not
-  // declare, or an opt-in surface left off. Dropping one would read as a remote
-  // deletion on every other device.
+  // declare, a surface root that is missing, an ignored path, or an opt-in
+  // surface left off. Dropping one would read as a remote deletion on every
+  // other device.
   const carried = new Map<string, ManifestEntry>()
   for (const entry of [...(baseManifest?.entries ?? []), ...(remoteManifest?.entries ?? [])]) {
     const surface = surfaces.get(entry.surfaceId)
-    if (liveSurfaces.has(entry.surfaceId) && entrySyncable(entry, surface)) continue
+    if (
+      !ignoreProtects(entry.path) &&
+      liveSurfaces.has(entry.surfaceId) &&
+      entrySyncable(entry, surface)
+    ) {
+      continue
+    }
     carried.set(entry.path, entry)
   }
   const present = new Set(newEntries.map((entry) => entry.path))
