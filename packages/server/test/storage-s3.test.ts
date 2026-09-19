@@ -97,7 +97,10 @@ describe('s3 object operations', () => {
       fetch: (request) =>
         new URL(request.url).pathname.includes('/b/plain')
           ? request.method === 'HEAD'
-            ? new Response(null, { status: 200, headers: { 'content-length': String(body.length) } })
+            ? new Response(null, {
+                status: 200,
+                headers: { 'content-length': String(body.length) },
+              })
             : new Response(body, { status: 200 })
           : new Response(null, { status: 404 }),
     })
