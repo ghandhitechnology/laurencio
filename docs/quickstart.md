@@ -9,6 +9,8 @@ bun add -g @laurencio/cli
 laurencio --version
 ```
 
+The package runs on bun 1.3 or newer. On machines without bun, use the standalone binary for your platform instead.
+
 ## Build a binary
 
 The same source compiles to one file with `bun build --compile`:

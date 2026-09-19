@@ -14,16 +14,17 @@
       "name": "@laurencio/cli",
       "version": "0.1.0",
       "bin": {
-        "laurencio": "./src/index.ts",
+        "laurencio": "./dist/index.js",
       },
       "dependencies": {
-        "@laurencio/core": "workspace:*",
-        "@laurencio/protocol": "workspace:*",
-        "picomatch": "^4.0.4",
-        "smol-toml": "^1.8.0",
+        "@napi-rs/keyring": "^2.1.0",
       },
       "devDependencies": {
+        "@laurencio/core": "workspace:*",
+        "@laurencio/protocol": "workspace:*",
         "@types/picomatch": "^4.0.2",
+        "picomatch": "^4.0.4",
+        "smol-toml": "^1.8.0",
       },
     },
     "packages/core": {
