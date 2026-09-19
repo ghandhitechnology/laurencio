@@ -56,6 +56,10 @@ function stubRemote(overrides: Partial<Remote> = {}): StubRemote {
     uploads,
     commits,
     getKdfParams: async () => null,
+    putKdfParams: async (input) => ({
+      kdf: input.params,
+      generation: (input.expectedGeneration ?? 0) + 1,
+    }),
     listRevisions: async () => ({ revisions: [], head: null, heads: [] }),
     getManifest: async () => {
       throw new RemoteError('not-found', 'no manifest')

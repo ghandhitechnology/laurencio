@@ -10,7 +10,8 @@ import type { StoreId } from '@laurencio/protocol'
 import { PROTOCOL_VERSION } from '@laurencio/protocol'
 import type { CommandContext } from './context'
 import { cliError } from './errors'
-import { keychainOptions } from './session'
+import { writeKeyEpoch } from './key-epoch'
+import { keychainOptions, openState } from './session'
 
 export interface KeySetupInput {
   remote: Remote
@@ -22,8 +23,24 @@ export interface KeySetupInput {
 
 export interface KeySetupResult {
   kdf: crypto.KdfParams
+  /** Store generation the cached key belongs to. */
+  generation: number
   backend: crypto.CredentialBackend
   calibratedMs: number | null
+}
+
+/** Records which generation the freshly cached key belongs to, for doctor. */
+function recordKeyEpoch(ctx: CommandContext, generation: number, kdf: crypto.KdfParams): void {
+  const state = openState(ctx)
+  try {
+    writeKeyEpoch(state, {
+      epoch: generation,
+      salt: kdf.salt,
+      createdAt: ctx.now().toISOString(),
+    })
+  } finally {
+    state.close()
+  }
 }
 
 async function verifyAgainstHead(input: {
@@ -50,34 +67,6 @@ async function verifyAgainstHead(input: {
   }
 }
 
-async function putKdfParams(
-  ctx: CommandContext,
-  input: { baseUrl: string | null; storeId: string; token: string; kdf: crypto.KdfParams },
-): Promise<void> {
-  if (input.baseUrl === null) {
-    throw cliError('no-server', 'a new store needs a server to publish KDF parameters')
-  }
-  const response = await (ctx.deps.fetch ?? globalThis.fetch)(
-    new URL(`/v1/stores/${input.storeId}/kdf-params`, input.baseUrl).toString(),
-    {
-      method: 'PUT',
-      headers: {
-        authorization: `Bearer ${input.token}`,
-        'content-type': 'application/json',
-        'x-laurencio-protocol-version': String(PROTOCOL_VERSION),
-      },
-      body: JSON.stringify(crypto.kdfParamsToWire(input.kdf, ctx.now().toISOString())),
-    },
-  )
-  if (!response.ok) {
-    const body = await response.text()
-    throw cliError(
-      'kdf-publish-failed',
-      `could not publish KDF parameters (${response.status}): ${body.slice(0, 200)}`,
-    )
-  }
-}
-
 /**
  * Derives the store key from `input.passphrase`, creating and publishing
  * parameters when the store has none yet, then caches the key.
@@ -88,27 +77,28 @@ export async function setStoreKey(
 ): Promise<KeySetupResult> {
   const published = await input.remote.getKdfParams()
   let kdf: crypto.KdfParams
+  let generation: number
   let calibratedMs: number | null = null
   if (published === null) {
     kdf = (ctx.deps.calibrate ?? (() => crypto.calibrateKdf()))()
     calibratedMs = kdf.calibrationMs ?? null
-    await putKdfParams(ctx, {
-      baseUrl: input.baseUrl,
-      storeId: input.storeId,
-      token: input.token,
-      kdf,
+    const stored = await input.remote.putKdfParams({
+      params: kdf,
+      calibratedAt: ctx.now().toISOString(),
     })
-    const stored = await input.remote.getKdfParams()
-    if (stored !== null) kdf = stored
+    kdf = stored.kdf
+    generation = stored.generation
   } else {
-    kdf = published
+    kdf = published.kdf
+    generation = published.generation
   }
   const key = crypto.deriveMasterKey(input.passphrase, kdf)
   try {
     await verifyAgainstHead({ remote: input.remote, storeId: input.storeId, key })
     const cache = await crypto.openKeyCache(keychainOptions(ctx))
     const backend = await cache.save(input.storeId, key)
-    return { kdf, backend, calibratedMs }
+    recordKeyEpoch(ctx, generation, kdf)
+    return { kdf, generation, backend, calibratedMs }
   } finally {
     key.zeroize()
   }
@@ -119,18 +109,20 @@ export async function unlockStoreKey(
   ctx: CommandContext,
   input: Omit<KeySetupInput, 'baseUrl'> & { baseUrl?: string | null },
 ): Promise<KeySetupResult> {
-  const kdf = await input.remote.getKdfParams()
-  if (kdf === null) {
+  const published = await input.remote.getKdfParams()
+  if (published === null) {
     throw cliError('no-kdf', 'the store has no passphrase parameters yet', {
       hint: 'Run `laurencio init` on the first device.',
     })
   }
+  const kdf = published.kdf
   const key = crypto.deriveMasterKey(input.passphrase, kdf)
   try {
     await verifyAgainstHead({ remote: input.remote, storeId: input.storeId, key })
     const cache = await crypto.openKeyCache(keychainOptions(ctx))
     const backend = await cache.save(input.storeId, key)
-    return { kdf, backend, calibratedMs: null }
+    recordKeyEpoch(ctx, published.generation, kdf)
+    return { kdf, generation: published.generation, backend, calibratedMs: null }
   } finally {
     key.zeroize()
   }

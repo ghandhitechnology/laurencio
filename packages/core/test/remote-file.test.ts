@@ -7,7 +7,7 @@ import { blobIdOf, open, sealText } from '../src/crypto/aead'
 import { deriveMasterKey, type KdfParams, kdfParamsToWire } from '../src/crypto/kdf'
 import type { Manifest } from '../src/model'
 import { createFileRemote } from '../src/remote/file'
-import { parseManifest, RemoteError } from '../src/remote/types'
+import { KdfGenerationConflictError, parseManifest, RemoteError } from '../src/remote/types'
 
 const storeId = StoreId.parse('00000000000000000000000001')
 const deviceId = DeviceId.parse('00000000000000000000000002')
@@ -41,10 +41,36 @@ describe('FileRemote', () => {
     const dir = tempDir()
     const remote = newRemote(dir)
     expect(remote.storeId).toBe(storeId)
-    expect(await remote.getKdfParams()).toEqual(kdf)
+    expect(await remote.getKdfParams()).toEqual({ kdf, generation: 1 })
     const reopened = createFileRemote({ dir })
     expect(reopened.storeId).toBe(storeId)
-    expect(await reopened.getKdfParams()).toEqual(kdf)
+    expect(await reopened.getKdfParams()).toEqual({ kdf, generation: 1 })
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('publishes KDF rotations with compare-and-set and keeps the old generation', async () => {
+    const dir = tempDir()
+    const remote = newRemote(dir)
+    const rotated: KdfParams = { ...kdf, salt: 'ab'.repeat(16) }
+    const first = await remote.putKdfParams({
+      params: kdf,
+      calibratedAt: '2026-01-02T00:00:00.000Z',
+    })
+    expect(first).toEqual({ kdf, generation: 1 })
+
+    const second = await remote.putKdfParams({ params: rotated, expectedGeneration: 1 })
+    expect(second.generation).toBe(2)
+    expect(second.kdf.salt).toBe(rotated.salt)
+    expect((await remote.getKdfParams())?.generation).toBe(2)
+    expect(await remote.getKdfParams({ version: 1 })).toEqual({ kdf, generation: 1 })
+    await expect(remote.getKdfParams({ version: 9 })).rejects.toMatchObject({ code: 'not-found' })
+
+    // A repeat write of the same parameters is a no-op, not a new generation.
+    expect((await remote.putKdfParams({ params: rotated })).generation).toBe(2)
+
+    await expect(
+      remote.putKdfParams({ params: { ...rotated, salt: 'cd'.repeat(16) }, expectedGeneration: 1 }),
+    ).rejects.toBeInstanceOf(KdfGenerationConflictError)
     fs.rmSync(dir, { recursive: true, force: true })
   })
 

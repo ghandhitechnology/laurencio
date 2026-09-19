@@ -16,7 +16,6 @@ import type {
   RevisionId,
   RevisionSummary,
   StoreId,
-  KdfParams as WireKdfParams,
 } from '@laurencio/protocol'
 import {
   BlobDownloadResponse,
@@ -32,17 +31,20 @@ import {
   RevisionList,
 } from '@laurencio/protocol'
 import { blobIdOf } from '../crypto/aead'
-import { type KdfParams, kdfParamsFromWire } from '../crypto/kdf'
+import { type KdfParams, kdfParamsFromWire, kdfParamsToWire } from '../crypto/kdf'
 import type { RevisionMeta } from '../model'
 import type {
   BlobUpload,
+  KdfParamsLookup,
+  PublishedKdfParams,
+  PublishKdfParamsInput,
   Remote,
   RemoteCommit,
   RemoteCommitResult,
   RemoteListOptions,
   RemoteRevisionList,
 } from './types'
-import { RemoteError } from './types'
+import { KdfGenerationConflictError, KdfValidationError, RemoteError } from './types'
 
 export const PROTOCOL_HEADER = 'x-laurencio-protocol-version'
 
@@ -469,12 +471,60 @@ export function createHttpRemote(options: HttpRemoteOptions): HttpRemote {
     return { revisionId: wire.revisionId, accepted: wire.accepted, missing: wire.missing }
   }
 
-  const getKdfParams = async (): Promise<KdfParams | null> => {
-    const body = await apiJson<unknown>('kdf params', `/v1/stores/${storeId}/kdf-params`)
+  const getKdfParams = async (
+    options: KdfParamsLookup = {},
+  ): Promise<PublishedKdfParams | null> => {
+    const query = options.version === undefined ? '' : `?version=${options.version}`
+    const body = await apiJson<unknown>('kdf params', `/v1/stores/${storeId}/kdf-params${query}`)
     assertServerProtocol(body)
     const wire = parseWire(KdfResponse, body, 'kdf response')
-    const kdf: WireKdfParams | null = wire.kdf
-    return kdf === null ? null : kdfParamsFromWire(kdf)
+    if (wire.kdf === null) return null
+    return {
+      kdf: kdfParamsFromWire(wire.kdf),
+      generation: wire.generation ?? options.version ?? 1,
+    }
+  }
+
+  const putKdfParams = async (input: PublishKdfParamsInput): Promise<PublishedKdfParams> => {
+    let wire: ReturnType<typeof kdfParamsToWire>
+    try {
+      wire = kdfParamsToWire(input.params, input.calibratedAt ?? new Date().toISOString())
+    } catch (error) {
+      throw new KdfValidationError(reasonFor(error))
+    }
+    const request =
+      input.expectedGeneration === undefined
+        ? wire
+        : { ...wire, generation: input.expectedGeneration }
+    let body: unknown
+    try {
+      body = await apiJson<unknown>('kdf publish', `/v1/stores/${storeId}/kdf-params`, {
+        method: 'PUT',
+        body: JSON.stringify(request),
+      })
+    } catch (error) {
+      if (error instanceof HttpRemoteError) {
+        if (error.status === 409) {
+          const actual =
+            typeof error.details.generation === 'number' ? error.details.generation : null
+          throw new KdfGenerationConflictError(input.expectedGeneration ?? 0, actual)
+        }
+        if (error.status === 400) throw new KdfValidationError(error.message)
+      }
+      throw error
+    }
+    assertServerProtocol(body)
+    const parsed = parseWire(KdfResponse, body, 'kdf publish response')
+    if (parsed.kdf === null) {
+      throw new RemoteError(
+        'corrupt-store',
+        'the server accepted KDF parameters but published none',
+      )
+    }
+    return {
+      kdf: kdfParamsFromWire(parsed.kdf),
+      generation: parsed.generation ?? (input.expectedGeneration ?? 0) + 1,
+    }
   }
 
   const listDevices = async (): Promise<DeviceRecord[]> => {
@@ -504,6 +554,7 @@ export function createHttpRemote(options: HttpRemoteOptions): HttpRemote {
       token = next
     },
     getKdfParams,
+    putKdfParams,
     listRevisions,
     getManifest,
     putBlob,

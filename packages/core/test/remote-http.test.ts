@@ -9,7 +9,7 @@ import {
   ProtocolVersionError,
   QuotaExceededError,
 } from '../src/remote/http'
-import { RemoteError } from '../src/remote/types'
+import { KdfGenerationConflictError, RemoteError } from '../src/remote/types'
 
 const baseUrl = 'http://server.test'
 const storageUrl = 'http://storage.test'
@@ -85,13 +85,71 @@ describe('HttpRemote', () => {
   test('sends the protocol and device token on /v1 and parses kdf params', async () => {
     const server = makeFetch({
       'GET /v1/stores/00000000000000000000000001/kdf-params': () =>
-        json({ protocolVersion: 1, kdf: wireKdf }),
+        json({ protocolVersion: 1, kdf: wireKdf, generation: 3 }),
     })
     const remote = makeRemote(server)
-    expect(await remote.getKdfParams()).toEqual(kdf)
+    expect(await remote.getKdfParams()).toEqual({ kdf, generation: 3 })
     const call = server.calls[0]
     expect(call?.headers.get('authorization')).toBe(`Bearer ${token}`)
     expect(call?.headers.get('x-laurencio-protocol-version')).toBe('1')
+  })
+
+  test('resolves a superseded KDF generation through ?version', async () => {
+    const rotated: KdfParams = { ...kdf, salt: Buffer.from('other-salt-other').toString('hex') }
+    const server = makeFetch({
+      'GET /v1/stores/00000000000000000000000001/kdf-params': (url) =>
+        new URL(url).searchParams.get('version') === '1'
+          ? json({ protocolVersion: 1, kdf: wireKdf, generation: 1 })
+          : json({
+              protocolVersion: 1,
+              kdf: kdfParamsToWire(rotated, '2026-09-19T00:00:00.000Z'),
+              generation: 2,
+            }),
+    })
+    const remote = makeRemote(server)
+    expect(await remote.getKdfParams({ version: 1 })).toEqual({ kdf, generation: 1 })
+    expect(await remote.getKdfParams()).toEqual({ kdf: rotated, generation: 2 })
+  })
+
+  test('publishes KDF params with the expected generation and maps conflicts', async () => {
+    const server = makeFetch({
+      'PUT /v1/stores/00000000000000000000000001/kdf-params': () =>
+        json({ protocolVersion: 1, kdf: wireKdf, generation: 2 }),
+    })
+    const remote = makeRemote(server)
+    expect(await remote.putKdfParams({ params: kdf, expectedGeneration: 1 })).toEqual({
+      kdf,
+      generation: 2,
+    })
+    const body = JSON.parse(server.calls[0]?.body ?? '{}') as Record<string, unknown>
+    expect(body.generation).toBe(1)
+    expect(body.algo).toBe('argon2id')
+
+    const conflict = makeFetch({
+      'PUT /v1/stores/00000000000000000000000001/kdf-params': () =>
+        json(
+          {
+            error: {
+              code: 'conflict',
+              message: 'store KDF generation changed',
+              details: { generation: 4 },
+            },
+          },
+          409,
+        ),
+    })
+    await expect(
+      makeRemote(conflict).putKdfParams({ params: kdf, expectedGeneration: 1 }),
+    ).rejects.toBeInstanceOf(KdfGenerationConflictError)
+
+    const invalid = makeFetch({
+      'PUT /v1/stores/00000000000000000000000001/kdf-params': () =>
+        json({ error: { code: 'invalid_request', message: 'm must be at least 19456' } }, 400),
+    })
+    await expect(makeRemote(invalid).putKdfParams({ params: kdf })).rejects.toMatchObject({
+      name: 'KdfValidationError',
+      message: expect.stringContaining('m must be at least 19456'),
+    })
   })
 
   test('returns null kdf before enrollment', async () => {

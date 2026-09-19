@@ -68,6 +68,30 @@ export async function askSecret(ctx: CommandContext, question: string): Promise<
 }
 
 /**
+ * Reads the replacement passphrase for a rotation. Interactive runs ask twice;
+ * scripted runs read LAURENCIO_NEW_PASSPHRASE.
+ */
+export async function readNewPassphrase(ctx: CommandContext): Promise<string> {
+  if (!interactive(ctx)) {
+    const fromEnv = ctx.env.LAURENCIO_NEW_PASSPHRASE
+    if (fromEnv !== undefined && fromEnv !== '') return fromEnv
+    throw cliError('missing-passphrase', 'the new passphrase is required', {
+      hint: 'Set LAURENCIO_NEW_PASSPHRASE or run the command interactively.',
+    })
+  }
+  const first = await ctx.io.readSecret('New passphrase:')
+  if (first === '') throw cliError('missing-passphrase', 'the new passphrase must not be empty')
+  const second = await ctx.io.readSecret('Confirm new passphrase:')
+  if (first !== second) {
+    throw cliError(
+      'passphrase-mismatch',
+      'the new passphrases did not match; run the command again',
+    )
+  }
+  return first
+}
+
+/**
  * One passphrase entry path for init, login, and unlock: an explicit file, the
  * environment, or a hidden prompt. `confirm` asks twice for a new passphrase.
  */

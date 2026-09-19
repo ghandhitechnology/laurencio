@@ -52,7 +52,8 @@ function flaky(inner: Remote): FlakyRemote {
     setOffline(value) {
       offline = value
     },
-    getKdfParams: () => guard(() => inner.getKdfParams()),
+    getKdfParams: (options) => guard(() => inner.getKdfParams(options)),
+    putKdfParams: (input) => guard(() => inner.putKdfParams(input)),
     listRevisions: (options) => guard(() => inner.listRevisions(options)),
     getManifest: (revisionId) => guard(() => inner.getManifest(revisionId)),
     putBlob: (upload) => guard(() => inner.putBlob(upload)),

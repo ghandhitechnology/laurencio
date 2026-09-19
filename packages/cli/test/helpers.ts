@@ -11,12 +11,14 @@ import {
   createFileRemote,
   crypto,
   type DeviceIdentity,
+  SyncState,
   storeCredentials,
   writeDeviceIdentity,
 } from '@laurencio/core'
 import { DeviceId, RevisionId, StoreId } from '@laurencio/protocol'
 import { type CliRunResult, runCli } from '../src/cli'
 import type { CliDeps } from '../src/context'
+import { writeKeyEpoch } from '../src/key-epoch'
 import type { CliIo } from '../src/ui'
 
 export const STORE_ID = StoreId.parse('00000000000000000000000001')
@@ -117,6 +119,12 @@ export async function seedStore(options: SeedOptions): Promise<Seeded> {
   if (options.cacheKey !== false) {
     const cache = await crypto.openKeyCache({ home: options.home, keychain })
     await cache.save(storeId, key)
+    const state = SyncState.open({ home: options.home })
+    try {
+      writeKeyEpoch(state, { epoch: 1, salt: KDF.salt, createdAt: NOW })
+    } finally {
+      state.close()
+    }
   }
   if (options.recordDevice !== false) {
     remote.upsertDevice({ id: deviceId, name: identity.name, platform: 'darwin', createdAt: NOW })

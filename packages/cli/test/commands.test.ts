@@ -7,6 +7,7 @@ import {
   conflictCopyPath,
   createFileRemote,
   crypto,
+  HttpRemoteError,
   parseManifest,
   SyncState,
 } from '@laurencio/core'
@@ -747,6 +748,162 @@ describe('login and unlock helpers', () => {
       const data = JSON.parse(out.output) as { keychain: string; keyCached: boolean }
       expect(data.keychain).toBe('keychain')
       expect(data.keyCached).toBe(true)
+    } finally {
+      scratch.cleanup()
+    }
+  })
+})
+
+const NEW_PASSPHRASE = 'cli-rotated-passphrase'
+const ROTATED_KDF: crypto.KdfParams = {
+  algo: 'argon2id',
+  salt: 'ff'.repeat(16),
+  m: 8,
+  t: 1,
+  p: 1,
+  version: 0x13,
+}
+const ROTATE_DEPS = { quiescence: { windowMs: 0 }, calibrate: () => ROTATED_KDF }
+
+async function seededStore(scratch: ReturnType<typeof makeScratch>): Promise<void> {
+  await seedStore({ home: scratch.home, remoteDir: scratch.remoteDir })
+  writeHomeFile(scratch.home, '.claude/CLAUDE.md', '# Rotate me\n')
+  const init = await runForTest(['init', '--yes'], {
+    home: scratch.home,
+    remoteDir: scratch.remoteDir,
+    deps: QUICK,
+  })
+  expect(init.exitCode).toBe(0)
+}
+
+describe('rotate', () => {
+  test('re-encrypts the head, publishes generation 2, and syncs under the new key', async () => {
+    const scratch = makeScratch()
+    try {
+      await seededStore(scratch)
+      const out = await runForTest(['rotate', '--yes'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        deps: ROTATE_DEPS,
+        env: {
+          LAURENCIO_PASSPHRASE: PASSPHRASE,
+          LAURENCIO_NEW_PASSPHRASE: NEW_PASSPHRASE,
+        },
+      })
+      expect(out.exitCode).toBe(0)
+      expect(out.output).toContain('Rotated to epoch 2 and published KDF generation 2')
+
+      const remote = createFileRemote({ dir: scratch.remoteDir })
+      const published = await remote.getKdfParams()
+      expect(published?.generation).toBe(2)
+      expect(published?.kdf.salt).toBe(ROTATED_KDF.salt)
+      expect((await remote.getKdfParams({ version: 1 }))?.kdf.salt).toBe('0'.repeat(32))
+      expect((await remote.listRevisions()).revisions.length).toBe(2)
+
+      const newKey = crypto.deriveMasterKey(NEW_PASSPHRASE, ROTATED_KDF)
+      const oldKey = crypto.deriveMasterKey(PASSPHRASE, {
+        ...ROTATED_KDF,
+        salt: '0'.repeat(32),
+      })
+      const head = (await remote.listRevisions()).head
+      if (head === null) throw new Error('expected a head revision')
+      const headBytes = await remote.getManifest(head)
+      expect(() =>
+        crypto.openText(newKey, 'manifest', headBytes, {
+          storeId: STORE_ID,
+          blobType: 'manifest',
+          protocolVersion: PROTOCOL_VERSION,
+        }),
+      ).not.toThrow()
+      expect(() =>
+        crypto.openText(oldKey, 'manifest', headBytes, {
+          storeId: STORE_ID,
+          blobType: 'manifest',
+          protocolVersion: PROTOCOL_VERSION,
+        }),
+      ).toThrow(crypto.EnvelopeError)
+      newKey.zeroize()
+      oldKey.zeroize()
+
+      const doctor = await runForTest(['doctor', '--json'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+      })
+      const data = JSON.parse(doctor.output) as {
+        kdf: { generation: number; localEpoch: number; pendingPublish: boolean }
+      }
+      expect(data.kdf).toEqual({ generation: 2, localEpoch: 2, pendingPublish: false })
+
+      const sync = await runForTest(['sync'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        deps: QUICK,
+      })
+      expect(sync.exitCode).toBe(0)
+      expect(sync.output).toContain('Sync')
+    } finally {
+      scratch.cleanup()
+    }
+  })
+
+  test('a failed publish leaves a pending record that --resume finishes', async () => {
+    const scratch = makeScratch()
+    try {
+      await seededStore(scratch)
+      const real = createFileRemote({ dir: scratch.remoteDir })
+      const broken: typeof real = {
+        ...real,
+        putKdfParams: async () => {
+          throw new HttpRemoteError('network', 'server unreachable in the test')
+        },
+      }
+      const failed = await runForTest(['rotate', '--yes'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        deps: { ...ROTATE_DEPS, remote: () => broken },
+        env: {
+          LAURENCIO_PASSPHRASE: PASSPHRASE,
+          LAURENCIO_NEW_PASSPHRASE: NEW_PASSPHRASE,
+        },
+      })
+      expect(failed.exitCode).toBe(1)
+      expect(failed.errorOutput).toContain('rotate --resume')
+      expect((await real.getKdfParams())?.generation).toBe(1)
+      expect((await real.listRevisions()).revisions.length).toBe(2)
+
+      // A crash between the commit and the key cache write leaves the old key
+      // cached; --resume re-derives the pending key from the new passphrase.
+      const cache = await crypto.openKeyCache({ home: scratch.home, keychain: null })
+      const staleKey = crypto.deriveMasterKey(PASSPHRASE, {
+        ...ROTATED_KDF,
+        salt: '0'.repeat(32),
+      })
+      await cache.save(STORE_ID, staleKey)
+      staleKey.zeroize()
+
+      const resumed = await runForTest(['rotate', '--resume', '--yes'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        deps: ROTATE_DEPS,
+        env: { LAURENCIO_NEW_PASSPHRASE: NEW_PASSPHRASE },
+      })
+      expect(resumed.exitCode).toBe(0)
+      expect(resumed.output).toContain('No blobs were re-encrypted')
+      expect((await real.getKdfParams())?.generation).toBe(2)
+      expect((await real.listRevisions()).revisions.length).toBe(2)
+
+      const repaired = await cache.load(STORE_ID)
+      expect(repaired).not.toBeNull()
+      repaired?.zeroize()
+
+      const doctor = await runForTest(['doctor', '--json'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+      })
+      const data = JSON.parse(doctor.output) as {
+        kdf: { generation: number; localEpoch: number; pendingPublish: boolean }
+      }
+      expect(data.kdf).toEqual({ generation: 2, localEpoch: 2, pendingPublish: false })
     } finally {
       scratch.cleanup()
     }

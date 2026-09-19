@@ -13,6 +13,7 @@ Commands:
   sync       Run one sync pass
   pause      Stop the daemon from running until resumed
   resume     Let the daemon run again
+  rotate     Re-encrypt the store under a new passphrase and publish it
   diff       Compare local, remote, and base versions of a path
   log        List revision history
   restore    Restore a file, a surface, or everything from a revision
@@ -1289,6 +1290,7 @@ Home: ~
 Server: none configured
 Device: test-laptop (<ID>)
 Keychain: file, store key cached
+KDF: store generation 1, local epoch 1
 Daemon: running
 
 Harnesses
@@ -1335,6 +1337,11 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock doctor hu
   "daemonPaused": false,
   "keychain": "file",
   "keyCached": true,
+  "kdf": {
+    "generation": 1,
+    "localEpoch": 1,
+    "pendingPublish": false
+  },
   "harnesses": [
     {
       "id": "codex",
@@ -2070,7 +2077,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock unknown c
 
 --- stderr
 laurencio: unknown command: frobnicate
-Known commands: init, status, sync, pause, resume, diff, log, restore, devices, resolve, export, doctor, surfaces, login, unlock"
+Known commands: init, status, sync, pause, resume, rotate, diff, log, restore, devices, resolve, export, doctor, surfaces, login, unlock"
 `;
 
 exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock unknown command human and json 2`] = `
@@ -2082,7 +2089,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock unknown c
   "error": {
     "code": "unknown-command",
     "message": "unknown command: frobnicate",
-    "hint": "Known commands: init, status, sync, pause, resume, diff, log, restore, devices, resolve, export, doctor, surfaces, login, unlock"
+    "hint": "Known commands: init, status, sync, pause, resume, rotate, diff, log, restore, devices, resolve, export, doctor, surfaces, login, unlock"
   }
 }"
 `;
