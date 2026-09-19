@@ -9,7 +9,17 @@ bun add -g @laurencio/cli
 laurencio --version
 ```
 
-Single-file binaries are built from the same source with `bun build --compile` for macOS (arm64, x64) and Linux (x64, arm64).
+## Build a binary
+
+The same source compiles to one file with `bun build --compile`:
+
+```
+bun install
+bun build --compile --outfile laurencio packages/cli/src/index.ts
+./laurencio --version
+```
+
+Add `--target=bun-darwin-arm64`, `bun-darwin-x64`, `bun-linux-x64`, or `bun-linux-arm64` to cross-compile. `laurencio daemon install` records the path of the program that ran it, so run the binary you want the service to use when installing.
 
 ## Enroll this device
 
@@ -44,11 +54,13 @@ Exit codes: `0` clean, `1` error, `2` conflicts are present and need a decision.
 ## Unattended sync
 
 ```
-laurencio daemon install
-laurencio pause | resume
+laurencio daemon install     # launchd agent on macOS, systemd user unit on Linux
+laurencio daemon status      # pid, last sync, service file, log location
+laurencio pause | resume     # stop and restart background syncs
+laurencio daemon uninstall   # stops the service and removes the plist or unit
 ```
 
-The daemon watches the enabled surfaces, syncs on an interval, backs off on failures, and defers any file a harness is actively writing.
+The daemon watches the enabled surfaces, syncs on an interval, backs off on failures, and defers any file a harness is actively writing. Logs go to `~/Library/Logs/laurencio` on macOS and to journald (`journalctl --user -u laurencio.service`) on Linux.
 
 ## Per-device overrides
 

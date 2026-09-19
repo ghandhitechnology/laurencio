@@ -168,6 +168,13 @@ assert_contains "already paused" "pause twice"
 run 0 resume
 assert_contains "resumed" "resume"
 
+echo "== daemon =="
+run 0 daemon status
+assert_contains "Daemon: not running" "daemon status"
+assert_contains "Service: not installed" "daemon status"
+run 0 daemon status --json
+assert_json "daemon status --json"
+
 echo "== conflicts exit 2 =="
 printf 'local content\n' >"$HOME_DIR/.claude/CLAUDE.md"
 bun "$ROOT/packages/cli/test/helpers/seed-cli.ts" \
