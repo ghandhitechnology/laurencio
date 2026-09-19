@@ -48,6 +48,7 @@ export const PROTOCOL_HEADER = 'x-laurencio-protocol-version'
 
 /** The server caps a revision page at 500 entries. */
 export const MAX_REVISION_PAGE = 500
+export const MAX_REVISION_HARD_CAP = 5000
 
 export const DEFAULT_RETRY_ATTEMPTS = 5
 export const DEFAULT_RETRY_BASE_MS = 250
@@ -335,18 +336,53 @@ export function createHttpRemote(options: HttpRemoteOptions): HttpRemote {
   const listRevisions = async (
     listOptions: RemoteListOptions = {},
   ): Promise<RemoteRevisionList> => {
-    const params = new URLSearchParams()
-    if (listOptions.since !== undefined) params.set('since', listOptions.since)
-    if (listOptions.limit !== undefined) params.set('limit', String(listOptions.limit))
-    const query = params.size === 0 ? '' : `?${params.toString()}`
-    const body = await apiJson<unknown>('revision list', `/v1/stores/${storeId}/commits${query}`)
+    // Heads come from the parent graph, so fetch the whole store (bounded). A store with
+    // more revisions than the hard cap reports heads from the newest page only.
+    const all: RevisionMeta[] = []
+    for (const size of [MAX_REVISION_PAGE, MAX_REVISION_HARD_CAP]) {
+      const fetched = await fetchRevisionPage(size)
+      if (fetched.length < MAX_REVISION_PAGE || size === MAX_REVISION_HARD_CAP) {
+        all.push(...fetched)
+        break
+      }
+      all.length = 0
+      all.push(...fetched)
+    }
+    const seen = new Set<string>()
+    const ordered = all
+      .reverse()
+      .filter((revision) => (seen.has(revision.id) ? false : (seen.add(revision.id), true)))
+    const allIds = new Set(ordered.map((revision) => revision.id as string))
+    const parentIds = new Set<string>()
+    for (const revision of ordered) {
+      for (const parent of revision.parents) if (allIds.has(parent)) parentIds.add(parent)
+    }
+    const heads = ordered
+      .filter((revision) => !parentIds.has(revision.id))
+      .map((revision) => revision.id)
+    let revisions = ordered
+    if (listOptions.since !== undefined) {
+      const index = revisions.findIndex((revision) => revision.id === listOptions.since)
+      if (index !== -1) revisions = revisions.slice(index + 1)
+    }
+    if (listOptions.limit !== undefined && listOptions.limit >= 0) {
+      revisions = revisions.slice(-listOptions.limit)
+    }
+    for (const revision of ordered) revisionCache.set(revision.id, revision)
+    return { revisions, head: heads.length === 1 ? (heads[0] ?? null) : null, heads }
+  }
+
+  const fetchRevisionPage = async (size: number): Promise<RevisionMeta[]> => {
+    const body = await apiJson<unknown>(
+      'revision list',
+      `/v1/stores/${storeId}/commits?limit=${size}`,
+    )
     assertServerProtocol(body)
     const wire = parseWire(RevisionList, body, 'revision list')
-    const revisions = wire.revisions.map(toRevisionMeta)
+    const page = wire.revisions.map(toRevisionMeta)
     // The server pages newest first; the Remote contract is creation order.
-    revisions.reverse()
-    for (const revision of revisions) revisionCache.set(revision.id, revision)
-    return { revisions, head: wire.head }
+    page.reverse()
+    return page
   }
 
   const getBlob = async (blobId: BlobRef['id']): Promise<Uint8Array> => {
