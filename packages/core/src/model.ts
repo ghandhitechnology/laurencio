@@ -52,16 +52,33 @@ export interface MarkerRange {
   contentHash: string
 }
 
+/** 1-based line ranges, end exclusive. An empty range is an insertion point. */
 export interface ConflictRegion {
   baseRange: [number, number]
   localRange: [number, number]
   remoteRange: [number, number]
 }
 
+/**
+ * How faithfully a merge kept the input's comments, key order, and whitespace.
+ * `reserialized` means comments may be gone; callers that must not lose them
+ * should treat the merge as conflicted and write a conflict copy instead.
+ */
+export interface FormatReport {
+  preserved: boolean
+  mode: 'verbatim' | 'patched' | 'reserialized'
+  reason?: string
+}
+
 export interface MergeResult {
+  /**
+   * `unchanged` means the merged content equals the local working copy, so the
+   * caller has nothing to write. `clean` means remote changes were applied.
+   */
   status: 'clean' | 'conflicted' | 'unchanged'
   content: string
   conflicts: ConflictRegion[]
+  format?: FormatReport
 }
 
 export interface ConflictArtifact {
