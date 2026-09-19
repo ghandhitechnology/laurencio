@@ -128,6 +128,7 @@ function claudeMemoryPolicy(): DevicePolicy {
     version: 1,
     harnesses: { claude: { enabled: true, surfaces: { 'claude.memory': 'on' } } },
     ignore: [],
+    prune: false,
     cadence: { watch: false, intervalSeconds: 300 },
   }
 }

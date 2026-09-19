@@ -1,4 +1,4 @@
-import { type FileResolution, SyncLoop } from '@laurencio/core'
+import { type DevicePolicy, type FileResolution, SyncLoop } from '@laurencio/core'
 import { loadCliConfig } from '../config'
 import { adapterContext, type CommandContext } from '../context'
 import { readPause } from '../pause'
@@ -81,17 +81,20 @@ function renderSync(ctx: CommandContext, data: SyncData): string {
 export const syncCommand: CommandSpec = {
   name: 'sync',
   summary: 'Run one sync pass',
-  usage: 'laurencio sync [--dry-run] [--harness <id>]... [--json]',
+  usage: 'laurencio sync [--dry-run] [--prune] [--harness <id>]... [--json]',
   async run(ctx) {
     const session = await openSession(ctx)
     const policy = loadCliConfig(ctx.home).policy
+    // `--prune` is a run-level override of the device policy, never persisted.
+    const runPolicy: DevicePolicy = ctx.flags.prune ? { ...policy, prune: true } : policy
     const state = openState(ctx)
     try {
       if (ctx.flags.dryRun) {
-        const inventory = scanInventory(ctx, { policy })
+        const inventory = scanInventory(ctx, { policy: runPolicy })
         const bundle = await buildPlan(session, inventory, {
           state,
-          ignore: policy.ignore,
+          ignore: runPolicy.ignore,
+          prune: runPolicy.prune,
         })
         const counts = planSummary(bundle.plan)
         const data: SyncData = {
@@ -119,14 +122,14 @@ export const syncCommand: CommandSpec = {
       }
 
       const loop = new SyncLoop({
-        adapters: adaptersFor(ctx, policy),
+        adapters: adaptersFor(ctx, runPolicy),
         ctx: adapterContext(ctx),
         deviceId: session.identity.deviceId,
         storeId: session.credentials.storeId,
         key: session.credentials.key,
         state,
         remote: session.remote,
-        policy,
+        policy: runPolicy,
         ...(ctx.deps.quiescence === undefined ? {} : { quiescence: ctx.deps.quiescence }),
         ...(ctx.deps.createRevisionId === undefined
           ? {}

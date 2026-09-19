@@ -120,6 +120,12 @@ export interface DevicePolicy {
   version: 1
   harnesses: Partial<Record<HarnessId, HarnessPolicy>>
   ignore: string[]
+  /**
+   * Commit a missing surface root, and an ignored path that is gone from this
+   * device, as a deletion instead of carrying the entries forward. Off by
+   * default so absence alone never erases another device's copy.
+   */
+  prune: boolean
   cadence: {
     watch: boolean
     intervalSeconds: number
@@ -131,6 +137,7 @@ export function defaultPolicy(): DevicePolicy {
     version: 1,
     harnesses: {},
     ignore: [],
+    prune: false,
     cadence: { watch: true, intervalSeconds: 300 },
   }
 }

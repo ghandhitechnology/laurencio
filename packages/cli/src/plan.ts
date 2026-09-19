@@ -72,6 +72,8 @@ export interface PlanOptions {
   state: SyncState
   /** Ignore globs from the device policy. */
   ignore: readonly string[]
+  /** Match the engine's `--prune` run: missing roots and gone ignored paths read as deletions. */
+  prune?: boolean
   localOverride?: Manifest
 }
 
@@ -86,16 +88,32 @@ export async function buildPlan(
   const view = await loadRemoteManifest(session, baseId)
   const remote = view.manifest ?? base
   const ledger = readLedger(state)
+  const prune = options.prune === true
   const ignores = options.ignore.map((pattern) => pm(pattern, { dot: true }))
+  const present = new Set<string>()
+  for (const entry of inventory.scan.manifest.entries) present.add(entry.path)
+  const ignoreProtects = (storePath: string): boolean =>
+    ignores.some((matches) => matches(storePath)) && (!prune || present.has(storePath))
   const local = options.localOverride ?? localManifestWithProjections(inventory)
   const plan = computeSyncPlan({
     base,
     local,
     remote,
-    exclude: (storePath) =>
-      ledger.isExcluded(storePath) || ignores.some((matches) => matches(storePath)),
+    exclude: (storePath) => ledger.isExcluded(storePath) || ignoreProtects(storePath),
   })
-  const active = plan.files.filter((file) => inventory.surfaces.has(file.surfaceId))
+  const missingRoots = new Set<string>()
+  for (const report of inventory.scan.surfaces) {
+    if (!report.exists) missingRoots.add(report.surfaceId)
+  }
+  const active = plan.files.filter((file) => {
+    if (!inventory.surfaces.has(file.surfaceId)) return false
+    // The engine carries a missing root's entries forward; the dry run must not
+    // offer a deletion this run would refuse.
+    if (!prune && file.resolution === 'delete-remote' && missingRoots.has(file.surfaceId)) {
+      return false
+    }
+    return true
+  })
   plan.files = active
   const filePaths = new Set(active.map((file) => file.storePath))
   plan.ops = plan.ops.filter((op) => filePaths.has(op.storePath))

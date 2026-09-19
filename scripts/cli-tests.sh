@@ -181,6 +181,14 @@ assert_contains "Resolved 1 conflict" "resolve --keep-local"
 run 0 status
 assert_contains "Conflicts: none" "status after resolve"
 
+echo "== prune =="
+run 0 sync
+rm -f "$HOME_DIR/.codex/AGENTS.md"
+run 0 sync
+assert_contains "Sync idle" "sync carries a missing file-surface root"
+run 0 sync --prune
+assert_contains "Sync synced" "sync --prune"
+
 echo "== offline init =="
 OFFLINE_HOME="$SCRATCH/offline-home"
 mkdir -p "$OFFLINE_HOME"

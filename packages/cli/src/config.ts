@@ -81,6 +81,7 @@ export function saveCliConfig(home: string, config: CliConfig): string {
   const body = stringify({
     ...(config.server === null ? {} : { server: config.server }),
     ignore: [...config.policy.ignore],
+    ...(config.policy.prune ? { prune: true } : {}),
     cadence: {
       watch: config.policy.cadence.watch,
       intervalSeconds: config.policy.cadence.intervalSeconds,

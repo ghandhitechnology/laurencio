@@ -28,6 +28,7 @@ describe('device policy', () => {
   test('parses ignore lists, harness toggles, surface toggles, and cadence', () => {
     const policy = parsePolicyToml(`
 ignore = ["**/node_modules/**", "$HOME/.claude/plugins/**"]
+prune = true
 
 [cadence]
 watch = false
@@ -43,6 +44,7 @@ enabled = true
 enabled = false
 `)
     expect(policy.ignore).toEqual(['**/node_modules/**', '$HOME/.claude/plugins/**'])
+    expect(policy.prune).toBe(true)
     expect(policy.cadence).toEqual({ watch: false, intervalSeconds: 900 })
     expect(policy.harnesses.claude).toEqual({
       enabled: true,
@@ -88,6 +90,7 @@ enabled = false
     const home = tempHome()
     const policy = parsePolicyToml(`
 ignore = ["**/cache/**"]
+prune = true
 cadence = { watch = true, intervalSeconds = 60 }
 [harnesses.opencode]
 enabled = true

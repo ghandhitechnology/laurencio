@@ -17,6 +17,7 @@ export interface Flags {
   harness: string[]
   surface: string | undefined
   dryRun: boolean
+  prune: boolean
   yes: boolean
   out: string | undefined
   plaintext: boolean
@@ -49,6 +50,7 @@ const OPTIONS = {
   harness: { type: 'string', multiple: true },
   surface: { type: 'string' },
   'dry-run': { type: 'boolean' },
+  prune: { type: 'boolean' },
   yes: { type: 'boolean', short: 'y' },
   out: { type: 'string' },
   plaintext: { type: 'boolean' },
@@ -92,6 +94,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       : [],
     surface: typeof values.surface === 'string' ? values.surface : undefined,
     dryRun: booleanFlag(values, 'dry-run'),
+    prune: booleanFlag(values, 'prune'),
     yes: booleanFlag(values, 'yes'),
     out: typeof values.out === 'string' ? values.out : undefined,
     plaintext: booleanFlag(values, 'plaintext'),

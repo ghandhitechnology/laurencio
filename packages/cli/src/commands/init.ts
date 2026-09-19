@@ -74,6 +74,7 @@ function copyPolicy(policy: DevicePolicy): DevicePolicy {
     version: policy.version,
     harnesses,
     ignore: [...policy.ignore],
+    prune: policy.prune,
     cadence: { ...policy.cadence },
   }
 }

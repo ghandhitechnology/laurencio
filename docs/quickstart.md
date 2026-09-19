@@ -33,6 +33,10 @@ laurencio doctor          # versions, link topology, secret scan, keychain
 
 Exit codes: `0` clean, `1` error, `2` conflicts are present and need a decision.
 
+## Deletions and `--prune`
+
+`laurencio sync` commits a deletion only when this device can testify to it: the surface root still exists and the path is not on the ignore list. Ignored paths, and entries under a surface root that is missing here, keep their manifest entry so the other devices' copies survive. Run `laurencio sync --prune` to push those removals anyway: a missing surface root and an ignored path that is gone from this device become deletions for that run. The daemon honors `prune = true` in `~/.laurencio/config.toml` the same way.
+
 ## Conflicts
 
 `laurencio resolve` walks each conflicted file with a keep-local, keep-remote, or open-in-editor choice. Unresolved files stay on disk as `.conflict-<device>-<timestamp>` copies and never sync.
