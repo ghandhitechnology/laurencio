@@ -1,4 +1,4 @@
-import type { BlobId, DeviceId, RevisionId, SurfaceId } from '@laurencio/protocol'
+import type { BlobId, BlobRef, DeviceId, RevisionId, SurfaceId } from '@laurencio/protocol'
 import type { HarnessId, Platform } from './types'
 
 /** A single tracked path inside a surface. `hash` is over the plaintext projection. */
@@ -9,6 +9,8 @@ export interface ManifestEntry {
   hash: string
   size: number
   mode: number
+  /** Ciphertext blob holding the content. Absent on tombstones and unpushed entries. */
+  blob?: BlobRef
 }
 
 export interface Manifest {
