@@ -24,15 +24,35 @@ export interface RemoteCommit {
   note?: string
 }
 
+export type RemoteCommitRejection = 'missing-blobs' | 'stale-parents'
+
 export interface RemoteCommitResult {
   revisionId: RevisionId
   accepted: boolean
   missing: BlobId[]
+  /** Why a commit was refused; absent when accepted. */
+  reason?: RemoteCommitRejection
+  /** Heads observed when a commit was refused for stale parents. */
+  heads?: RevisionId[]
+}
+
+/** Raised when the remote head advanced between planning and committing. */
+export class StaleParentsError extends Error {
+  readonly heads: readonly RevisionId[]
+
+  constructor(heads: readonly RevisionId[]) {
+    super(`remote head advanced during commit; re-pull and merge (heads: ${heads.join(', ')})`)
+    this.name = 'StaleParentsError'
+    this.heads = heads
+  }
 }
 
 export interface RemoteRevisionList {
   revisions: RevisionMeta[]
+  /** Set only when the store has exactly one head; null when forked or empty. */
   head: RevisionId | null
+  /** Revisions that are not a parent of any other revision, in commit order. */
+  heads: RevisionId[]
 }
 
 export interface RemoteListOptions {

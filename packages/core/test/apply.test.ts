@@ -21,6 +21,19 @@ function tempDir(): string {
   return fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'laurencio-apply-'))
 }
 
+function leftoverTemps(dir: string): string[] {
+  const found: string[] = []
+  const walk = (current: string): void => {
+    for (const name of fs.readdirSync(current)) {
+      const full = path.join(current, name)
+      if (name.startsWith('.laurencio-')) found.push(full)
+      if (fs.lstatSync(full).isDirectory()) walk(full)
+    }
+  }
+  walk(dir)
+  return found
+}
+
 function makeApplier(options: {
   home: string
   planPaths: string[]
@@ -149,6 +162,85 @@ describe('Applier', () => {
     home.cleanup()
   })
 
+  test('compare-and-swap guards every copy-mode mirror, not only the first path', () => {
+    const home = buildFakeHome({
+      entries: [
+        { kind: 'dir', path: '.agents/skills' },
+        { kind: 'file', path: '.agents/skills/SKILL.md', content: 'old' },
+        { kind: 'dir', path: '.claude' },
+        { kind: 'dir', path: '.claude/skills', link: '$HOME/.agents/skills' },
+      ],
+      linkMode: 'copy',
+    })
+    const declared = home.path('.claude/skills/SKILL.md')
+    const owner = home.path('.agents/skills/SKILL.md')
+    const state = SyncState.open({ path: stateDbPath(home.home) })
+    const applier = new Applier({
+      state,
+      planPaths: [declared, owner],
+      platform: 'win32',
+      copyMode: true,
+      layout: {
+        deviceId,
+        entries: [
+          {
+            path: home.path('.claude/skills'),
+            mode: 'symlink',
+            linkTarget: home.path('.agents/skills'),
+          },
+        ],
+      },
+    })
+    const before = applier.fingerprint(declared)
+    fs.writeFileSync(owner, 'changed by the harness')
+    expect(() =>
+      applier.write({
+        storePath: 'skills.SKILL',
+        declaredPath: declared,
+        content: 'new',
+        expected: before,
+      }),
+    ).toThrow(StaleWriteError)
+    // Validation happens before any write: the first mirror is untouched too.
+    expect(fs.readFileSync(declared, 'utf8')).toBe('old')
+    expect(fs.readFileSync(owner, 'utf8')).toBe('changed by the harness')
+    state.close()
+    home.cleanup()
+  })
+
+  test('a target swapped between read and rename is refused and left unplanned', () => {
+    const home = buildFakeHome({
+      entries: [
+        { kind: 'dir', path: '.agents/skills' },
+        { kind: 'dir', path: '.agents/other' },
+        { kind: 'dir', path: '.claude' },
+        { kind: 'dir', path: '.claude/skills', link: '$HOME/.agents/skills' },
+      ],
+    })
+    const declared = home.path('.claude/skills/SKILL.md')
+    const owner = home.path('.agents/skills/SKILL.md')
+    const swapped = home.path('.agents/other/SKILL.md')
+    const { state, applier } = makeApplier({
+      home: home.home,
+      planPaths: [declared, owner, swapped],
+      hooks: {
+        beforeRename: () => {
+          fs.rmSync(home.path('.agents/skills'), { recursive: true, force: true })
+          fs.symlinkSync(home.path('.agents/other'), home.path('.agents/skills'), 'dir')
+        },
+      },
+    })
+    expect(() =>
+      applier.write({ storePath: 'skill', declaredPath: declared, content: '# new\n' }),
+    ).toThrow(StaleWriteError)
+    expect(fs.existsSync(swapped)).toBe(false)
+    expect(fs.lstatSync(home.path('.claude/skills')).isSymbolicLink()).toBe(true)
+    expect(state.listJournal()).toEqual([])
+    expect(leftoverTemps(home.home)).toEqual([])
+    state.close()
+    home.cleanup()
+  })
+
   test('deletions remove files, refuse non-empty directories, and leave tombstones', () => {
     const home = tempDir()
     const base = {
@@ -247,6 +339,40 @@ describe('Applier', () => {
       content: 'new',
       expected: applier.fingerprint(target),
     })
+    expect(fs.readFileSync(target, 'utf8')).toBe('new')
+    expect(state.listJournal()).toEqual([])
+    state.close()
+    fs.rmSync(home, { recursive: true, force: true })
+  })
+
+  test('a crash after the rename is adopted, not rolled back, on reconciliation', () => {
+    const home = tempDir()
+    const target = path.join(home, 'settings.json')
+    fs.writeFileSync(target, 'old')
+    const { state, applier } = makeApplier({
+      home,
+      planPaths: [target],
+      hooks: {
+        afterRename: () => {
+          throw new Error('simulated crash')
+        },
+      },
+    })
+    expect(() =>
+      applier.write({
+        storePath: 's',
+        declaredPath: target,
+        content: 'new',
+        expected: applier.fingerprint(target),
+      }),
+    ).toThrow('simulated crash')
+    // The rename landed before the kill: the target holds the new content and
+    // the journal still says intent.
+    expect(fs.readFileSync(target, 'utf8')).toBe('new')
+    expect(state.listJournal()).toHaveLength(1)
+    const report = state.reconcile()
+    expect(report.adopted).toHaveLength(1)
+    expect(report.rolledBack).toEqual([])
     expect(fs.readFileSync(target, 'utf8')).toBe('new')
     expect(state.listJournal()).toEqual([])
     state.close()

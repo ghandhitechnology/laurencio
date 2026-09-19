@@ -9,6 +9,7 @@
  */
 
 import { Database } from 'bun:sqlite'
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -34,6 +35,7 @@ export function lockFilePath(home: string): string {
 
 export interface LockInfo {
   pid: number
+  /** Process start time, not the lock write time, so a reused PID is detectable. */
   startedAt: string
 }
 
@@ -75,48 +77,115 @@ function defaultIsAlive(pid: number): boolean {
   }
 }
 
+function truncateToSecond(ms: number): string {
+  return new Date(Math.floor(ms / 1000) * 1000).toISOString()
+}
+
+/** Queries the process start time, the evidence that a live PID is not a reuse. */
+export function processStartTime(pid: number): string | null {
+  try {
+    const raw = execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' })
+    const parsed = Date.parse(raw.trim())
+    if (!Number.isNaN(parsed)) return truncateToSecond(parsed)
+  } catch {
+    // Fall through to the arithmetic form; ps is absent on some minimal hosts.
+  }
+  if (pid !== process.pid) return null
+  return truncateToSecond(Date.now() - process.uptime() * 1000)
+}
+
+function matchesHolderStart(
+  holder: LockInfo,
+  processStart: (pid: number) => string | null,
+): boolean {
+  const actual = processStart(holder.pid)
+  // A probe that cannot read a start time leaves the lock held: never steal on doubt.
+  return actual === null || actual === holder.startedAt
+}
+
+function isStaleLock(
+  holder: LockInfo,
+  isAlive: (pid: number) => boolean,
+  processStart: (pid: number) => string | null,
+): boolean {
+  return !isAlive(holder.pid) || !matchesHolderStart(holder, processStart)
+}
+
 /**
- * Removes a lock whose process is gone, the state a kill -9 during an apply
- * leaves behind. Returns the removed lock, or null when there was nothing stale.
+ * Removes a lock whose process is gone or whose PID was reused by a different
+ * process, the state a kill -9 during an apply leaves behind. Returns the
+ * removed lock, or null when the lock is live.
  */
 export function clearStaleLock(
   home: string,
   isAlive: (pid: number) => boolean = defaultIsAlive,
+  processStart: (pid: number) => string | null = processStartTime,
 ): LockInfo | null {
   const filePath = lockFilePath(home)
   const holder = readLock(filePath)
   if (holder === null) return null
-  if (isAlive(holder.pid)) return null
+  if (!isStaleLock(holder, isAlive, processStart)) return null
   fs.rmSync(filePath, { force: true })
   return holder
 }
 
 export interface AcquireLockOptions {
   isAlive?: (pid: number) => boolean
+  processStart?: (pid: number) => string | null
   pid?: number
-  now?: () => Date
+  /** Overrides the recorded start time; tests use it with a matching probe. */
+  startedAt?: string
 }
 
-/** Takes the device-wide sync lock, clearing a stale one first. */
+/**
+ * Takes the device-wide sync lock. Creation is atomic (`O_EXCL`), so two
+ * racing processes cannot both win; a lock whose owner is dead or whose PID
+ * was reused by a new process is replaced.
+ */
 export function acquireLock(home: string, options: AcquireLockOptions = {}): LockInfo {
   const filePath = lockFilePath(home)
-  clearStaleLock(home, options.isAlive ?? defaultIsAlive)
-  const existing = readLock(filePath)
-  if (existing !== null) throw new LockHeldError(filePath, existing)
-  const holder: LockInfo = {
-    pid: options.pid ?? process.pid,
-    startedAt: (options.now ?? (() => new Date()))().toISOString(),
-  }
+  const isAlive = options.isAlive ?? defaultIsAlive
+  const processStart = options.processStart ?? processStartTime
+  const pid = options.pid ?? process.pid
+  const startedAt = options.startedAt ?? processStart(pid) ?? truncateToSecond(Date.now())
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
-  fs.writeFileSync(filePath, JSON.stringify(holder), { mode: 0o600 })
-  return holder
+  for (;;) {
+    const holder: LockInfo = { pid, startedAt }
+    try {
+      const fd = fs.openSync(filePath, 'wx', 0o600)
+      try {
+        fs.writeFileSync(fd, JSON.stringify(holder))
+        fs.fsyncSync(fd)
+      } finally {
+        fs.closeSync(fd)
+      }
+      return holder
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    }
+    const existing = readLock(filePath)
+    if (existing === null) {
+      // An empty or malformed file can be a create that has not written yet.
+      const age = Date.now() - fs.statSync(filePath).mtimeMs
+      if (age < 1000) throw new LockHeldError(filePath, { pid: 0, startedAt: 'unknown' })
+      fs.rmSync(filePath, { force: true })
+      continue
+    }
+    if (!isStaleLock(existing, isAlive, processStart)) throw new LockHeldError(filePath, existing)
+    fs.rmSync(filePath, { force: true })
+  }
 }
 
-/** Releases the lock only when this process holds it. */
-export function releaseLock(home: string, pid: number = process.pid): void {
+/** Releases the lock only when this process still owns it. */
+export function releaseLock(home: string, pid: number = process.pid, holder?: LockInfo): void {
   const filePath = lockFilePath(home)
-  const holder = readLock(filePath)
-  if (holder === null || holder.pid !== pid) return
+  const existing = readLock(filePath)
+  if (existing === null) return
+  if (holder !== undefined) {
+    if (existing.pid !== holder.pid || existing.startedAt !== holder.startedAt) return
+  } else if (existing.pid !== pid) {
+    return
+  }
   fs.rmSync(filePath, { force: true })
 }
 
@@ -552,6 +621,17 @@ export class SyncState {
 
   removePendingOp(opId: string): void {
     this.#db.query('DELETE FROM pending_ops WHERE op_id = ?').run(opId)
+  }
+
+  /**
+   * Removes queued ops, returning them. A deferred path's row is consumed by
+   * the next run: the scan rediscovers anything still outstanding, so rows
+   * must not pile up run after run.
+   */
+  drainPendingOps(kind?: string): PendingOp[] {
+    const ops = this.listPendingOps().filter((op) => kind === undefined || op.kind === kind)
+    for (const op of ops) this.removePendingOp(op.opId)
+    return ops
   }
 
   beginOp(row: {

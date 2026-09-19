@@ -48,6 +48,19 @@ export function conflictRecord(artifact: ConflictArtifact, sourcePath: string): 
 }
 
 /**
+ * Store-relative ledger form. Manifests carry `$HOME/...` paths, so an
+ * absolute disk path would never match and the copy could travel.
+ */
+export function conflictStoreRecord(storePath: string, artifact: ConflictArtifact): ConflictRecord {
+  return {
+    path: `${storePath}.conflict-${sanitizeDevice(artifact.device)}-${compactTimestamp(artifact.createdAt)}`,
+    sourcePath: storePath,
+    device: artifact.device,
+    createdAt: artifact.createdAt,
+  }
+}
+
+/**
  * Durable list of conflict copies. The scanner consults it before emitting a
  * manifest so a copy never travels as config.
  */

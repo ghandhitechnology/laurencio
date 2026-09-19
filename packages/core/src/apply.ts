@@ -67,6 +67,8 @@ export class NonEmptyDirectoryError extends Error {
 export interface ApplyHooks {
   /** Test lever for crash injection: called with the journal row still open. */
   beforeRename?(op: { opId: string; op: JournalOp; targetPath: string; tempPath: string }): void
+  /** Test lever for crash injection: the rename landed, the journal is not updated yet. */
+  afterRename?(op: { opId: string; op: JournalOp; targetPath: string; tempPath: string }): void
 }
 
 export interface ApplierOptions {
@@ -114,6 +116,56 @@ function tryRealpath(candidate: string): string | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Resolved realpath plus inode of a target and its parent. Compared before the
+ * rename so a symlink swapped after the read cannot redirect the write.
+ */
+interface SlotIdentity {
+  targetRealPath: string | null
+  targetDev: number | null
+  targetIno: number | null
+  parentRealPath: string | null
+  parentDev: number | null
+  parentIno: number | null
+}
+
+function slotIdentity(targetPath: string): SlotIdentity {
+  const identity: SlotIdentity = {
+    targetRealPath: tryRealpath(targetPath),
+    targetDev: null,
+    targetIno: null,
+    parentRealPath: tryRealpath(path.dirname(targetPath)),
+    parentDev: null,
+    parentIno: null,
+  }
+  try {
+    const stat = fs.statSync(targetPath)
+    identity.targetDev = stat.dev
+    identity.targetIno = stat.ino
+  } catch {
+    // Missing target: absence is captured by targetRealPath staying null.
+  }
+  try {
+    const parent = fs.statSync(path.dirname(targetPath))
+    identity.parentDev = parent.dev
+    identity.parentIno = parent.ino
+  } catch {
+    // The parent identity remains null; the realpath comparison still applies.
+  }
+  return identity
+}
+
+function sameSlot(a: SlotIdentity, b: SlotIdentity): boolean {
+  return (
+    a.targetRealPath === b.targetRealPath &&
+    a.targetDev === b.targetDev &&
+    a.targetIno === b.targetIno &&
+    a.parentRealPath === b.parentRealPath &&
+    a.parentDev === b.parentDev &&
+    a.parentIno === b.parentIno
+  )
 }
 
 /** Plan paths plus their physical spellings, so symlinked homes stay writable. */
@@ -187,30 +239,77 @@ export class Applier {
     return { mtimeMs: stat.mtimeMs, size: stat.size, hash: hashContent(data) }
   }
 
-  /** Atomic replace with the CAS guard already applied. Returns the new hash. */
+  /** Atomic replace with the CAS guard applied to every path. Returns the new hash. */
   write(op: ApplyWrite): ApplyResult {
     const target = this.resolve(op.declaredPath)
     if (target.linkMissing) ensureLayoutLink(target)
     const expected = op.expected
-    if (expected !== undefined) {
-      const actual = this.fingerprint(target.writePaths[0] ?? target.declaredPath)
-      const matches =
-        expected === null
-          ? actual === null
-          : actual !== null && actual.mtimeMs === expected.mtimeMs && actual.hash === expected.hash
-      if (!matches) {
-        throw new StaleWriteError(target.writePaths[0] ?? target.declaredPath, expected, actual)
-      }
-    }
-
+    const declaredResolved = path.resolve(target.declaredPath)
     const hash = hashContent(op.content)
     const mode = op.mode ?? 0o644
     const baseOpId = `write_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
-    for (const [index, writePath] of target.writePaths.entries()) {
+    // When the declared path itself is written, its slot check already covers
+    // it; the extra guard exists for writes that go through a link chain.
+    const declaredIsPlanned = target.writePaths.some(
+      (writePath) => path.resolve(writePath) === declaredResolved,
+    )
+    // Two passes over every write path: validate them all, then write. A mirror
+    // that moved must refuse before either copy is touched.
+    const prepared = target.writePaths.map((writePath, index) => {
       if (!this.isAllowed(writePath)) throw new NotInPlanError(writePath)
-      this.#writeOne(`${baseOpId}_${index}`, writePath, op.content, mode, hash)
+      ensureParentDirectories(writePath)
+      if (expected !== undefined) {
+        const actual = this.fingerprint(writePath)
+        const matches =
+          expected === null
+            ? actual === null
+            : actual !== null &&
+              actual.hash === expected.hash &&
+              (index > 0 || actual.mtimeMs === expected.mtimeMs)
+        if (!matches) throw new StaleWriteError(writePath, expected, actual)
+      }
+      return {
+        writePath,
+        index,
+        slot: slotIdentity(writePath),
+        declared:
+          declaredIsPlanned || path.resolve(writePath) === declaredResolved
+            ? null
+            : slotIdentity(target.declaredPath),
+      }
+    })
+    for (const item of prepared) {
+      const verify = (): void => {
+        if (!sameSlot(slotIdentity(item.writePath), item.slot)) {
+          throw new StaleWriteError(item.writePath, null, this.fingerprint(item.writePath))
+        }
+        if (item.declared !== null && !sameSlot(slotIdentity(target.declaredPath), item.declared)) {
+          throw new StaleWriteError(
+            target.declaredPath,
+            null,
+            this.fingerprint(target.declaredPath),
+          )
+        }
+        if (
+          expected !== undefined &&
+          !this.#unchanged(item.writePath, expected, item.index === 0)
+        ) {
+          throw new StaleWriteError(item.writePath, expected, this.fingerprint(item.writePath))
+        }
+      }
+      this.#writeOne(`${baseOpId}_${item.index}`, item.writePath, op.content, mode, hash, verify)
     }
     return { physicalPaths: [...target.writePaths], hash }
+  }
+
+  #unchanged(writePath: string, expected: FileFingerprint | null, strictMtime: boolean): boolean {
+    const actual = this.fingerprint(writePath)
+    if (expected === null) return actual === null
+    return (
+      actual !== null &&
+      actual.hash === expected.hash &&
+      (!strictMtime || actual.mtimeMs === expected.mtimeMs)
+    )
   }
 
   #writeOne(
@@ -219,6 +318,7 @@ export class Applier {
     content: string | Uint8Array,
     mode: number,
     hash: string,
+    verify: () => void,
   ): void {
     ensureParentDirectories(targetPath)
     const tempPath = path.join(path.dirname(targetPath), `.laurencio-${opId}.tmp`)
@@ -239,7 +339,17 @@ export class Applier {
     }
     fs.chmodSync(tempPath, mode)
     this.#hooks.beforeRename?.({ opId, op: 'write', targetPath, tempPath })
+    try {
+      verify()
+    } catch (error) {
+      // The target or its symlink chain moved under us: roll the temp back and
+      // let the engine re-plan rather than rename into a different file.
+      fs.rmSync(tempPath, { force: true })
+      this.state.finishOp(opId)
+      throw error
+    }
     fs.renameSync(tempPath, targetPath)
+    this.#hooks.afterRename?.({ opId, op: 'write', targetPath, tempPath })
     this.state.markApplied(opId, hash)
     this.state.finishOp(opId)
   }

@@ -36,4 +36,13 @@ describe('quiescence', () => {
     expect(gate.observe('c', 5000)).toBe('pending')
     expect(gate.observe('c', 5000)).toBe('quiescent')
   })
+
+  test('a future mtime settles once two reads agree instead of deferring forever', () => {
+    let now = 10_000
+    const gate = new QuiescenceGate({ windowMs: 1000, now: () => now })
+    expect(gate.observe('d', 20_000)).toBe('pending')
+    expect(gate.observe('d', 20_000)).toBe('quiescent')
+    now = 10_010
+    expect(gate.observe('d', 20_000)).toBe('quiescent')
+  })
 })

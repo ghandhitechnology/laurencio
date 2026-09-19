@@ -3,11 +3,14 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DeviceId, RevisionId, StoreId } from '@laurencio/protocol'
-import { open } from '../src/crypto/aead'
+import { hashContent } from '../src/apply'
+import { open, sealText } from '../src/crypto/aead'
 import { deriveMasterKey, type KdfParams, kdfParamsToWire } from '../src/crypto/kdf'
-import { type SyncOptions, sync } from '../src/engine'
-import type { SyncReport } from '../src/model'
+import { CONFLICT_LEDGER_META_KEY, type SyncOptions, sync } from '../src/engine'
+import { ConflictLedger } from '../src/merge/conflict'
+import type { Manifest, SyncReport } from '../src/model'
 import { createFileRemote, type FileRemote } from '../src/remote/file'
+import type { Remote, RemoteCommit, RemoteCommitResult } from '../src/remote/types'
 import { SyncState, stateDbPath } from '../src/state'
 import type { Surface } from '../src/types'
 import { file, testAdapter, tree } from './helpers/adapter-fixtures'
@@ -61,17 +64,24 @@ function engineHome(entries: FakeHomeOptions['entries'], linkMode?: 'symlink' | 
   return buildFakeHome({ entries, ...(linkMode !== undefined ? { linkMode } : {}) })
 }
 
+interface RunOptions {
+  hooks?: SyncOptions['hooks']
+  now?: () => Date
+  remote?: Remote
+  quiescence?: SyncOptions['quiescence']
+}
+
 interface Harness {
   remote: FileRemote
   remoteDir: string
   ids: Ids
-  run(home: FakeHome, deviceId: DeviceId, hooks?: SyncOptions['hooks']): Promise<SyncReport>
+  run(home: FakeHome, deviceId: DeviceId, options?: RunOptions): Promise<SyncReport>
   revisionCount(): Promise<number>
   headManifest(): Promise<import('../src/model').Manifest>
   scanRemoteBytes(): string
 }
 
-function harness(): Harness {
+function harness(surfaceList: Surface[] = surfaces()): Harness {
   const remoteDir = tempDir()
   const remote = createFileRemote({
     dir: remoteDir,
@@ -80,12 +90,12 @@ function harness(): Harness {
     now: () => new Date(createdAt),
   })
   const ids = new Ids()
-  const adapters = [testAdapter('claude', surfaces())]
+  const adapters = [testAdapter('claude', surfaceList)]
   return {
     remote,
     remoteDir,
     ids,
-    async run(home, deviceId, hooks) {
+    async run(home, deviceId, options = {}) {
       const state = SyncState.open({ path: stateDbPath(home.home) })
       try {
         return await sync({
@@ -95,11 +105,11 @@ function harness(): Harness {
           storeId,
           key,
           state,
-          remote,
-          quiescence: { windowMs: 0 },
-          now: () => new Date(createdAt),
+          remote: options.remote ?? remote,
+          quiescence: options.quiescence ?? { windowMs: 0 },
+          now: options.now ?? (() => new Date(createdAt)),
           createRevisionId: () => ids.revision(),
-          ...(hooks !== undefined ? { hooks } : {}),
+          ...(options.hooks !== undefined ? { hooks: options.hooks } : {}),
         })
       } finally {
         state.close()
@@ -282,6 +292,15 @@ describe('engine sync', () => {
     ).toHaveLength(1)
     const manifest = await h.headManifest()
     expect(manifest.entries.some((entry) => entry.path.includes('.conflict-'))).toBe(false)
+
+    const ledgerState = SyncState.open({ path: stateDbPath(b.home) })
+    const ledger = ConflictLedger.fromJSON(ledgerState.getMeta(CONFLICT_LEDGER_META_KEY) ?? '')
+    ledgerState.close()
+    const record = ledger.records()[0]
+    expect(record?.sourcePath).toBe('$HOME/.claude/CLAUDE.md')
+    expect(record?.path.startsWith('$HOME/.claude/CLAUDE.md.conflict-')).toBe(true)
+    expect(record?.path.includes(b.home)).toBe(false)
+    expect(ledger.isExcluded(record?.path ?? '')).toBe(true)
     a.cleanup()
     b.cleanup()
     fs.rmSync(h.remoteDir, { recursive: true, force: true })
@@ -381,7 +400,7 @@ describe('engine sync', () => {
         }
       },
     }
-    await expect(h.run(a, deviceA, failing)).rejects.toThrow('simulated crash')
+    await expect(h.run(a, deviceA, { hooks: failing })).rejects.toThrow('simulated crash')
 
     const recovered = await h.run(a, deviceA)
     expect(recovered.changed).toContain('$HOME/.claude/settings.json')
@@ -395,6 +414,289 @@ describe('engine sync', () => {
     expect(leftovers).toEqual([])
     const idle = await h.run(a, deviceA)
     expect(idle.changed).toEqual([])
+    a.cleanup()
+    b.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('a slow-clock push is still detected as the head and converges', async () => {
+    const h = harness()
+    const a = engineHome(baseEntries)
+    const b = engineHome(baseEntries)
+    const clockA = () => new Date('2026-05-01T00:00:00.000Z')
+    const clockB = () => new Date('2026-01-01T00:00:00.000Z')
+
+    await h.run(a, deviceA, { now: clockA })
+    await h.run(b, deviceB, { now: clockB })
+    b.write('.claude/CLAUDE.md', '# shared rules\nB late but ahead\n')
+    await h.run(b, deviceB, { now: clockB })
+
+    const list = await h.remote.listRevisions()
+    expect(list.heads).toHaveLength(1)
+    const headMeta = list.revisions.find((revision) => revision.id === list.heads[0])
+    // The head is B's revision even though it claims an older wall clock.
+    expect(headMeta?.createdAt).toBe(clockB().toISOString())
+
+    const report = await h.run(a, deviceA, { now: clockA })
+    expect(a.read('.claude/CLAUDE.md')).toBe('# shared rules\nB late but ahead\n')
+    expect(report.changed).toContain('$HOME/.claude/CLAUDE.md')
+    a.cleanup()
+    b.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('a stale-parent commit is rejected, re-pulled, re-merged, and retried', async () => {
+    const h = harness()
+    const a = engineHome(baseEntries)
+    const b = engineHome(baseEntries)
+    await h.run(a, deviceA)
+    await h.run(b, deviceB)
+    await h.run(a, deviceA)
+
+    a.write('.claude/CLAUDE.md', '# shared rules\nA edited the rules\n')
+    b.write('.claude/settings.json', '{\n  "model": "sonnet",\n  "theme": "dark"\n}\n')
+
+    let injected = false
+    let rejections = 0
+    const racing: Remote = {
+      ...h.remote,
+      async commit(commit: RemoteCommit): Promise<RemoteCommitResult> {
+        if (!injected) {
+          injected = true
+          await h.run(b, deviceB)
+        }
+        const result = await h.remote.commit(commit)
+        if (!result.accepted && result.reason === 'stale-parents') rejections += 1
+        return result
+      },
+    }
+    const report = await h.run(a, deviceA, { remote: racing })
+    expect(injected).toBe(true)
+    expect(rejections).toBe(1)
+    expect(report.revisionId).not.toBeNull()
+    const manifest = await h.headManifest()
+    const paths = manifest.entries.map((entry) => entry.path)
+    expect(paths).toContain('$HOME/.claude/CLAUDE.md')
+    expect(paths).toContain('$HOME/.claude/settings.json')
+
+    await h.run(b, deviceB)
+    expect(b.read('.claude/CLAUDE.md')).toBe('# shared rules\nA edited the rules\n')
+    expect(a.read('.claude/settings.json')).toContain('"sonnet"')
+    a.cleanup()
+    b.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('two devices committing concurrently converge with no lost edit', async () => {
+    const h = harness()
+    const a = engineHome(baseEntries)
+    const b = engineHome(baseEntries)
+    await h.run(a, deviceA)
+    await h.run(b, deviceB)
+    await h.run(a, deviceA)
+
+    a.write('.claude/CLAUDE.md', '# shared rules\nA wrote this first\n')
+    b.write('.claude/settings.json', '{\n  "model": "sonnet",\n  "theme": "dark"\n}\n')
+    const [aReport, bReport] = await Promise.all([h.run(a, deviceA), h.run(b, deviceB)])
+    expect(aReport.revisionId).not.toBeNull()
+    expect(bReport.revisionId).not.toBeNull()
+
+    await h.run(a, deviceA)
+    await h.run(b, deviceB)
+    expect(a.read('.claude/CLAUDE.md')).toBe('# shared rules\nA wrote this first\n')
+    expect(b.read('.claude/CLAUDE.md')).toBe('# shared rules\nA wrote this first\n')
+    expect(a.read('.claude/settings.json')).toContain('"theme": "dark"')
+    expect(b.read('.claude/settings.json')).toContain('"theme": "dark"')
+    expect(a.read('.claude/settings.json')).toBe(b.read('.claude/settings.json'))
+    a.cleanup()
+    b.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('binaryNewestWins reaches the merge dispatch with real mtimes', async () => {
+    const h = harness([
+      file({ id: 'claude.rules', path: '$HOME/.claude/rules.txt', merge: 'binaryNewestWins' }),
+    ])
+    const entries: FakeHomeOptions['entries'] = [
+      { kind: 'dir', path: '.claude' },
+      { kind: 'file', path: '.claude/rules.txt', content: 'base\n' },
+    ]
+    const a = engineHome(entries)
+    const b = engineHome(entries)
+    await h.run(a, deviceA)
+    await h.run(b, deviceB)
+    await h.run(a, deviceA)
+
+    a.write('.claude/rules.txt', 'from-a\n')
+    await h.run(a, deviceA)
+    b.write('.claude/rules.txt', 'from-b\n')
+    const old = new Date('2020-01-01T00:00:00.000Z')
+    fs.utimesSync(b.path('.claude/rules.txt'), old, old)
+    const remoteWins = await h.run(b, deviceB)
+    expect(remoteWins.conflicts).toEqual([])
+    expect(b.read('.claude/rules.txt')).toBe('from-a\n')
+
+    b.write('.claude/rules.txt', 'from-b-new\n')
+    const future = new Date('2030-01-01T00:00:00.000Z')
+    fs.utimesSync(b.path('.claude/rules.txt'), future, future)
+    a.write('.claude/rules.txt', 'from-a-new\n')
+    await h.run(a, deviceA)
+    const localWins = await h.run(b, deviceB)
+    expect(localWins.conflicts).toEqual([])
+    expect(b.read('.claude/rules.txt')).toBe('from-b-new\n')
+    a.cleanup()
+    b.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('a file with a future mtime still settles instead of deferring forever', async () => {
+    const h = harness()
+    const a = engineHome(baseEntries)
+    const b = engineHome(baseEntries)
+    await h.run(a, deviceA)
+    await h.run(b, deviceB)
+    a.write('.claude/CLAUDE.md', '# shared rules\nA pushes an update\n')
+    await h.run(a, deviceA)
+
+    const future = new Date(Date.now() + 86_400_000)
+    fs.utimesSync(b.path('.claude/CLAUDE.md'), future, future)
+    const report = await h.run(b, deviceB, { quiescence: { windowMs: 1500 } })
+    expect(report.deferred).toEqual([])
+    expect(report.downloaded).toBe(1)
+    expect(b.read('.claude/CLAUDE.md')).toBe('# shared rules\nA pushes an update\n')
+    a.cleanup()
+    b.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('deferred paths drain their pending rows instead of piling up', async () => {
+    const baseText = 'line one\nline two\nline three\n'
+    const h = harness()
+    const a = engineHome([
+      { kind: 'dir', path: '.claude' },
+      { kind: 'file', path: '.claude/CLAUDE.md', content: baseText },
+    ])
+    const b = engineHome([
+      { kind: 'dir', path: '.claude' },
+      { kind: 'file', path: '.claude/CLAUDE.md', content: baseText },
+    ])
+    await h.run(a, deviceA)
+    await h.run(b, deviceB)
+    // B edits the first line; A keeps editing the third, far enough apart to merge.
+    b.write('.claude/CLAUDE.md', 'B local line\nline two\nline three\n')
+
+    const path = '.claude/CLAUDE.md'
+    const storePath = '$HOME/.claude/CLAUDE.md'
+    const touch = (): void => {
+      const now = new Date()
+      fs.utimesSync(b.path(path), now, now)
+    }
+    const bigWindow = { quiescence: { windowMs: 3_600_000 } }
+
+    a.write(path, 'line one\nline two\nA round one\n')
+    await h.run(a, deviceA)
+    touch()
+    const first = await h.run(b, deviceB, bigWindow)
+    expect(first.deferred).toEqual([storePath])
+    const firstState = SyncState.open({ path: stateDbPath(b.home) })
+    expect(firstState.listPendingOps().length).toBe(1)
+    firstState.close()
+
+    a.write(path, 'line one\nline two\nA round two\n')
+    await h.run(a, deviceA)
+    touch()
+    const second = await h.run(b, deviceB, bigWindow)
+    expect(second.deferred).toEqual([storePath])
+    // The previous row was drained; only this run's fresh one is queued.
+    const secondState = SyncState.open({ path: stateDbPath(b.home) })
+    expect(secondState.listPendingOps().length).toBe(1)
+    secondState.close()
+    // The deferred run must not revert A's head in the manifest.
+    const deferredHead = await h.headManifest()
+    expect(deferredHead.entries.find((entry) => entry.path === storePath)?.hash).toBe(
+      hashContent('line one\nline two\nA round two\n'),
+    )
+
+    const settled = await h.run(b, deviceB, { quiescence: { windowMs: 0 } })
+    expect(settled.deferred).toEqual([])
+    const thirdState = SyncState.open({ path: stateDbPath(b.home) })
+    expect(thirdState.listPendingOps()).toEqual([])
+    thirdState.close()
+    expect(b.read(path)).toBe('B local line\nline two\nA round two\n')
+    a.cleanup()
+    b.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('a forked store folds both heads and commits a multi-parent merge', async () => {
+    const seedText = 'one\ntwo\nthree\nfour\nfive\n'
+    const seedEntries: FakeHomeOptions['entries'] = [
+      { kind: 'dir', path: '.claude' },
+      { kind: 'file', path: '.claude/CLAUDE.md', content: seedText },
+      {
+        kind: 'file',
+        path: '.claude/settings.json',
+        content: '{\n  "model": "opus",\n  "theme": "dark"\n}\n',
+      },
+    ]
+    const h = harness()
+    const a = engineHome(seedEntries)
+    const b = engineHome(seedEntries)
+    await h.run(a, deviceA)
+    await h.run(b, deviceB)
+    const baseList = await h.remote.listRevisions()
+    const baseId = baseList.heads[0]
+    if (baseId === undefined) throw new Error('missing base revision')
+    const baseManifest = await h.headManifest()
+
+    async function forkRevision(id: RevisionId, content: string): Promise<void> {
+      const fileContext = { storeId, blobType: 'file' as const, protocolVersion: 1 }
+      const sealed = sealText(key, 'content', content, fileContext)
+      await h.remote.putBlob({ blobId: sealed.blobId, bytes: sealed.bytes })
+      const entries = baseManifest.entries.map((entry) =>
+        entry.path === '$HOME/.claude/CLAUDE.md'
+          ? {
+              ...entry,
+              hash: hashContent(content),
+              size: Buffer.byteLength(content),
+              blob: { id: sealed.blobId, size: sealed.bytes.length },
+            }
+          : entry,
+      )
+      const manifest: Manifest = {
+        revisionId: id,
+        deviceId: deviceA,
+        createdAt: '2026-01-02T00:00:00.000Z',
+        entries,
+      }
+      const manifestContext = { storeId, blobType: 'manifest' as const, protocolVersion: 1 }
+      const sealedManifest = sealText(key, 'manifest', JSON.stringify(manifest), manifestContext)
+      await h.remote.putBlob({ blobId: sealedManifest.blobId, bytes: sealedManifest.bytes })
+      fs.writeFileSync(
+        path.join(h.remoteDir, 'revisions', `${id}.json`),
+        JSON.stringify({
+          id,
+          parents: [baseId],
+          deviceId: deviceA,
+          createdAt: '2026-01-02T00:00:00.000Z',
+          manifest: { id: sealedManifest.blobId, size: sealedManifest.bytes.length },
+          digest: [],
+        }),
+      )
+    }
+    const forkA = RevisionId.parse('00000000000000000000000051')
+    const forkB = RevisionId.parse('00000000000000000000000052')
+    await forkRevision(forkA, 'one\ntwo\nthree\nfour\nA fork\n')
+    await forkRevision(forkB, 'B fork\ntwo\nthree\nfour\nfive\n')
+    expect((await h.remote.listRevisions()).heads).toHaveLength(2)
+
+    const report = await h.run(b, deviceB)
+    expect(report.revisionId).not.toBeNull()
+    expect(b.read('.claude/CLAUDE.md')).toBe('B fork\ntwo\nthree\nfour\nA fork\n')
+    const joined = await h.remote.listRevisions()
+    expect(joined.heads).toHaveLength(1)
+    const merged = joined.revisions.find((revision) => revision.id === joined.heads[0])
+    expect([...(merged?.parents ?? [])].sort()).toEqual([forkA, forkB, baseId].sort())
     a.cleanup()
     b.cleanup()
     fs.rmSync(h.remoteDir, { recursive: true, force: true })

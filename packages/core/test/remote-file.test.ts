@@ -138,6 +138,130 @@ describe('FileRemote', () => {
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
+  test('parent-graph heads ignore skewed clocks and stale parents are refused', async () => {
+    const dir = tempDir()
+    const remote = newRemote(dir)
+    const key = deriveMasterKey('pass', kdf)
+    const context = { storeId, blobType: 'manifest' as const, protocolVersion: 1 }
+    const first = RevisionId.parse('00000000000000000000000021')
+    const second = RevisionId.parse('00000000000000000000000022')
+    const third = RevisionId.parse('00000000000000000000000023')
+
+    async function commitRevision(id: RevisionId, parents: RevisionId[], at: string) {
+      const manifest: Manifest = { revisionId: id, deviceId, createdAt: at, entries: [] }
+      const sealed = sealText(key, 'manifest', JSON.stringify(manifest), context)
+      await remote.putBlob({ blobId: sealed.blobId, bytes: sealed.bytes })
+      return remote.commit({
+        revision: {
+          id,
+          storeId,
+          deviceId,
+          parents,
+          manifest: { id: sealed.blobId, size: sealed.bytes.length },
+          createdAt: at,
+        },
+        blobs: [],
+        digest: [],
+      })
+    }
+
+    expect((await commitRevision(first, [], '2026-06-01T00:00:00.000Z')).accepted).toBe(true)
+    // The child claims an earlier wall clock; the graph still makes it the head.
+    expect((await commitRevision(second, [first], '2026-01-01T00:00:00.000Z')).accepted).toBe(true)
+    const list = await remote.listRevisions()
+    expect(list.heads).toEqual([second])
+    expect(list.head).toBe(second)
+
+    const stale = await commitRevision(third, [first], '2026-07-01T00:00:00.000Z')
+    expect(stale.accepted).toBe(false)
+    expect(stale.reason).toBe('stale-parents')
+    expect(stale.heads).toEqual([second])
+
+    const accepted = await commitRevision(third, [second], '2026-07-01T00:00:00.000Z')
+    expect(accepted.accepted).toBe(true)
+    expect((await remote.listRevisions()).heads).toEqual([third])
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('a fork exposes both heads and a multi-parent merge commit covers them', async () => {
+    const dir = tempDir()
+    const remote = newRemote(dir)
+    const key = deriveMasterKey('pass', kdf)
+    const context = { storeId, blobType: 'manifest' as const, protocolVersion: 1 }
+    const base = RevisionId.parse('00000000000000000000000030')
+    const left = RevisionId.parse('00000000000000000000000031')
+    const right = RevisionId.parse('00000000000000000000000032')
+    const merge = RevisionId.parse('00000000000000000000000033')
+
+    async function sealManifest(id: RevisionId): Promise<{ id: BlobId; size: number }> {
+      const manifest: Manifest = {
+        revisionId: id,
+        deviceId,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        entries: [],
+      }
+      const sealed = sealText(key, 'manifest', JSON.stringify(manifest), context)
+      await remote.putBlob({ blobId: sealed.blobId, bytes: sealed.bytes })
+      return { id: sealed.blobId, size: sealed.bytes.length }
+    }
+
+    // Fabricate the fork the way a pre-graph writer could leave one: two
+    // children of the same parent, written straight into the store.
+    async function writeForkRevision(id: RevisionId, parents: RevisionId[]): Promise<void> {
+      fs.writeFileSync(
+        path.join(dir, 'revisions', `${id}.json`),
+        JSON.stringify({
+          id,
+          parents,
+          deviceId,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          manifest: await sealManifest(id),
+          digest: [],
+        }),
+      )
+    }
+    await writeForkRevision(base, [])
+    await writeForkRevision(left, [base])
+    await writeForkRevision(right, [base])
+    const forked = await remote.listRevisions()
+    expect([...forked.heads].sort()).toEqual([left, right].sort())
+    expect(forked.head).toBeNull()
+
+    const partial = await remote.commit({
+      revision: {
+        id: merge,
+        storeId,
+        deviceId,
+        parents: [left],
+        manifest: await sealManifest(merge),
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+      blobs: [],
+      digest: [],
+    })
+    expect(partial.accepted).toBe(false)
+    expect(partial.reason).toBe('stale-parents')
+    expect([...(partial.heads ?? [])].sort()).toEqual([left, right].sort())
+
+    const joined = await remote.commit({
+      revision: {
+        id: merge,
+        storeId,
+        deviceId,
+        parents: [left, right],
+        manifest: await sealManifest(merge),
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+      blobs: [],
+      digest: [],
+    })
+    expect(joined.accepted).toBe(true)
+    const linear = await remote.listRevisions()
+    expect(linear.heads).toEqual([merge])
+    expect(linear.head).toBe(merge)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
   test('a blob sealed for one store does not open in another', () => {
     const key = deriveMasterKey('pass', kdf)
     const sealed = sealText(key, 'content', 'secret', context)

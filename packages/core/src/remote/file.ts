@@ -71,11 +71,21 @@ function readJsonFile(filePath: string): unknown {
   }
 }
 
+let tempCounter = 0
+
 function atomicWrite(filePath: string, data: string | Uint8Array): void {
-  const tempPath = `${filePath}.tmp-${process.pid}`
+  tempCounter += 1
+  const unique = `${process.pid}-${tempCounter.toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  const tempPath = `${filePath}.tmp-${unique}`
   fs.writeFileSync(tempPath, data)
   fs.renameSync(tempPath, filePath)
 }
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+const COMMIT_LOCK_TIMEOUT_MS = 10_000
 
 function asRecord(value: unknown, what: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null) {
@@ -133,6 +143,75 @@ function parseRevisionMeta(value: unknown, source: string): RevisionMeta {
 
 function revisionFilePath(dir: string, revisionId: RevisionId): string {
   return path.join(dir, 'revisions', `${revisionId}.json`)
+}
+
+function listAllRevisions(dir: string): RevisionMeta[] {
+  const revisionDir = path.join(dir, 'revisions')
+  const names = fs.existsSync(revisionDir) ? fs.readdirSync(revisionDir).sort() : []
+  const revisions: RevisionMeta[] = []
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue
+    revisions.push(parseRevisionMeta(readJsonFile(path.join(revisionDir, name)), name))
+  }
+  return revisions
+}
+
+function commitLockHolderGone(lockPath: string): boolean {
+  try {
+    const pid = Number.parseInt(fs.readFileSync(lockPath, 'utf8').trim(), 10)
+    if (!Number.isInteger(pid) || pid <= 0) return false
+    try {
+      process.kill(pid, 0)
+      return false
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ESRCH'
+    }
+  } catch {
+    return true
+  }
+}
+
+/** Serializes head check plus revision write across processes on one store. */
+function withCommitLock<T>(dir: string, action: () => T): T {
+  const lockPath = path.join(dir, 'revisions', '.commit.lock')
+  const deadline = Date.now() + COMMIT_LOCK_TIMEOUT_MS
+  for (;;) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx', 0o600)
+      try {
+        fs.writeFileSync(fd, String(process.pid))
+        return action()
+      } finally {
+        fs.closeSync(fd)
+        fs.rmSync(lockPath, { force: true })
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      if (commitLockHolderGone(lockPath)) {
+        fs.rmSync(lockPath, { force: true })
+        continue
+      }
+      if (Date.now() > deadline) {
+        throw new RemoteError('corrupt-store', 'commit lock was not released in time')
+      }
+      sleepSync(5)
+    }
+  }
+}
+
+/**
+ * Heads are revisions that no other revision names as a parent. Wall-clock
+ * `createdAt` may be skewed between devices, so it never decides the head.
+ */
+function revisionHeads(revisions: readonly RevisionMeta[]): RevisionId[] {
+  const referenced = new Set<string>()
+  for (const revision of revisions) {
+    for (const parent of revision.parents) referenced.add(parent)
+  }
+  return revisions
+    .filter((revision) => !referenced.has(revision.id))
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((revision) => revision.id)
 }
 
 export function createFileRemote(options: FileRemoteOptions): FileRemote {
@@ -220,15 +299,10 @@ export function createFileRemote(options: FileRemoteOptions): FileRemote {
     },
 
     async listRevisions(listOptions: RemoteListOptions = {}): Promise<RemoteRevisionList> {
-      const revisionDir = path.join(dir, 'revisions')
-      const names = fs.existsSync(revisionDir) ? fs.readdirSync(revisionDir).sort() : []
-      let revisions: RevisionMeta[] = []
-      for (const name of names) {
-        if (!name.endsWith('.json')) continue
-        revisions.push(parseRevisionMeta(readJsonFile(path.join(revisionDir, name)), name))
-      }
-      revisions.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
-      const head = revisions.at(-1)?.id ?? null
+      const all = listAllRevisions(dir)
+      all.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+      const heads = revisionHeads(all)
+      let revisions = all
       if (listOptions.since !== undefined) {
         const index = revisions.findIndex((revision) => revision.id === listOptions.since)
         revisions = index === -1 ? revisions : revisions.slice(index + 1)
@@ -236,7 +310,7 @@ export function createFileRemote(options: FileRemoteOptions): FileRemote {
       if (listOptions.limit !== undefined && listOptions.limit >= 0) {
         revisions = revisions.slice(-listOptions.limit)
       }
-      return { revisions, head }
+      return { revisions, head: heads.length === 1 ? (heads[0] ?? null) : null, heads }
     },
 
     async getManifest(revisionId: RevisionId): Promise<Uint8Array> {
@@ -284,25 +358,50 @@ export function createFileRemote(options: FileRemoteOptions): FileRemote {
         // Idempotent by revision id: a repeat returns the stored result.
         return { revisionId: commit.revision.id, accepted: true, missing: [] }
       }
-      const missing: BlobId[] = []
-      const referenced = new Set<string>([commit.revision.manifest.id])
-      for (const blob of commit.blobs) referenced.add(blob.id)
-      for (const blobId of [...referenced].sort()) {
-        if (!fs.existsSync(blobPath(blobId as BlobId))) missing.push(blobId as BlobId)
-      }
-      if (missing.length > 0) {
-        return { revisionId: commit.revision.id, accepted: false, missing }
-      }
-      const meta: RevisionMeta = {
-        id: commit.revision.id,
-        parents: [...commit.revision.parents],
-        deviceId: commit.revision.deviceId,
-        createdAt: commit.revision.createdAt,
-        manifest: { id: commit.revision.manifest.id, size: commit.revision.manifest.size },
-        digest: [...(commit.digest as SurfaceDigest[])],
-      }
-      atomicWrite(target, JSON.stringify(meta, null, 2))
-      return { revisionId: commit.revision.id, accepted: true, missing: [] }
+      // One writer at a time: the head check and the revision write must be
+      // atomic, or two devices both see the old head and both land.
+      return withCommitLock(dir, () => {
+        if (fs.existsSync(target)) {
+          return { revisionId: commit.revision.id, accepted: true, missing: [] }
+        }
+        const current = listAllRevisions(dir)
+        const heads = revisionHeads(current)
+        const parents = new Set<string>(commit.revision.parents)
+        const uncovered = heads.filter((head) => !parents.has(head))
+        if (uncovered.length > 0) {
+          return {
+            revisionId: commit.revision.id,
+            accepted: false,
+            missing: [],
+            reason: 'stale-parents' as const,
+            heads,
+          }
+        }
+        const missing: BlobId[] = []
+        const referenced = new Set<string>([commit.revision.manifest.id])
+        for (const blob of commit.blobs) referenced.add(blob.id)
+        for (const blobId of [...referenced].sort()) {
+          if (!fs.existsSync(blobPath(blobId as BlobId))) missing.push(blobId as BlobId)
+        }
+        if (missing.length > 0) {
+          return {
+            revisionId: commit.revision.id,
+            accepted: false,
+            missing,
+            reason: 'missing-blobs' as const,
+          }
+        }
+        const meta: RevisionMeta = {
+          id: commit.revision.id,
+          parents: [...commit.revision.parents],
+          deviceId: commit.revision.deviceId,
+          createdAt: commit.revision.createdAt,
+          manifest: { id: commit.revision.manifest.id, size: commit.revision.manifest.size },
+          digest: [...(commit.digest as SurfaceDigest[])],
+        }
+        atomicWrite(target, JSON.stringify(meta, null, 2))
+        return { revisionId: commit.revision.id, accepted: true, missing: [] }
+      })
     },
 
     async listDevices(): Promise<DeviceRecord[]> {
