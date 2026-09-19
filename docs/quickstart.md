@@ -5,7 +5,7 @@ Back-link: [README](../README.md).
 ## Install
 
 ```
-bun add -g @laurencio/cli
+bun add -g laurencio
 laurencio --version
 ```
 

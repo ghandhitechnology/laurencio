@@ -1,5 +1,5 @@
 {
-  "name": "@laurencio/cli",
+  "name": "laurencio",
   "version": "0.1.0",
   "type": "module",
   "description": "laurencio command line interface",
@@ -29,5 +29,22 @@
     "@types/picomatch": "^4.0.2",
     "picomatch": "^4.0.4",
     "smol-toml": "^1.8.0"
-  }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ghandhitechnology/laurencio.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/ghandhitechnology/laurencio",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "opencode",
+    "agent",
+    "sync",
+    "config"
+  ]
 }

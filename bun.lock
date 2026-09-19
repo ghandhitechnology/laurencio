@@ -11,7 +11,7 @@
       },
     },
     "packages/cli": {
-      "name": "@laurencio/cli",
+      "name": "laurencio",
       "version": "0.1.0",
       "bin": {
         "laurencio": "./dist/index.js",
@@ -206,8 +206,6 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
 
-    "@laurencio/cli": ["@laurencio/cli@workspace:packages/cli"],
-
     "@laurencio/core": ["@laurencio/core@workspace:packages/core"],
 
     "@laurencio/protocol": ["@laurencio/protocol@workspace:packages/protocol"],
@@ -337,6 +335,8 @@
     "jsonc-parser": ["jsonc-parser@3.3.1", "", {}, "sha512-HUgH65KyejrUFPvHFPbqOY0rsFip3Bo5wb4ngvdi1EpCYWUQDC5V+Y7mZws+DLkr4M//zQJoanu1SP+87Dv1oQ=="],
 
     "kysely": ["kysely@0.29.6", "", {}, "sha512-hHaB8C/rfzDDtr/t8YZwxAuPJTT0zHyaPoVzcXwDYhYNAgH/4sIfVhi/XLLIY+bL/FqaIJnjATDbi8ObSELmxg=="],
+
+    "laurencio": ["laurencio@workspace:packages/cli"],
 
     "nanostores": ["nanostores@1.5.3", "", {}, "sha512-rQLB6eV4f2AW/n3L0JmwCROpaisYy9EDEADvEFSd1C/qG8hB6O5TPlh9A791JRbJr4CnMQBzptDcvD9OR1+6WA=="],
 

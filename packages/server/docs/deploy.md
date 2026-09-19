@@ -113,7 +113,21 @@ back, or generated when absent. Client requests must send
 - Passphrase rotation reseals only the newest revision. Export before rotating
   if older history matters.
 
-## 9. Operational notes
+## 9. Publishing the CLI
+
+The CLI publishes as the unscoped `laurencio` package from `packages/cli`, bundled
+to a single bun-runtime file.
+
+```bash
+cd packages/cli
+bunx npm login        # once per machine
+bun publish           # prepublishOnly builds dist/index.js
+```
+
+Future releases run the `release` workflow on a `v*` tag and need an `NPM_TOKEN`
+repository secret with publish rights.
+
+## 10. Operational notes
 
 KDF writes are compare-and-set: a PUT carries the generation the writer read, `null` for the first write, and a stale one comes back as `409` with the current generation in `details`.
 
