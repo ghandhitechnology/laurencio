@@ -1,4 +1,5 @@
 import type { CommandSpec } from './command'
+import { daemonCommand } from './daemon'
 import { devicesCommand } from './devices'
 import { diffCommand } from './diff'
 import { doctorCommand } from './doctor'
@@ -21,6 +22,7 @@ export const COMMANDS: Record<string, CommandSpec> = {
   sync: syncCommand,
   pause: pauseCommand,
   resume: resumeCommand,
+  daemon: daemonCommand,
   diff: diffCommand,
   log: logCommand,
   restore: restoreCommand,
@@ -39,6 +41,7 @@ export const COMMAND_ORDER: readonly string[] = [
   'sync',
   'pause',
   'resume',
+  'daemon',
   'diff',
   'log',
   'restore',

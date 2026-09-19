@@ -1,6 +1,14 @@
-import { type LastSyncRecord, listQueue, readLastSync, secrets } from '@laurencio/core'
+import {
+  type LastSyncRecord,
+  listQueue,
+  readLastSync,
+  type SyncState,
+  secrets,
+} from '@laurencio/core'
 import { loadCliConfig } from '../config'
 import type { CommandContext } from '../context'
+import { liveDaemonLock } from '../daemon/lock'
+import { readDaemonState } from '../daemon/state'
 import { readPause } from '../pause'
 import { computeDrift, type DriftEntry, localManifestWithProjections, readLedger } from '../plan'
 import { ok } from '../result'
@@ -8,16 +16,43 @@ import { identityFor, openSession, openState, scanInventory } from '../session'
 import { displayPath, plural } from '../ui'
 import type { CommandSpec } from './command'
 
+export interface DaemonSection {
+  paused: boolean
+  pausedAt: string | null
+  running: boolean
+  pid: number | null
+  startedAt: string | null
+  lastSync: string | null
+  lastResult: string | null
+}
+
 export interface StatusData {
   enrolled: boolean
   device: { id: string; name: string } | null
   server: string | null
-  daemon: { paused: boolean; pausedAt: string | null }
+  daemon: DaemonSection
   lastSync: LastSyncRecord | null
   pending: { count: number; kinds: Record<string, number> }
   conflicts: { count: number; paths: string[] }
   secretOverrides: number
   drift: DriftEntry[] | null
+}
+
+/** A live lock plus a matching state record is a running daemon; either alone is not. */
+function daemonSection(home: string, state: SyncState): DaemonSection {
+  const paused = readPause(home)
+  const lock = liveDaemonLock(home)
+  const record = readDaemonState(state)
+  const running = lock !== null && record !== null && lock.pid === record.pid
+  return {
+    paused: paused !== null,
+    pausedAt: paused?.pausedAt ?? null,
+    running,
+    pid: running && record !== null ? record.pid : null,
+    startedAt: running && record !== null ? record.startedAt : null,
+    lastSync: record?.lastSync ?? null,
+    lastResult: record?.lastResult ?? null,
+  }
 }
 
 function humanStatus(ctx: CommandContext, data: StatusData): string {
@@ -60,7 +95,18 @@ function humanStatus(ctx: CommandContext, data: StatusData): string {
     }
     if (data.drift.length > 20) lines.push(`  and ${data.drift.length - 20} more`)
   }
-  lines.push(`Daemon: ${data.daemon.paused ? `paused since ${data.daemon.pausedAt}` : 'running'}`)
+  if (data.daemon.paused) {
+    lines.push(`Daemon: paused since ${data.daemon.pausedAt ?? 'unknown'}`)
+  } else if (data.daemon.running) {
+    lines.push(
+      `Daemon: running (pid ${data.daemon.pid ?? 0}, started ${data.daemon.startedAt ?? 'unknown'})`,
+    )
+  } else {
+    lines.push('Daemon: not running')
+  }
+  if (data.daemon.lastSync !== null) {
+    lines.push(`Daemon sync: ${data.daemon.lastSync} (${data.daemon.lastResult ?? 'unknown'})`)
+  }
   return lines.join('\n')
 }
 
@@ -70,7 +116,6 @@ export const statusCommand: CommandSpec = {
   usage: 'laurencio status [--json]',
   async run(ctx) {
     const identity = identityFor(ctx)
-    const paused = readPause(ctx.home)
     const config = loadCliConfig(ctx.home)
     const server = ctx.flags.server ?? ctx.env.LAURENCIO_SERVER ?? config.server
     const state = openState(ctx)
@@ -81,7 +126,7 @@ export const statusCommand: CommandSpec = {
       const ledger = readLedger(state)
       const conflicts = ledger.records().map((record) => record.sourcePath)
       const secretOverrides = secrets.readOverrideLog(ctx.home).length
-      const daemon = { paused: paused !== null, pausedAt: paused?.pausedAt ?? null }
+      const daemon = daemonSection(ctx.home, state)
 
       if (identity === null) {
         const data: StatusData = {

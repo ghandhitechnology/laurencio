@@ -13,6 +13,7 @@ Commands:
   sync       Run one sync pass
   pause      Stop the daemon from running until resumed
   resume     Let the daemon run again
+  daemon     Run, install, or inspect the background sync daemon
   diff       Compare local, remote, and base versions of a path
   log        List revision history
   restore    Restore a file, a surface, or everything from a revision
@@ -821,7 +822,7 @@ Last sync: <TIME> (2 changed, 2 uploaded, 0 downloaded)
 Pending: 0 operations
 Conflicts: none
 Drift: none
-Daemon: running
+Daemon: not running
 --- stderr
 "
 `;
@@ -840,7 +841,12 @@ exports[`snapshots: status and sync status with drift and a conflict json 1`] = 
   "server": null,
   "daemon": {
     "paused": false,
-    "pausedAt": null
+    "pausedAt": null,
+    "running": false,
+    "pid": null,
+    "startedAt": null,
+    "lastSync": null,
+    "lastResult": null
   },
   "lastSync": {
     "at": "<TIME>",
@@ -2070,7 +2076,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock unknown c
 
 --- stderr
 laurencio: unknown command: frobnicate
-Known commands: init, status, sync, pause, resume, diff, log, restore, devices, resolve, export, doctor, surfaces, login, unlock"
+Known commands: init, status, sync, pause, resume, daemon, diff, log, restore, devices, resolve, export, doctor, surfaces, login, unlock"
 `;
 
 exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock unknown command human and json 2`] = `
@@ -2082,7 +2088,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock unknown c
   "error": {
     "code": "unknown-command",
     "message": "unknown command: frobnicate",
-    "hint": "Known commands: init, status, sync, pause, resume, diff, log, restore, devices, resolve, export, doctor, surfaces, login, unlock"
+    "hint": "Known commands: init, status, sync, pause, resume, daemon, diff, log, restore, devices, resolve, export, doctor, surfaces, login, unlock"
   }
 }"
 `;

@@ -9,6 +9,7 @@ import path from 'node:path'
 import type { crypto, HarnessId, HarnessProbe, Platform, Remote } from '@laurencio/core'
 import type { RevisionId, StoreId } from '@laurencio/protocol'
 import type { Flags } from './args'
+import type { ExecFn } from './daemon/installer'
 import { cliError } from './errors'
 import { type CliIo, createIo } from './ui'
 
@@ -36,6 +37,8 @@ export interface CliDeps {
   /** Test lever: shrink the quiescence window so scripted syncs settle at once. */
   quiescence?: { windowMs?: number }
   sleep?: (ms: number) => Promise<void>
+  /** Test lever: record service installer commands instead of running them. */
+  exec?: ExecFn
 }
 
 export interface CommandContext {
