@@ -1,10 +1,15 @@
 import type { AdapterContext, HarnessAdapter, Surface } from '../types'
 import { claudeAdapter } from './claude'
+import { codexAdapter } from './codex'
 import { opencodeAdapter } from './opencode'
 import type { RegisteredSurface } from './types'
 
 /** Adapters shipped with the CLI. Each adapter phase appends its own. */
-export const builtinAdapters: readonly HarnessAdapter[] = [claudeAdapter, opencodeAdapter]
+export const builtinAdapters: readonly HarnessAdapter[] = [
+  claudeAdapter,
+  codexAdapter,
+  opencodeAdapter,
+]
 
 export type AdapterRegistryErrorKind = 'duplicate-adapter' | 'duplicate-surface' | 'duplicate-path'
 
