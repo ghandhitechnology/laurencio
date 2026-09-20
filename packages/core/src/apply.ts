@@ -212,6 +212,7 @@ function allowlist(paths: readonly string[]): string[] {
   for (const entry of paths) {
     const resolved = path.resolve(entry)
     out.add(resolved)
+    out.add(resolvePhysicalPath(resolved))
     const real = tryRealpath(resolved)
     if (real !== null) {
       out.add(real)

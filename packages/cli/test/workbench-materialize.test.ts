@@ -20,6 +20,96 @@ import {
 } from './helpers'
 
 describe('temporary workbench materialization', () => {
+  test('materializes skills when macOS aliases the temporary root through /private', async () => {
+    const source = makeScratch()
+    const host = makeScratch()
+    try {
+      const seeded = await seedStore({ home: source.home, remoteDir: source.remoteDir })
+      writeHomeFile(
+        source.home,
+        '.agents/skills/ask-matt/PHASE-BOUNDARIES.md',
+        '# Phase boundaries\n',
+      )
+      const enrolled = await runForTest(['init', '--yes'], {
+        home: source.home,
+        remoteDir: source.remoteDir,
+      })
+      expect(enrolled.exitCode).toBe(0)
+      const remote = createFileRemote({ dir: source.remoteDir })
+      const head = (await remote.listRevisions()).head
+      if (head === null) throw new Error('expected enrolled revision')
+      const manifest = JSON.parse(
+        crypto.openText(seeded.key, 'manifest', await remote.getManifest(head), {
+          storeId: STORE_ID,
+          blobType: 'manifest',
+          protocolVersion: 1,
+        }),
+      ) as { entries: { path: string; surfaceId: string }[] }
+      expect(
+        manifest.entries.some(
+          (entry) =>
+            entry.path === '$HOME/.agents/skills/ask-matt/PHASE-BOUNDARIES.md' &&
+            entry.surfaceId === 'codex.agents-skills',
+        ),
+      ).toBe(true)
+
+      const aliasedHost = host.home.replace(/^\/private(?=\/var\/)/, '')
+      const privateHome = path.join(aliasedHost, 'runtime', 'home')
+      fs.mkdirSync(privateHome, { recursive: true })
+      const ctx = createContext('open', null, [], parseCliArgs(['open', '--yes']).flags, {
+        home: host.home,
+        cwd: host.home,
+        platform: 'darwin',
+        env: { HOME: host.home },
+        probes: {},
+        quiescence: { windowMs: 0 },
+        curatedTools: [],
+        remote: () => createFileRemote({ dir: source.remoteDir }),
+        fetch: (async () =>
+          Response.json({
+            protocolVersion: 1,
+            userId: '00000000000000000000000009',
+            storeId: STORE_ID,
+            devices: [],
+            kdf: null,
+            quotas: { blobs: 0, bytes: 0, maxBytes: 100_000 },
+          })) as unknown as typeof fetch,
+      })
+      const remoteSession = {
+        id: WorkbenchSessionId.parse('00000000000000000000000007'),
+        deviceId: DeviceId.parse('00000000000000000000000008'),
+        name: 'temporary',
+        platform: 'darwin',
+        createdAt: '2026-09-20T00:00:00.000Z',
+        expiresAt: '2026-09-21T00:00:00.000Z',
+      } as const
+
+      await materializeWorkbench(
+        ctx,
+        {
+          server: 'https://laurencio.test',
+          token: 'lrn_temporary-token',
+          root: path.dirname(privateHome),
+          home: privateHome,
+          environment: {},
+          executables: { tmux: '/bin/tmux', shell: '/bin/zsh' },
+          remote: remoteSession,
+        },
+        PASSPHRASE,
+      )
+
+      expect(
+        fs.readFileSync(
+          path.join(privateHome, '.agents/skills/ask-matt/PHASE-BOUNDARIES.md'),
+          'utf8',
+        ),
+      ).toBe('# Phase boundaries\n')
+    } finally {
+      source.cleanup()
+      host.cleanup()
+    }
+  })
+
   test('retries vault rotation and rejects heads that never stabilize without publishing', async () => {
     const source = makeScratch()
     const key = crypto.deriveMasterKey(PASSPHRASE, KDF)

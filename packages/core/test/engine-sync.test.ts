@@ -845,6 +845,39 @@ describe('engine sync', () => {
     fs.rmSync(h.remoteDir, { recursive: true, force: true })
   })
 
+  test('downloads a new file through a symlinked surface root', async () => {
+    const h = harness([
+      tree({ id: 'claude.skills', path: '$HOME/.codex/skills' }),
+      tree({
+        id: 'claude.agents-skills',
+        path: '$HOME/.agents/skills',
+        shared: true,
+      }),
+    ])
+    const a = engineHome([
+      {
+        kind: 'file',
+        path: '.agents/skills/ask-matt/PHASE-BOUNDARIES.md',
+        content: '# Phase boundaries\n',
+      },
+      { kind: 'dir', path: '.codex/skills', link: '$HOME/.agents/skills' },
+    ])
+    const b = engineHome([
+      { kind: 'dir', path: '.agents/skills' },
+      { kind: 'dir', path: '.codex/skills', link: '$HOME/.agents/skills' },
+    ])
+    try {
+      await h.run(a, deviceA)
+      await h.run(b, deviceB)
+
+      expect(b.read('.agents/skills/ask-matt/PHASE-BOUNDARIES.md')).toBe('# Phase boundaries\n')
+    } finally {
+      a.cleanup()
+      b.cleanup()
+      fs.rmSync(h.remoteDir, { recursive: true, force: true })
+    }
+  })
+
   test('a crash mid-apply rolls back on rerun without duplicated artifacts', async () => {
     const h = harness()
     const a = engineHome(baseEntries)
