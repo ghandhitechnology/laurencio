@@ -12,11 +12,13 @@ import {
   type Manifest,
   parseManifest,
   SyncState,
+  shippedToolLock,
 } from '@laurencio/core'
 import { DeviceId, PROTOCOL_VERSION, RevisionId, SurfaceId } from '@laurencio/protocol'
 import { DEFAULT_SERVER_URL, loadCliConfig, saveCliConfig } from '../src/config'
 import { computeDrift } from '../src/plan'
 import { baseUrlFor } from '../src/session'
+import { createSystemToolDependencies } from '../src/tools/system'
 import {
   makeScratch,
   memoryKeychain,
@@ -50,6 +52,37 @@ describe('cli parsing', () => {
       ],
     }
     expect(computeDrift({ ...base, entries: [] }, base)).toEqual([])
+  })
+
+  test('does not report disabled surfaces as deleted drift', () => {
+    const base: Manifest = {
+      revisionId: RevisionId.parse('00000000000000000000000001'),
+      deviceId: DeviceId.parse('00000000000000000000000002'),
+      createdAt: NOW,
+      entries: [
+        {
+          surfaceId: SurfaceId.parse('claude.settings'),
+          path: `\${CLAUDE_CONFIG_DIR}/settings.json`,
+          kind: 'file',
+          policy: 'sync',
+          hash: '1'.repeat(64),
+          size: 2,
+          mode: 0o644,
+        },
+        {
+          surfaceId: SurfaceId.parse('codex.skills'),
+          path: `\${CODEX_HOME}/skills/example/SKILL.md`,
+          kind: 'file',
+          policy: 'sync',
+          hash: '2'.repeat(64),
+          size: 2,
+          mode: 0o644,
+        },
+      ],
+    }
+    expect(computeDrift({ ...base, entries: [] }, base, new Set(['codex.skills']))).toEqual([
+      { storePath: `\${CODEX_HOME}/skills/example/SKILL.md`, status: 'deleted' },
+    ])
   })
 
   test('uses the public beta server unless the device chooses another remote', () => {
@@ -129,11 +162,98 @@ describe('cli parsing', () => {
 })
 
 describe('init and sync', () => {
+  test('publishes the profile manifest only after the matching credential vault', async () => {
+    const scratch = makeScratch()
+    try {
+      await seedStore({ home: scratch.home, remoteDir: scratch.remoteDir })
+      writeHomeFile(scratch.home, '.codex/AGENTS.md', '# Portable instructions\n')
+      writeHomeFile(scratch.home, '.codex/auth.json', '{"token":"encrypted-login"}\n')
+      const real = createFileRemote({ dir: scratch.remoteDir })
+      const publications: string[] = []
+      const ordered: typeof real = {
+        ...real,
+        async putVaultHead(input) {
+          publications.push('vault')
+          return real.putVaultHead(input)
+        },
+        async putProfileHead(input) {
+          publications.push('profile')
+          return real.putProfileHead(input)
+        },
+      }
+
+      const initialized = await runForTest(['init', '--yes'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        deps: { ...QUICK, remote: () => ordered },
+      })
+
+      expect(initialized.exitCode).toBe(0)
+      expect(publications).toEqual(['vault', 'profile'])
+    } finally {
+      scratch.cleanup()
+    }
+  })
+
+  test('full enrollment installs and starts background synchronization', async () => {
+    const scratch = makeScratch()
+    const commands: string[] = []
+    try {
+      await seedStore({ home: scratch.home, remoteDir: scratch.remoteDir })
+      writeHomeFile(scratch.home, '.codex/AGENTS.md', '# Portable instructions\n')
+      const tmux = shippedToolLock().find(
+        (tool) => tool.name === 'tmux' && tool.platform === 'darwin' && tool.arch === 'arm64',
+      )
+      if (tmux === undefined) throw new Error('expected the shipped macOS tmux pin')
+      const destination = path.join(
+        scratch.home,
+        '.laurencio/tools/tmux',
+        tmux.version,
+        'darwin-arm64',
+      )
+      const toolFiles = createSystemToolDependencies().files
+      const staging = await toolFiles.stage(destination)
+      fs.writeFileSync(path.join(staging, 'tmux'), 'cached runtime')
+      if (toolFiles.writeReceipt === undefined) throw new Error('tool receipts are unavailable')
+      await toolFiles.writeReceipt(staging, {
+        sha256: tmux.sha256,
+        sourceHost: 'github.com',
+      })
+      await toolFiles.commit(staging, destination)
+
+      const enrolled = await runForTest(['enroll', '--yes'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        deps: {
+          ...QUICK,
+          exec: (program, args) => {
+            commands.push([program, ...args].join(' '))
+            return { status: 0, stdout: '', stderr: '' }
+          },
+          fetch: (async () => {
+            throw new Error('verified managed runtime should be reused')
+          }) as unknown as typeof fetch,
+        },
+      })
+
+      expect(enrolled.exitCode).toBe(0)
+      expect(enrolled.output).toContain('Background sync: running')
+      expect(enrolled.output).toContain(`Managed runtimes: tmux ${tmux.version}`)
+      expect(
+        fs.existsSync(path.join(scratch.home, 'Library/LaunchAgents/com.laurencio.daemon.plist')),
+      ).toBe(true)
+      expect(commands.some((command) => command.includes('launchctl bootstrap'))).toBe(true)
+    } finally {
+      scratch.cleanup()
+    }
+  })
+
   test('init pushes local config and sync uploads later edits', async () => {
     const scratch = makeScratch()
     try {
       await seedStore({ home: scratch.home, remoteDir: scratch.remoteDir })
       writeHomeFile(scratch.home, '.claude/CLAUDE.md', '# Instructions\n')
+      writeHomeFile(scratch.home, '.codex/auth.json', '{"token":"encrypted-login"}\n')
       const init = await runForTest(['init', '--yes'], {
         home: scratch.home,
         remoteDir: scratch.remoteDir,
@@ -146,8 +266,14 @@ describe('init and sync', () => {
       const first = await remote.listRevisions()
       expect(first.head).not.toBeNull()
       expect(first.revisions.length).toBe(1)
+      const vault = await remote.getVaultHead()
+      expect(vault?.generation).toBe(1)
+      expect(
+        fs.readFileSync(path.join(scratch.remoteDir, 'blobs', vault?.blob.id ?? ''), 'utf8'),
+      ).not.toContain('encrypted-login')
 
       writeHomeFile(scratch.home, '.claude/CLAUDE.md', '# Instructions\n\nMore.\n')
+      writeHomeFile(scratch.home, '.codex/auth.json', '{"token":"rotated-login"}\n')
       const dry = await runForTest(['sync', '--dry-run', '--json'], {
         home: scratch.home,
         remoteDir: scratch.remoteDir,
@@ -169,6 +295,15 @@ describe('init and sync', () => {
       expect(sync.output).toContain('Sync synced')
       const second = await remote.listRevisions()
       expect(second.revisions.length).toBe(2)
+      expect((await remote.getVaultHead())?.generation).toBe(2)
+
+      const unchanged = await runForTest(['sync'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        deps: QUICK,
+      })
+      expect(unchanged.exitCode).toBe(0)
+      expect((await remote.getVaultHead())?.generation).toBe(2)
     } finally {
       scratch.cleanup()
     }
@@ -1047,6 +1182,54 @@ describe('rotate', () => {
         kdf: { generation: number; localEpoch: number; pendingPublish: boolean }
       }
       expect(data.kdf).toEqual({ generation: 2, localEpoch: 2, pendingPublish: false })
+    } finally {
+      scratch.cleanup()
+    }
+  })
+
+  test('a failed profile rekey resumes before publishing the new KDF', async () => {
+    const scratch = makeScratch()
+    try {
+      await seededStore(scratch)
+      const real = createFileRemote({ dir: scratch.remoteDir })
+      let failProfileWrite = true
+      const interrupted: typeof real = {
+        ...real,
+        putProfileHead: async (input) => {
+          if (failProfileWrite) {
+            failProfileWrite = false
+            throw new HttpRemoteError('network', 'profile head write interrupted')
+          }
+          return real.putProfileHead(input)
+        },
+      }
+      const failed = await runForTest(['rotate', '--yes'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        deps: { ...ROTATE_DEPS, remote: () => interrupted },
+        env: {
+          LAURENCIO_PASSPHRASE: PASSPHRASE,
+          LAURENCIO_NEW_PASSPHRASE: NEW_PASSPHRASE,
+        },
+      })
+      expect(failed.exitCode).toBe(1)
+      expect((await real.getKdfParams())?.generation).toBe(1)
+
+      const resumed = await runForTest(['rotate', '--resume', '--yes'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        deps: QUICK,
+        env: { LAURENCIO_NEW_PASSPHRASE: NEW_PASSPHRASE },
+      })
+      expect(resumed.exitCode).toBe(0)
+      expect((await real.getKdfParams())?.generation).toBe(2)
+
+      const synced = await runForTest(['sync'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        deps: QUICK,
+      })
+      expect(synced.exitCode).toBe(0)
     } finally {
       scratch.cleanup()
     }

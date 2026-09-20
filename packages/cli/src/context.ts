@@ -6,12 +6,21 @@
 
 import os from 'node:os'
 import path from 'node:path'
-import type { crypto, HarnessId, HarnessProbe, Platform, Remote } from '@laurencio/core'
+import type {
+  crypto,
+  HarnessId,
+  HarnessProbe,
+  Platform,
+  Remote,
+  ToolLockEntry,
+} from '@laurencio/core'
 import type { RevisionId, StoreId } from '@laurencio/protocol'
 import type { Flags } from './args'
 import type { ExecFn } from './daemon/installer'
 import { cliError } from './errors'
 import { type CliIo, createIo } from './ui'
+import type { WorkbenchController } from './workbench/controller'
+import type { WorkbenchRuntime } from './workbench/runtime'
 
 export interface RemoteFactoryInput {
   storeId: StoreId
@@ -41,6 +50,19 @@ export interface CliDeps {
   exec?: ExecFn
   /** Test lever: record browser launches instead of opening the desktop browser. */
   openUrl?: (url: string) => Promise<boolean>
+  /** Test and embedding seams for temporary workbench lifecycle integration. */
+  workbenchController?: WorkbenchController
+  workbenchRuntime?: WorkbenchRuntime
+  which?: (program: string) => string | null
+  architecture?: string
+  /** Test/embedding seam; production trusts only the catalog compiled into the client. */
+  curatedTools?: readonly ToolLockEntry[]
+  launchAgent?: (input: {
+    executable: string
+    args: string[]
+    cwd: string
+    environment: Record<string, string | undefined>
+  }) => Promise<number>
 }
 
 export interface CommandContext {
@@ -60,11 +82,12 @@ export interface CommandContext {
 function resolvePlatform(value: NodeJS.Platform | undefined): Platform {
   switch (value) {
     case 'darwin':
-    case 'linux':
     case 'win32':
       return value
+    case 'linux':
+      throw cliError('unsupported-platform', 'the Laurencio client supports macOS and Windows')
     default:
-      return 'linux'
+      throw cliError('unsupported-platform', `the Laurencio client does not support ${value}`)
   }
 }
 

@@ -15,7 +15,8 @@ import { runCli } from './cli'
 import { createIo } from './ui'
 
 if (import.meta.main) {
-  const result = await runCli(process.argv.slice(2), { io: createIo() })
+  const io = createIo()
+  const result = await runCli(process.argv.slice(2), { io }).finally(() => io.close?.())
   if (result.output !== '') process.stdout.write(result.output)
   if (result.errorOutput !== '') process.stderr.write(result.errorOutput)
   // Let stdout and stderr drain before exiting. `process.exit()` can truncate a

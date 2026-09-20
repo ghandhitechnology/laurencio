@@ -65,10 +65,11 @@ async function main(): Promise<void> {
       : undefined
 
   const state = SyncState.open({ path: stateDbPath(home) })
+  const platform = process.platform === 'win32' ? 'win32' : 'darwin'
   try {
     const report = await sync({
       adapters: [testAdapter('claude', lockSurfaces())],
-      ctx: { home, platform: 'darwin', env: {} },
+      ctx: { home, platform, env: {} },
       deviceId,
       storeId: LOCK_STORE_ID,
       key: deriveMasterKey(PASSPHRASE, LOCK_KDF),

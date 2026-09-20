@@ -21,6 +21,7 @@ import {
   BlobDownloadResponse,
   CommitRequest,
   CommitResponse,
+  CURRENT_PROFILE_VERSION,
   checkProtocolVersion,
   DeviceListResponse,
   ErrorResponse,
@@ -28,9 +29,18 @@ import {
   KdfWriteRequest,
   KdfWriteResponse,
   MeResponse,
+  PROFILE_VERSION_HEADER,
   PROTOCOL_VERSION,
   PresignResponse,
+  type ProfileHead,
+  ProfileHeadResponse,
+  type ProfileHeadWriteRequest,
+  ProfileVersionResponse,
+  ProfileVersionWriteRequest,
   RevisionList,
+  type VaultHead,
+  VaultHeadResponse,
+  type VaultHeadWriteRequest,
 } from '@laurencio/protocol'
 import { blobIdOf } from '../crypto/aead'
 import { type KdfParams, kdfParamsFromWire, kdfParamsToWire } from '../crypto/kdf'
@@ -38,6 +48,7 @@ import type { RevisionMeta } from '../model'
 import type {
   BlobUpload,
   KdfParamsLookup,
+  ProfileRemote,
   PublishedKdfParams,
   PublishKdfParamsInput,
   Remote,
@@ -45,8 +56,15 @@ import type {
   RemoteCommitResult,
   RemoteListOptions,
   RemoteRevisionList,
+  VaultRemote,
 } from './types'
-import { KdfGenerationConflictError, KdfValidationError, RemoteError } from './types'
+import {
+  KdfGenerationConflictError,
+  KdfValidationError,
+  ProfileGenerationConflictError,
+  RemoteError,
+  VaultGenerationConflictError,
+} from './types'
 
 export const PROTOCOL_HEADER = 'x-laurencio-protocol-version'
 
@@ -244,13 +262,17 @@ export interface HttpRemoteOptions {
   sleep?: (ms: number) => Promise<void>
 }
 
-export interface HttpRemote extends Remote {
+export interface HttpRemote extends Remote, VaultRemote, ProfileRemote {
   readonly baseUrl: string
   readonly storeId: StoreId
   /** Swaps in a freshly minted device token without rebuilding the remote. */
   setToken(token: string): void
   /** Account and quota view from `/v1/me`, for `status` and doctor output. */
   getUsage(): Promise<RemoteUsage>
+  /** Store format gate; reads stay compatible while writes become v2-only after migration. */
+  getProfileVersion(): Promise<1 | 2>
+  /** One-way compare-and-swap from the legacy manifest store to profile schema v2. */
+  migrateProfileVersion(): Promise<2>
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -317,6 +339,7 @@ export function createHttpRemote(options: HttpRemoteOptions): HttpRemote {
     const headers = new Headers(init.headers)
     headers.set('authorization', `Bearer ${token}`)
     headers.set(PROTOCOL_HEADER, String(protocolVersion))
+    headers.set(PROFILE_VERSION_HEADER, String(CURRENT_PROFILE_VERSION))
     if (init.body !== undefined && !headers.has('content-type')) {
       headers.set('content-type', 'application/json')
     }
@@ -542,6 +565,88 @@ export function createHttpRemote(options: HttpRemoteOptions): HttpRemote {
     }
   }
 
+  const getProfileVersion = async (): Promise<1 | 2> => {
+    const body = await apiJson<unknown>('profile version', `/v1/stores/${storeId}/profile-version`)
+    assertServerProtocol(body)
+    return parseWire(ProfileVersionResponse, body, 'profile version response').profileVersion
+  }
+
+  const migrateProfileVersion = async (): Promise<2> => {
+    const request = ProfileVersionWriteRequest.parse({
+      expectedVersion: 1,
+      profileVersion: CURRENT_PROFILE_VERSION,
+    })
+    const body = await apiJson<unknown>(
+      'profile migration',
+      `/v1/stores/${storeId}/profile-version`,
+      { method: 'PUT', body: JSON.stringify(request) },
+    )
+    assertServerProtocol(body)
+    const version = parseWire(
+      ProfileVersionResponse,
+      body,
+      'profile migration response',
+    ).profileVersion
+    if (version !== CURRENT_PROFILE_VERSION) {
+      throw new RemoteError('corrupt-store', `profile migration returned v${version}`)
+    }
+    return version
+  }
+
+  const getVaultHead = async (): Promise<VaultHead | null> => {
+    const body = await apiJson<unknown>('vault head', `/v1/stores/${storeId}/vault`)
+    assertServerProtocol(body)
+    return parseWire(VaultHeadResponse, body, 'vault head response').head
+  }
+
+  const putVaultHead = async (input: VaultHeadWriteRequest): Promise<VaultHead> => {
+    let body: unknown
+    try {
+      body = await apiJson<unknown>('vault rotation', `/v1/stores/${storeId}/vault`, {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      })
+    } catch (error) {
+      if (error instanceof HttpRemoteError && error.status === 409) {
+        const actual =
+          typeof error.details.generation === 'number' ? error.details.generation : null
+        throw new VaultGenerationConflictError(input.expectedGeneration, actual)
+      }
+      throw error
+    }
+    assertServerProtocol(body)
+    const head = parseWire(VaultHeadResponse, body, 'vault rotation response').head
+    if (head === null) throw new RemoteError('corrupt-store', 'vault rotation returned no head')
+    return head
+  }
+
+  const getProfileHead = async (): Promise<ProfileHead | null> => {
+    const body = await apiJson<unknown>('profile head', `/v1/stores/${storeId}/profile`)
+    assertServerProtocol(body)
+    return parseWire(ProfileHeadResponse, body, 'profile head response').head
+  }
+
+  const putProfileHead = async (input: ProfileHeadWriteRequest): Promise<ProfileHead> => {
+    let body: unknown
+    try {
+      body = await apiJson<unknown>('profile update', `/v1/stores/${storeId}/profile`, {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      })
+    } catch (error) {
+      if (error instanceof HttpRemoteError && error.status === 409) {
+        const actual =
+          typeof error.details.generation === 'number' ? error.details.generation : null
+        throw new ProfileGenerationConflictError(input.expectedGeneration, actual)
+      }
+      throw error
+    }
+    assertServerProtocol(body)
+    const head = parseWire(ProfileHeadResponse, body, 'profile update response').head
+    if (head === null) throw new RemoteError('corrupt-store', 'profile update returned no head')
+    return head
+  }
+
   return {
     baseUrl: base.toString(),
     storeId,
@@ -557,5 +662,11 @@ export function createHttpRemote(options: HttpRemoteOptions): HttpRemote {
     commit,
     listDevices,
     getUsage,
+    getProfileVersion,
+    migrateProfileVersion,
+    getVaultHead,
+    putVaultHead,
+    getProfileHead,
+    putProfileHead,
   }
 }

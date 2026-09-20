@@ -45,6 +45,10 @@ export const SurfaceId = z
   .string()
   .regex(/^[a-z0-9-]+\.[a-z0-9-]+$/, 'surface ids look like harness.surface')
   .brand<'SurfaceId'>()
+export const WorkbenchSessionId = z
+  .string()
+  .regex(idPattern, 'not a laurencio id')
+  .brand<'WorkbenchSessionId'>()
 
 export type UserId = z.infer<typeof UserId>
 export type DeviceId = z.infer<typeof DeviceId>
@@ -52,5 +56,6 @@ export type StoreId = z.infer<typeof StoreId>
 export type RevisionId = z.infer<typeof RevisionId>
 export type BlobId = z.infer<typeof BlobId>
 export type SurfaceId = z.infer<typeof SurfaceId>
+export type WorkbenchSessionId = z.infer<typeof WorkbenchSessionId>
 
 export { idPattern }

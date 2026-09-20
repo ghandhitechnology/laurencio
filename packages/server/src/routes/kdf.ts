@@ -8,12 +8,13 @@ import {
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppBindings, RouteDeps } from '../context'
-import { rateLimitKey, requirePrincipal } from '../context'
+import { rateLimitKey, requireCapability, requirePrincipal } from '../context'
 import type { Database } from '../db/client'
 import { kdfParams, kdfParamVersions } from '../db/schema'
 import { recordAudit, requireStore } from '../devices'
 import { badRequest, conflict, notFound } from '../http/errors'
 import { parseParam, readJson } from '../http/parse'
+import { requireCompatibleProfileWrite } from '../profile-version'
 import { enforceRateLimit } from '../rate'
 import { type KdfRowFields, toKdfParams } from './me'
 
@@ -84,9 +85,11 @@ export function createKdfRoutes(deps: RouteDeps): Hono<AppBindings> {
 
   app.put('/v1/stores/:id/kdf-params', async (c) => {
     const principal = requirePrincipal(c)
+    requireCapability(principal, 'write-kdf')
     enforceRateLimit(deps.rateLimiter, `kdf:${rateLimitKey(principal)}`)
     const storeId = parseParam(StoreId, c.req.param('id'), 'store id')
-    await requireStore(deps.db, principal.userId, storeId)
+    const store = await requireStore(deps.db, principal.userId, storeId)
+    requireCompatibleProfileWrite(store, c.req.raw.headers)
     const body = KdfWriteBody.safeParse(await readJson(c))
     if (!body.success) throw badRequest('invalid KDF parameters', { issues: body.error.issues })
 

@@ -31,7 +31,7 @@ export interface TestServer {
 
 export async function createTestServer(
   extraEnv: EnvSource = {},
-  options: { pglite?: PGlite; logger?: Logger } = {},
+  options: { pglite?: PGlite; logger?: Logger; now?: () => Date } = {},
 ): Promise<TestServer> {
   const dataDir = await mkdtemp(join(tmpdir(), 'laurencio-test-'))
   const pglite = options.pglite ?? new PGlite()
@@ -57,6 +57,7 @@ export async function createTestServer(
     storage,
     auth,
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.now ? { now: options.now } : {}),
   })
   return {
     app,

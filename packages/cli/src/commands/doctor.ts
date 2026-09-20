@@ -255,7 +255,7 @@ export function humanDoctor(ctx: CommandContext, data: DoctorData): string {
   const lines: string[] = []
   const device = data.enrolled
     ? `${data.deviceName} (${data.deviceId})`
-    : 'not signed in (run `laurencio init`)'
+    : 'not signed in (run `laurencio enroll`)'
   lines.push(
     `Version: ${data.version}  Protocol: v${data.protocolVersion}  Platform: ${data.platform}`,
   )

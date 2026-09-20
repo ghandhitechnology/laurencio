@@ -1,6 +1,8 @@
 import { type DevicePolicy, type FileResolution, SyncLoop } from '@laurencio/core'
 import { loadCliConfig } from '../config'
 import { adapterContext, type CommandContext } from '../context'
+import { syncSessionCredentials } from '../credential-sync'
+import { enrollMcpSecrets } from '../mcp-enrollment'
 import { readPause } from '../pause'
 import { buildPlan, planSummary } from '../plan'
 import { createTransferProgress } from '../progress'
@@ -123,6 +125,7 @@ export const syncCommand: CommandSpec = {
         return ok(data, () => renderSync(ctx, data))
       }
 
+      await enrollMcpSecrets(ctx, session)
       progress = createTransferProgress(ctx.io, ctx.flags.json)
       const loop = new SyncLoop({
         onProgress: progress.update,
@@ -141,6 +144,9 @@ export const syncCommand: CommandSpec = {
         now: ctx.now,
       })
       const result = await loop.runOnce()
+      if (result.status === 'synced' || result.status === 'idle') {
+        await syncSessionCredentials(ctx, session, state, ctx.flags.harness)
+      }
       progress.finish(result)
       const data: SyncData = {
         dryRun: false,

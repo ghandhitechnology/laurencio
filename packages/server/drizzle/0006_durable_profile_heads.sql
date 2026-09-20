@@ -1,0 +1,2 @@
+ALTER TABLE "profile_heads" ADD CONSTRAINT "profile_heads_store_blob_fk" FOREIGN KEY ("store_id","blob_id") REFERENCES "public"."blobs"("store_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "vault_heads" ADD CONSTRAINT "vault_heads_store_blob_fk" FOREIGN KEY ("store_id","blob_id") REFERENCES "public"."blobs"("store_id","id") ON DELETE no action ON UPDATE no action;

@@ -22,7 +22,7 @@ export const unlockCommand: CommandSpec = {
     const identity = identityFor(ctx)
     if (identity === null) {
       throw cliError('not-enrolled', 'this device is not enrolled', {
-        hint: 'Run `laurencio init` to sign in.',
+        hint: 'Run `laurencio enroll` to sign in.',
       })
     }
     const tokenStore = await openTokenStore(keychainOptions(ctx))

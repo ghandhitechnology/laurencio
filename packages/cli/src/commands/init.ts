@@ -4,7 +4,9 @@ import { crypto, type DevicePolicy, loginWithDeviceCode, SyncLoop } from '@laure
 import { type BackupRoot, createBackup } from '../backup'
 import { DEFAULT_SERVER_URL, loadCliConfig, saveCliConfig } from '../config'
 import { adapterContext, type CommandContext, remoteDirFlag } from '../context'
+import { syncSessionCredentials } from '../credential-sync'
 import { deviceApproved, presentDeviceAuthorization } from '../device-auth'
+import { enrollMcpSecrets } from '../mcp-enrollment'
 import { setStoreKey } from '../passphrase'
 import { createTransferProgress } from '../progress'
 import { askChoice, askYesNo, readPassphrase } from '../prompt'
@@ -23,8 +25,10 @@ import {
   withProbes,
 } from '../session'
 import { chooseSetupScope, type SetupScope } from '../setup-scope'
+import { provisionManagedTools } from '../tools/managed'
 import { displayPath, plural } from '../ui'
 import type { CommandSpec } from './command'
+import { installBackgroundSync } from './daemon'
 import { serverReachable } from './login'
 import { collectSurfaces, type SurfaceRow, type SurfacesData } from './surfaces'
 
@@ -49,6 +53,13 @@ export interface InitData {
     conflicts: string[]
     blocked: string[]
   } | null
+  background?: {
+    installed: boolean
+    started: boolean
+    path: string
+    notes: string[]
+  }
+  managedTools?: { name: string; version: string }[]
 }
 
 function surfaceToggle(policy: DevicePolicy, surface: SurfaceRow): 'on' | 'off' {
@@ -158,7 +169,10 @@ function harnessInventory(surfaces: readonly SurfaceRow[]): string[] {
 }
 
 function humanInit(ctx: CommandContext, data: InitData): string {
-  const lines: string[] = ['Laurencio init', `Server: ${data.server ?? 'none'}`]
+  const lines: string[] = [
+    `Laurencio ${ctx.command === 'enroll' ? 'enroll' : 'init'}`,
+    `Server: ${data.server ?? 'none'}`,
+  ]
   const selections: Record<SetupScope, string> = {
     existing: 'current device choices',
     skills: 'skills only',
@@ -193,6 +207,19 @@ function humanInit(ctx: CommandContext, data: InitData): string {
     lines.push('', 'Login skipped. Run `laurencio login` when the server is reachable.')
     return lines.join('\n')
   }
+  if (data.background !== undefined) {
+    lines.push(
+      data.background.started
+        ? `Background sync: running (${displayPath(ctx.home, data.background.path)})`
+        : `Background sync: installation needs attention (${displayPath(ctx.home, data.background.path)})`,
+    )
+    lines.push(...data.background.notes.map((note) => `  ${note}`))
+  }
+  if (data.managedTools !== undefined) {
+    lines.push(
+      `Managed runtimes: ${data.managedTools.map((tool) => `${tool.name} ${tool.version}`).join(', ') || 'none for this platform'}`,
+    )
+  }
   lines.push('')
   if (data.sync.status === 'idle') {
     lines.push('Sync: already up to date')
@@ -214,6 +241,7 @@ function humanInit(ctx: CommandContext, data: InitData): string {
 export const initCommand: CommandSpec = {
   name: 'init',
   summary: 'Set up this device: sign in, select surfaces, and push',
+  details: ['Deprecated: use `laurencio enroll` for full-mode setup.'],
   usage:
     'laurencio init [--server <url>] [--device-name <name>] [--passphrase-file <path>] [--yes] [--json]',
   async run(ctx) {
@@ -311,6 +339,7 @@ export const initCommand: CommandSpec = {
       conflicts: [],
       blocked: [],
     }
+    let managedTools: NonNullable<InitData['managedTools']> | undefined
     try {
       const page = await session.remote.listRevisions()
       const firstEnrollment = page.head !== null && state.getBaseRevision() === null
@@ -362,6 +391,7 @@ export const initCommand: CommandSpec = {
         for (const root of replaceRoots) fs.rmSync(root, { recursive: true, force: true })
       }
 
+      await enrollMcpSecrets(ctx, session)
       progress = createTransferProgress(ctx.io, ctx.flags.json)
       const loop = new SyncLoop({
         onProgress: progress.update,
@@ -388,11 +418,26 @@ export const initCommand: CommandSpec = {
       syncData.changed = result.report?.changed.length ?? 0
       syncData.conflicts = result.report?.conflicts.map((conflict) => conflict.path) ?? []
       syncData.blocked = result.report?.blocked ?? []
+      if (result.status === 'synced' || result.status === 'idle') {
+        await syncSessionCredentials(ctx, session, state)
+        if (ctx.command === 'enroll' && syncData.conflicts.length === 0) {
+          managedTools = (await provisionManagedTools(ctx, session)).map((tool) => ({
+            name: tool.name,
+            version: tool.version,
+          }))
+        }
+      }
     } finally {
       progress?.finish()
       state.close()
     }
 
+    const background =
+      ctx.command === 'enroll' &&
+      (syncData.status === 'synced' || syncData.status === 'idle') &&
+      syncData.conflicts.length === 0
+        ? installBackgroundSync(ctx)
+        : null
     const data: InitData = {
       home: ctx.home,
       server,
@@ -406,6 +451,17 @@ export const initCommand: CommandSpec = {
       backup,
       enrollment,
       sync: syncData,
+      ...(managedTools === undefined ? {} : { managedTools }),
+      ...(background === null
+        ? {}
+        : {
+            background: {
+              installed: background.service.installed,
+              started: background.started,
+              path: background.service.path,
+              notes: background.notes,
+            },
+          }),
     }
     const exitCode =
       syncData.conflicts.length > 0

@@ -12,11 +12,23 @@ import { CliError, describeError } from './errors'
 import { type CommandResult, type ExitCode, fail } from './result'
 import { renderResult } from './ui'
 import { CLI_NAME, CLI_VERSION } from './version'
+import { reapWorkbenchStartup } from './workbench/context'
 
 export interface CliRunResult {
   exitCode: ExitCode
   output: string
   errorOutput: string
+}
+
+function lifecycleMenu(): string {
+  return [
+    'Laurencio workbench',
+    '',
+    '  (t) Temporary workbench',
+    '  (f) Full enrollment and sync',
+    '  (c) Manage configuration',
+    '  (q) Quit',
+  ].join('\n')
 }
 
 export function globalHelp(): string {
@@ -97,7 +109,34 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
 
   const command = parsed.command
   if (command === null) {
-    emit(globalHelp(), 'out')
+    if (
+      parsed.flags.help ||
+      parsed.flags.json ||
+      parsed.flags.yes ||
+      deps.io?.terminal === undefined
+    ) {
+      emit(globalHelp(), 'out')
+      return { exitCode: 0, output, errorOutput }
+    }
+    deps.io.out(lifecycleMenu())
+    const choice = (await deps.io.readLine('Choose [t/f/c/q]: ')).trim().toLowerCase()
+    if (choice === 'c' || choice === 'config') return runCli(['config', ...argv], deps)
+    if (choice === 't' || choice === 'temporary') {
+      const next = await runCli(['open'], deps)
+      return {
+        exitCode: next.exitCode,
+        output: output + next.output,
+        errorOutput: errorOutput + next.errorOutput,
+      }
+    }
+    if (choice === 'f' || choice === 'full') {
+      const next = await runCli(['enroll'], deps)
+      return {
+        exitCode: next.exitCode,
+        output: output + next.output,
+        errorOutput: errorOutput + next.errorOutput,
+      }
+    }
     return { exitCode: 0, output, errorOutput }
   }
   const spec = COMMANDS[command]
@@ -123,6 +162,8 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
 
   const ctx = createContext(command, parsed.subcommand, parsed.positionals, parsed.flags, deps)
   try {
+    if (!['config', 'open', 'sessions', 'save', 'close'].includes(command))
+      await reapWorkbenchStartup(ctx)
     const result = await spec.run(ctx)
     emit(renderResult(result, parsed.flags.json), result.exitCode === 0 ? 'out' : 'err')
     return { exitCode: result.exitCode, output, errorOutput }

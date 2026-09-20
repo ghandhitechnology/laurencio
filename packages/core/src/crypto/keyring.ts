@@ -2,10 +2,9 @@
  * Derived-key cache.
  *
  * The master key is cached so the daemon can run unattended. The primary cache
- * is the OS keychain through `@napi-rs/keyring`; the fallback is a 0600 file
+ * is the OS keychain; the macOS fallback is a 0600 file
  * under `$HOME/.laurencio/keys`, which is a declared never-sync location.
- * Headless Linux is the main case for the fallback: Secret Service is absent,
- * and the kernel keyring does not survive a reboot.
+ * Windows uses Credential Manager and never falls back to plaintext files.
  *
  * The keychain module is imported lazily so the file path still works when the
  * native binding is missing or the store is locked.
@@ -15,6 +14,7 @@ import { chmodSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } f
 import type { StoreId } from '@laurencio/protocol'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { KEY_BYTES, KeyMaterial } from './kdf'
+import { WindowsCredentialError, windowsCredentialStore } from './windows-keyring'
 
 export const KEYCHAIN_SERVICE = 'laurencio'
 const KEYCHAIN_PROBE_ACCOUNT = 'laurencio-probe'
@@ -39,7 +39,7 @@ export interface KeyCacheOptions {
   home: string
   /** Injected keychain backend. Tests pass a stub; production resolves the real one. */
   keychain?: CredentialStore | null
-  /** Set false to disable the file fallback entirely. */
+  /** Set false to disable the file fallback. Windows always disables it. */
   allowFileFallback?: boolean
   platform?: NodeJS.Platform
   warn?: (message: string) => void
@@ -70,8 +70,9 @@ function defaultWarn(message: string): void {
   process.emitWarning(message, { code: 'LAURENCIO_KEY_CACHE' })
 }
 
-/** Resolves the OS keychain backend. Throws when the native store is unavailable. */
+/** Uses macOS Keychain or the standalone Windows Credential Manager bridge. */
 export async function resolveKeychainStore(): Promise<CredentialStore> {
+  if (process.platform === 'win32') return windowsCredentialStore()
   const keyring = (await import('@napi-rs/keyring')) as {
     Entry: new (
       service: string,
@@ -137,7 +138,7 @@ function writeFileCache(storeId: StoreId, key: KeyMaterial, options: FileCacheOp
 export async function openKeyCache(options: KeyCacheOptions): Promise<KeyCache> {
   const warn = options.warn ?? defaultWarn
   const platform = options.platform ?? process.platform
-  const allowFileFallback = options.allowFileFallback ?? true
+  const allowFileFallback = platform !== 'win32' && (options.allowFileFallback ?? true)
   const fileOptions: FileCacheOptions = { home: options.home, platform, warn }
 
   let keychain: CredentialStore | null = options.keychain ?? null
@@ -162,17 +163,23 @@ export async function openKeyCache(options: KeyCacheOptions): Promise<KeyCache> 
       }
       keychain = candidate
     } catch (error) {
+      if (platform === 'win32' && error instanceof WindowsCredentialError) throw error
       const reason = error instanceof Error ? error.message : String(error)
-      warn(
-        `keychain unavailable (${reason}); using the 0600 file cache under ${keyCacheDir(options.home)}`,
-      )
+      if (allowFileFallback)
+        warn(
+          `keychain unavailable (${reason}); using the 0600 file cache under ${keyCacheDir(options.home)}`,
+        )
       keychain = null
     }
   }
 
   const backend: CredentialBackend = keychain === null ? 'file' : 'keychain'
   if (backend === 'file' && !allowFileFallback) {
-    throw new Error('keychain unavailable and the file fallback is disabled')
+    throw new Error(
+      platform === 'win32'
+        ? 'Windows Credential Manager is unavailable; unlock it and retry.'
+        : 'keychain unavailable and the file fallback is disabled',
+    )
   }
 
   return {
@@ -183,6 +190,7 @@ export async function openKeyCache(options: KeyCacheOptions): Promise<KeyCache> 
           const secret = await keychain.get(KEYCHAIN_SERVICE, storeId)
           if (secret !== null && secret.length === KEY_BYTES) return new KeyMaterial(secret)
         } catch (error) {
+          if (!allowFileFallback) throw error
           const reason = error instanceof Error ? error.message : String(error)
           warn(`keychain read failed (${reason}); falling back to the file cache`)
         }
@@ -219,6 +227,7 @@ export async function openKeyCache(options: KeyCacheOptions): Promise<KeyCache> 
         try {
           await keychain.delete(KEYCHAIN_SERVICE, storeId)
         } catch (error) {
+          if (!allowFileFallback) throw error
           const reason = error instanceof Error ? error.message : String(error)
           warn(`keychain delete failed (${reason})`)
         }

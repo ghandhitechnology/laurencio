@@ -12,16 +12,25 @@ import type {
   BlobId,
   BlobRef,
   DeviceRecord,
+  ProfileHead,
+  ProfileHeadWriteRequest,
   RevisionId,
   StoreId,
+  VaultHead,
+  VaultHeadWriteRequest,
   KdfParams as WireKdfParams,
 } from '@laurencio/protocol'
-import { PROTOCOL_VERSION } from '@laurencio/protocol'
+import {
+  PROTOCOL_VERSION,
+  ProfileHead as ProfileHeadSchema,
+  VaultHead as VaultHeadSchema,
+} from '@laurencio/protocol'
 import { type KdfParams, kdfParamsFromWire, kdfParamsToWire } from '../crypto/kdf'
 import type { RevisionMeta, SurfaceDigest } from '../model'
 import type {
   BlobUpload,
   KdfParamsLookup,
+  ProfileRemote,
   PublishedKdfParams,
   PublishKdfParamsInput,
   Remote,
@@ -29,8 +38,15 @@ import type {
   RemoteCommitResult,
   RemoteListOptions,
   RemoteRevisionList,
+  VaultRemote,
 } from './types'
-import { KdfGenerationConflictError, KdfValidationError, RemoteError } from './types'
+import {
+  KdfGenerationConflictError,
+  KdfValidationError,
+  ProfileGenerationConflictError,
+  RemoteError,
+  VaultGenerationConflictError,
+} from './types'
 
 interface StoreFile {
   version: 1
@@ -47,7 +63,7 @@ export interface FileRemoteOptions {
   now?: () => Date
 }
 
-export interface FileRemote extends Remote {
+export interface FileRemote extends Remote, VaultRemote, ProfileRemote {
   readonly dir: string
   readonly storeId: StoreId
   /** Test and harness helper: enroll a device record. */
@@ -292,6 +308,22 @@ export function createFileRemote(options: FileRemoteOptions): FileRemote {
     return path.join(dir, 'blobs', blobId)
   }
 
+  const vaultPath = path.join(dir, 'vault.json')
+  function readVaultHead(): VaultHead | null {
+    if (!fs.existsSync(vaultPath)) return null
+    const parsed = VaultHeadSchema.safeParse(readJsonFile(vaultPath))
+    if (!parsed.success) throw new RemoteError('corrupt-store', 'vault.json is invalid')
+    return parsed.data
+  }
+
+  const profilePath = path.join(dir, 'profile.json')
+  function readProfileHead(): ProfileHead | null {
+    if (!fs.existsSync(profilePath)) return null
+    const parsed = ProfileHeadSchema.safeParse(readJsonFile(profilePath))
+    if (!parsed.success) throw new RemoteError('corrupt-store', 'profile.json is invalid')
+    return parsed.data
+  }
+
   function devices(): DeviceRecord[] {
     const devicesPath = path.join(dir, 'devices.json')
     if (!fs.existsSync(devicesPath)) return []
@@ -424,6 +456,62 @@ export function createFileRemote(options: FileRemoteOptions): FileRemote {
       } catch {
         throw new RemoteError('not-found', `blob not found: ${blobId}`)
       }
+    },
+
+    async getVaultHead(): Promise<VaultHead | null> {
+      return readVaultHead()
+    },
+
+    async putVaultHead(input: VaultHeadWriteRequest): Promise<VaultHead> {
+      return withCommitLock(dir, () => {
+        const target = blobPath(input.blob.id)
+        if (!fs.existsSync(target)) {
+          throw new RemoteError('not-found', `vault blob not found: ${input.blob.id}`)
+        }
+        if (fs.statSync(target).size !== input.blob.size) {
+          throw new RemoteError('blob-mismatch', 'vault blob size does not match')
+        }
+        const current = readVaultHead()
+        const actual = current?.generation ?? null
+        if (actual !== input.expectedGeneration) {
+          throw new VaultGenerationConflictError(input.expectedGeneration, actual)
+        }
+        const head = VaultHeadSchema.parse({
+          blob: input.blob,
+          generation: (actual ?? 0) + 1,
+          updatedAt: now().toISOString(),
+        })
+        atomicWrite(vaultPath, JSON.stringify(head, null, 2))
+        return head
+      })
+    },
+
+    async getProfileHead(): Promise<ProfileHead | null> {
+      return readProfileHead()
+    },
+
+    async putProfileHead(input: ProfileHeadWriteRequest): Promise<ProfileHead> {
+      return withCommitLock(dir, () => {
+        const target = blobPath(input.blob.id)
+        if (!fs.existsSync(target)) {
+          throw new RemoteError('not-found', `profile blob not found: ${input.blob.id}`)
+        }
+        if (fs.statSync(target).size !== input.blob.size) {
+          throw new RemoteError('blob-mismatch', 'profile blob size does not match')
+        }
+        const current = readProfileHead()
+        const actual = current?.generation ?? null
+        if (actual !== input.expectedGeneration) {
+          throw new ProfileGenerationConflictError(input.expectedGeneration, actual)
+        }
+        const head = ProfileHeadSchema.parse({
+          blob: input.blob,
+          generation: (actual ?? 0) + 1,
+          updatedAt: now().toISOString(),
+        })
+        atomicWrite(profilePath, JSON.stringify(head, null, 2))
+        return head
+      })
     },
 
     async commit(commit: RemoteCommit): Promise<RemoteCommitResult> {

@@ -21,3 +21,29 @@ jobs:
       - run: bun test
       - run: bun run e2e:two-home
       - run: bun run e2e:server
+
+  windows-system:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun test packages/core/test/windows-credentials.test.ts packages/core/test/paths.test.ts packages/core/test/lock-race.test.ts packages/cli/test/workbench-runtime.test.ts packages/cli/test/native-terminal.test.ts
+      - run: bun test packages/cli/test/daemon-install.test.ts -t Windows
+      - name: Validate profile-free PowerShell process lifecycle
+        shell: pwsh
+        run: |
+          $process = Start-Process pwsh.exe -ArgumentList '-NoProfile','-NonInteractive','-Command','exit 23' -PassThru -Wait
+          if ($process.ExitCode -ne 23) { throw "PowerShell lifecycle returned $($process.ExitCode)" }
+      - name: Validate Windows PowerShell bootstrap syntax
+        shell: powershell
+        run: |
+          $parseErrors = $null
+          $tokens = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path scripts/install.ps1), [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
+      - run: bun build --compile --outfile windows-credential-check.exe scripts/windows-credential-check.ts
+      - run: ./windows-credential-check.exe

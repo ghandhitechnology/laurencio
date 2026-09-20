@@ -15,6 +15,41 @@
       "when": 1789809130740,
       "tag": "0001_public_sphinx",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789883215872,
+      "tag": "0002_late_silver_samurai",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789883730119,
+      "tag": "0003_clean_mindworm",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789884840082,
+      "tag": "0004_ambiguous_quasimodo",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789885456868,
+      "tag": "0005_previous_peter_parker",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789886929117,
+      "tag": "0006_durable_profile_heads",
+      "breakpoints": true
     }
   ]
 }

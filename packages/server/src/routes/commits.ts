@@ -12,6 +12,7 @@ import {
 } from '@laurencio/protocol'
 import { and, desc, eq, gt, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
+import { verifyStoredObjects } from '../blob-verification'
 import type { AppBindings, RouteDeps } from '../context'
 import { rateLimitKey, requirePrincipal } from '../context'
 import type { Database } from '../db/client'
@@ -20,16 +21,14 @@ import { recordAudit, requireStore, type StoreRow } from '../devices'
 import { badRequest, conflict, forbidden, protocolMismatch } from '../http/errors'
 import { parseParam, readJson } from '../http/parse'
 import { asBlobId, asDeviceId, asRevisionId, asStoreId } from '../ids'
+import { requireCompatibleProfileWrite } from '../profile-version'
 import { assertWithinQuota, limitsFor } from '../quota'
 import { enforceRateLimit } from '../rate'
-import { blobKey } from '../storage/types'
 
 type RevisionRow = typeof revisions.$inferSelect
 
 const DEFAULT_LIMIT = 50
 const MAX_LIMIT = 500
-/** HEAD requests per commit, bounded so one commit cannot fan out unbounded. */
-const VERIFY_CONCURRENCY = 32
 
 export function createCommitRoutes(deps: RouteDeps): Hono<AppBindings> {
   const app = new Hono<AppBindings>()
@@ -39,6 +38,7 @@ export function createCommitRoutes(deps: RouteDeps): Hono<AppBindings> {
     enforceRateLimit(deps.rateLimiter, `commit:${rateLimitKey(principal)}`)
     const storeId = parseParam(StoreId, c.req.param('id'), 'store id')
     const store = await requireStore(deps.db, principal.userId, storeId)
+    requireCompatibleProfileWrite(store, c.req.raw.headers)
     if (!principal.deviceId) {
       throw forbidden('commits require a device token; enroll a device first')
     }
@@ -207,75 +207,6 @@ async function checkBlobs(
         declaredSize: blob.size,
         storedSize,
       })
-    }
-  }
-  return missing
-}
-
-/**
- * Blobs are only ever HEADed once: the first commit that references a blob
- * checks that the object is really in the store at the declared size, then
- * marks it verified. Returns ids whose object is absent.
- */
-async function verifyStoredObjects(
-  deps: RouteDeps,
-  storeId: StoreId,
-  referenced: BlobRef[],
-): Promise<BlobId[]> {
-  const rows = await deps.db
-    .select({ id: blobs.id, size: blobs.size, verifiedAt: blobs.verifiedAt })
-    .from(blobs)
-    .where(
-      and(
-        eq(blobs.storeId, storeId),
-        inArray(
-          blobs.id,
-          referenced.map((blob) => blob.id),
-        ),
-      ),
-    )
-  const toCheck = rows.filter((row) => row.verifiedAt === null)
-  const missing: BlobId[] = []
-  for (let index = 0; index < toCheck.length; index += VERIFY_CONCURRENCY) {
-    const chunk = toCheck.slice(index, index + VERIFY_CONCURRENCY)
-    const results = await Promise.all(
-      chunk.map(async (row) => ({
-        row,
-        head: await deps.storage.head(blobKey(storeId, asBlobId(row.id))),
-      })),
-    )
-    for (const { row, head } of results) {
-      if (!head) {
-        missing.push(asBlobId(row.id))
-        continue
-      }
-      if (head.size !== row.size) {
-        throw badRequest('stored object size does not match the registered blob', {
-          blobId: row.id,
-          storedSize: head.size,
-          registeredSize: row.size,
-        })
-      }
-      // Blob ids are the sha256 of the ciphertext, so a mismatched object
-      // would poison every device that later downloads or decrypts it.
-      if (head.sha256 === null) {
-        throw badRequest('stored object has no checksum to verify against', {
-          blobId: row.id,
-          reason: 'blob_checksum_missing',
-        })
-      }
-      if (head.sha256 !== row.id) {
-        throw badRequest('stored object checksum does not match the registered blob', {
-          blobId: row.id,
-          reason: 'blob_checksum_mismatch',
-          expected: row.id,
-          stored: head.sha256,
-        })
-      }
-      await deps.db
-        .update(blobs)
-        .set({ verifiedAt: new Date() })
-        .where(and(eq(blobs.storeId, storeId), eq(blobs.id, row.id)))
     }
   }
   return missing

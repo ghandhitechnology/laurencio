@@ -7,9 +7,8 @@ install_dir="${LAURENCIO_INSTALL_DIR:-${HOME}/.local/bin}"
 
 case "$(uname -s)" in
   Darwin) platform="darwin" ;;
-  Linux) platform="linux" ;;
   *)
-    echo "Laurencio supports macOS and Linux." >&2
+    echo "This installer supports macOS. Use scripts/install.ps1 on Windows." >&2
     exit 1
     ;;
 esac
@@ -58,5 +57,5 @@ install -m 755 "$temp_dir/$asset" "$install_dir/laurencio"
 echo "Installed Laurencio to $install_dir/laurencio"
 case ":${PATH}:" in
   *":${install_dir}:"*) ;;
-  *) echo "Add $install_dir to PATH, then run: laurencio init" ;;
+  *) echo "Add $install_dir to PATH, then run: laurencio enroll" ;;
 esac

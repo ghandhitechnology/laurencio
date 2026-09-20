@@ -9,12 +9,12 @@ Unattended sync and a clean install for other people.
 ## Changes
 
 - `packages/cli/src/daemon/`: file watchers per enabled surface (debounced), interval sync, exponential backoff on failures, pause honoring, single-instance lock with stale PID detection, and status written to `state.db` for `laurencio status`.
-- Service installers: `laurencio daemon install|uninstall|status` writing a launchd plist on macOS and a systemd user unit on Linux, with logs to `~/Library/Logs/laurencio` or journald.
+- Service installers: `laurencio daemon install|uninstall|status` writing a launchd plist on macOS and a per-user Scheduled Task on Windows, with logs under the user's home.
 - `packages/cli/src/daemon/events.ts`: the later hook integration point (harness session hooks), defined but not wired in v1.
-- Packaging: npm package `@laurencio/cli` with a bin entry, plus `bun build --compile` targets for macOS arm64 and x64, and Linux x64 and arm64. `laurencio upgrade` checks npm for a newer version and prints the command.
+- Packaging: npm package `@laurencio/cli` with a bin entry, plus `bun build --compile` targets for macOS and Windows on arm64 and x64. `laurencio upgrade` checks npm for a newer version and prints the command.
 - Release automation: GitHub Actions on tag, running check, lint, test, the two-HOME harness, and building binaries with checksums; npm publish with provenance.
 - `docs/`: install, quickstart, security model (what the server sees, what it never sees, the passphrase warning), harness support matrix, troubleshooting, and a privacy page.
-- Final smoke: run the full checklist in [testing.md](testing.md) on a clean temp HOME with the released artifacts, on macOS and on Linux.
+- Final smoke: run the full checklist in [testing.md](testing.md) on a clean temp HOME with the released artifacts, on macOS and Windows.
 
 ## Data structures
 

@@ -95,7 +95,7 @@ export async function openRemote(
   }
   if (input.baseUrl === null) {
     throw cliError('no-server', 'no server is configured for this device', {
-      hint: 'Run `laurencio init --server <url>` or set LAURENCIO_SERVER.',
+      hint: 'Run `laurencio enroll --server <url>` or set LAURENCIO_SERVER.',
     })
   }
   return createHttpRemote({
@@ -117,7 +117,7 @@ export async function openSession(ctx: CommandContext): Promise<CliSession> {
     if (error instanceof CredentialsError) {
       const hint =
         error.code === 'not-enrolled'
-          ? 'Run `laurencio init` to sign in and select surfaces.'
+          ? 'Run `laurencio enroll` to sign in and select surfaces.'
           : error.code === 'missing-key'
             ? 'Run `laurencio unlock` with the store passphrase.'
             : 'Run `laurencio login` to sign in again.'

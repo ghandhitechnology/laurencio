@@ -33,6 +33,7 @@ import {
 import { opencodeSchemaNormalize } from './adapters/opencode/transforms'
 import { type LocalBlock, reinsertLocalBlocks, stripLocalBlocks } from './markers'
 import { joinStorePath, type TokenEnv } from './paths'
+import { discoverMcpSecrets } from './secrets/mcp'
 import { type MovedSecret, rewriteEnv } from './secrets/placeholders'
 import { scanFiles } from './secrets/scan'
 import type { HarnessId, Surface, TransformKind } from './types'
@@ -241,6 +242,20 @@ export function enforceUploadRules(
 
   let projection = content
   const moved: MovedSecret[] = []
+  const mcp = discoverMcpSecrets(surface.harness, content)
+  if (mcp.secrets.some((secret) => secret.value !== null)) {
+    return {
+      content: mcp.content,
+      moved: mcp.secrets
+        .filter((secret) => secret.value !== null)
+        .map((secret) => ({
+          name: secret.reference.env,
+          path: storePath,
+          value: secret.value as string,
+        })),
+      blocked: 'MCP secrets require enrollment; run laurencio sync --yes',
+    }
+  }
   if (surface.secretRules.some((rule) => rule.kind === 'indirect')) {
     const result = rewriteIndirectEnv(surface.harness, storePath, projection)
     projection = result.content

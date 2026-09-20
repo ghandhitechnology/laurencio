@@ -54,24 +54,30 @@ export async function getSession(auth: Auth, headers: Headers) {
  * Accepts either a Laurencio device token or a Better Auth session (cookie or
  * bearer token from the device flow). Everything under /v1 uses this.
  */
-export function createAuthMiddleware(deps: { auth: Auth; db: Database }) {
+export function createAuthMiddleware(deps: { auth: Auth; db: Database; now?: () => Date }) {
   return async (c: Context<AppBindings>, next: Next): Promise<void> => {
     const header = c.req.header('authorization')
     const token = header?.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : null
     if (token?.startsWith('lrn_')) {
-      const result = await authenticateDeviceToken(deps.db, token)
+      const now = deps.now?.() ?? new Date()
+      const result = await authenticateDeviceToken(deps.db, token, now)
       if (!result.ok) {
         if (result.reason === 'expired') throw tokenExpired()
         throw unauthenticated('device token is unknown or revoked')
       }
-      await touchDevice(deps.db, result.auth)
+      await touchDevice(deps.db, result.auth, now)
       c.set('principal', result.auth.principal)
       await next()
       return
     }
     const session = await getSession(deps.auth, c.req.raw.headers)
     if (!session?.user) throw unauthenticated('sign in or present a device token')
-    c.set('principal', { userId: asUserId(session.user.id), deviceId: null, tokenId: null })
+    c.set('principal', {
+      userId: asUserId(session.user.id),
+      deviceId: null,
+      tokenId: null,
+      kind: 'account',
+    })
     await next()
   }
 }

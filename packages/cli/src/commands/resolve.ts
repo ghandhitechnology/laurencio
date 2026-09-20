@@ -146,7 +146,8 @@ function readLedgerFrom(state: ReturnType<typeof openState>): ConflictLedger {
 async function choose(ctx: CommandContext, record: ConflictRecord): Promise<string> {
   if (ctx.flags.keepLocal) return 'keep-local'
   if (ctx.flags.keepRemote) return 'keep-remote'
-  return askChoice(
+  if (ctx.flags.editor) return 'editor'
+  const choice = await askChoice(
     ctx,
     `Conflict ${displayPath(ctx.home, record.sourcePath)}:`,
     [
@@ -157,6 +158,7 @@ async function choose(ctx: CommandContext, record: ConflictRecord): Promise<stri
     ],
     'l',
   )
+  return { l: 'keep-local', r: 'keep-remote', o: 'editor', s: 'skip' }[choice] ?? 'skip'
 }
 
 function applyChoice(
@@ -194,6 +196,9 @@ function applyChoice(
     const result = spawnSync(editor, [record.sourcePath], { stdio: 'inherit' })
     if (result.error !== undefined) {
       throw cliError('editor-failed', `could not open ${editor}: ${result.error.message}`)
+    }
+    if (result.status !== 0) {
+      throw cliError('editor-failed', 'the editor did not finish successfully; conflict retained')
     }
     // Whatever the editor left in the file is the local side; the copy is settled.
     fs.rmSync(record.path, { force: true })

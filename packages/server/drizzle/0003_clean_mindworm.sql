@@ -1,0 +1,2 @@
+ALTER TABLE "stores" ADD COLUMN "profile_version" integer DEFAULT 1 NOT NULL;--> statement-breakpoint
+ALTER TABLE "stores" ADD CONSTRAINT "stores_profile_version_check" CHECK ("stores"."profile_version" in (1, 2));

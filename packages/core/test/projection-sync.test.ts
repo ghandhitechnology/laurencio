@@ -512,7 +512,7 @@ describe('projection pipeline over real adapters', () => {
     engine.cleanup()
   })
 
-  test('indirect rewrites upload the rewritten bytes and the next run stays idle', async () => {
+  test('unowned inline secrets stay local until a credential adapter captures them', async () => {
     const engine = createEngine([claudeAdapter])
     const home = buildClaudeFixtureHome()
     const raw = 'sk-ant-api03-5Kd9QpZx7Lm2Nr8TvB4Wc6Ye1Rf3Hg0J'
@@ -522,18 +522,9 @@ describe('projection pipeline over real adapters', () => {
     )
 
     const report = await engine.run(home, deviceA)
-    expect(report.blocked).toEqual([])
-    const uploaded = must(
-      await engine.blobFor(`\${CLAUDE_CONFIG_DIR}/settings.json`),
-      'settings blob',
-    )
-    expect(uploaded).not.toContain(raw)
-    expect(uploaded).toContain(`\${${envVarName('settings', 'ANTHROPIC_API_KEY')}}`)
-
-    // The manifest hash covers the rewritten bytes, so the literal re-projects to the same id.
-    const idle = await engine.run(home, deviceA)
-    expect(idle.changed).toEqual([])
-    expect(idle.uploaded).toBe(0)
+    expect(report.blocked).toContain(`\${CLAUDE_CONFIG_DIR}/settings.json`)
+    expect(await engine.blobFor(`\${CLAUDE_CONFIG_DIR}/settings.json`)).toBeNull()
+    expect(home.read('.claude/settings.json')).toContain(raw)
 
     home.cleanup()
     engine.cleanup()
@@ -576,7 +567,8 @@ describe('upload rules over real surface declarations', () => {
       '$HOME/.claude/settings.json',
       JSON.stringify({ env: { ANTHROPIC_API_KEY: raw } }),
     )
-    expect(outcome.blocked).toBeNull()
+    expect(outcome.blocked).toBe('secret needs a device secret store')
+    expect(outcome.moved[0]?.value).toBe(raw)
     const parsed = JSON.parse(outcome.content) as { env: Record<string, string> }
     const reference = envVarName('settings', 'ANTHROPIC_API_KEY')
     expect(parsed.env.ANTHROPIC_API_KEY).toBe(`\${${reference}}`)

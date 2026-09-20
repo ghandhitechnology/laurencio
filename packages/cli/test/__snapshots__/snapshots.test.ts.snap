@@ -8,9 +8,19 @@ laurencio 0.1.1
 Usage: laurencio <command> [options]
 
 Commands:
+  config     Open the configuration management menu
+  agent      Launch an enrolled agent with selected MCP credentials
+  open       Launch an isolated, expiring workbench
+  sessions   List temporary workbench sessions
+  close      Close and delete a temporary workbench
+  save       Save selected temporary changes to the synced profile
+  credentials Resolve encrypted credential conflicts explicitly
+  enroll     Migrate this device into the synced workbench
   init       Set up this device: sign in, select surfaces, and push
   status     Show device, sync, queue, conflict, and drift state
   sync       Run one sync pass
+  tools      Review and apply pinned curated-tool updates
+  terminal   Update portable terminal keybindings and dimensions
   pause      Stop the daemon from running until resumed
   resume     Let the daemon run again
   rotate     Re-encrypt the store under a new passphrase and publish it
@@ -1305,7 +1315,7 @@ Daemon: running
 
 Harnesses
   codex: not found
-    credentials: auth.json or OS keyring (not probed); values are never read or synced
+    credentials: auth.json or OS keyring (not probed); encrypted vault sync uses auth.json when present
     unsupported: Codex memory (\${CODEX_HOME}/memories_*.sqlite): Codex memory is an opaque SQLite store; file-based memory sync is unsupported
 
 Link topology
@@ -1362,7 +1372,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock doctor hu
         "\${CODEX_HOME}"
       ],
       "notes": [
-        "credentials: auth.json or OS keyring (not probed); values are never read or synced",
+        "credentials: auth.json or OS keyring (not probed); encrypted vault sync uses auth.json when present",
         "unsupported: Codex memory (\${CODEX_HOME}/memories_*.sqlite): Codex memory is an opaque SQLite store; file-based memory sync is unsupported"
       ]
     }
@@ -1661,7 +1671,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock surfaces 
 "exit: 0
 --- stdout
 Codex CLI (codex)  not found
-  credentials: auth.json or OS keyring (not probed); values are never read or synced
+  credentials: auth.json or OS keyring (not probed); encrypted vault sync uses auth.json when present
   unsupported: Codex memory (\${CODEX_HOME}/memories_*.sqlite): Codex memory is an opaque SQLite store; file-based memory sync is unsupported
   SURFACE                      POLICY  STATE  PATH                                    FILES
   codex.agents-skills          sync    on     $HOME/.agents/skills                    -
@@ -1706,7 +1716,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock surfaces 
         "\${CODEX_HOME}"
       ],
       "notes": [
-        "credentials: auth.json or OS keyring (not probed); values are never read or synced",
+        "credentials: auth.json or OS keyring (not probed); encrypted vault sync uses auth.json when present",
         "unsupported: Codex memory (\${CODEX_HOME}/memories_*.sqlite): Codex memory is an opaque SQLite store; file-based memory sync is unsupported"
       ]
     }
@@ -2087,7 +2097,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock unknown c
 
 --- stderr
 laurencio: unknown command: frobnicate
-Known commands: init, status, sync, pause, resume, rotate, daemon, diff, log, restore, devices, resolve, export, doctor, surfaces, login, unlock"
+Known commands: config, agent, open, sessions, close, save, credentials, enroll, init, status, sync, tools, terminal, pause, resume, rotate, daemon, diff, log, restore, devices, resolve, export, doctor, surfaces, login, unlock"
 `;
 
 exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock unknown command human and json 2`] = `
@@ -2099,7 +2109,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock unknown c
   "error": {
     "code": "unknown-command",
     "message": "unknown command: frobnicate",
-    "hint": "Known commands: init, status, sync, pause, resume, rotate, daemon, diff, log, restore, devices, resolve, export, doctor, surfaces, login, unlock"
+    "hint": "Known commands: config, agent, open, sessions, close, save, credentials, enroll, init, status, sync, tools, terminal, pause, resume, rotate, daemon, diff, log, restore, devices, resolve, export, doctor, surfaces, login, unlock"
   }
 }"
 `;

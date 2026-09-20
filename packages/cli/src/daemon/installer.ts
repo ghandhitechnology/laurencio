@@ -1,8 +1,6 @@
 /**
- * Service installers: a launchd user agent on macOS, a systemd user unit on
- * Linux. File content generation is pure, so tests assert the exact plist and
- * unit text without touching the machine; install and uninstall take an
- * injected exec runner for the same reason.
+ * Per-user background sync through macOS launchd or Windows Task Scheduler.
+ * Process execution is injected so installation is testable on either host.
  */
 
 import { spawnSync } from 'node:child_process'
@@ -11,7 +9,6 @@ import path from 'node:path'
 import type { Platform } from '@laurencio/core'
 
 export const SERVICE_LABEL = 'com.laurencio.daemon'
-export const SYSTEMD_UNIT_NAME = 'laurencio.service'
 
 export interface ServiceSpec {
   home: string
@@ -20,7 +17,7 @@ export interface ServiceSpec {
   program: string
   /** Arguments for the daemon run subcommand. */
   args: readonly string[]
-  /** launchd target user id for `gui/<uid>`; ignored on Linux. */
+  /** launchd target user id for `gui/<uid>`; ignored on Windows. */
   uid: number
   env?: Record<string, string>
 }
@@ -39,7 +36,7 @@ export function daemonProgram(invocation: {
   execPath: string
   main: string | null
 }): DaemonProgram {
-  const runtime = path.basename(invocation.execPath)
+  const runtime = path.win32.basename(path.basename(invocation.execPath))
   const interpreted =
     runtime === 'bun' ||
     runtime === 'bun.exe' ||
@@ -57,22 +54,18 @@ export function launchAgentsDir(home: string): string {
   return path.join(home, 'Library', 'LaunchAgents')
 }
 
-export function systemdUserDir(home: string): string {
-  return path.join(home, '.config', 'systemd', 'user')
-}
-
 export function serviceFilePath(spec: ServiceSpec): string {
   if (spec.platform === 'darwin') {
     return path.join(launchAgentsDir(spec.home), `${SERVICE_LABEL}.plist`)
   }
-  if (spec.platform === 'linux') {
-    return path.join(systemdUserDir(spec.home), SYSTEMD_UNIT_NAME)
+  if (spec.platform === 'win32') {
+    return path.join(spec.home, '.laurencio', 'daemon.ps1')
   }
-  throw new Error('laurencio does not install a service on this platform')
+  throw new Error('Laurencio background sync supports macOS and Windows.')
 }
 
-/** stdout log file on macOS; null on Linux, where the unit logs to journald. */
 export function logFilePath(spec: ServiceSpec): string | null {
+  if (spec.platform === 'win32') return path.join(spec.home, '.laurencio', 'logs', 'daemon.log')
   if (spec.platform !== 'darwin') return null
   return path.join(spec.home, 'Library', 'Logs', 'laurencio', 'daemon.log')
 }
@@ -82,7 +75,8 @@ export function logHint(spec: ServiceSpec): string {
     const dir = path.join(spec.home, 'Library', 'Logs', 'laurencio')
     return `logs: ${dir}`
   }
-  return `logs: journalctl --user -u ${SYSTEMD_UNIT_NAME}`
+  const log = logFilePath(spec)
+  return log === null ? '' : `logs: ${path.dirname(log)}`
 }
 
 function xmlEscape(value: string): string {
@@ -145,42 +139,63 @@ function envEntries(env: Record<string, string> | undefined): string[] {
   return lines
 }
 
-/** systemd splits ExecStart on whitespace, so quote anything unusual. */
-function systemdQuote(arg: string): string {
-  if (arg !== '' && /^[A-Za-z0-9_@%+=:,./-]+$/.test(arg)) return arg
-  return `"${arg.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
+function psQuote(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`
 }
 
-export function systemdUnit(spec: ServiceSpec): string {
-  if (spec.platform !== 'linux') throw new Error('systemdUnit only runs on Linux')
-  const execStart = [spec.program, ...spec.args].map(systemdQuote).join(' ')
-  const envLines = Object.entries(spec.env ?? {}).map(
-    ([key, value]) => `Environment=${systemdQuote(`${key}=${value}`)}`,
-  )
+export function windowsDaemonScript(spec: ServiceSpec): string {
+  if (spec.platform !== 'win32') throw new Error('windowsDaemonScript only runs on Windows')
+  const log = logFilePath(spec) ?? ''
   return [
-    '[Unit]',
-    'Description=Laurencio config sync daemon',
-    'After=network-online.target',
-    'Wants=network-online.target',
-    '',
-    '[Service]',
-    'Type=simple',
-    `ExecStart=${execStart}`,
-    'Restart=on-failure',
-    'RestartSec=5',
-    ...envLines,
-    'StandardOutput=journal',
-    'StandardError=journal',
-    '',
-    '[Install]',
-    'WantedBy=default.target',
+    "\uFEFF$ErrorActionPreference = 'Stop'",
+    "$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'",
+    `Set-Location -LiteralPath ${psQuote(spec.home)}`,
+    ...Object.entries(spec.env ?? {}).map(
+      ([key, value]) =>
+        `[Environment]::SetEnvironmentVariable(${psQuote(key)}, ${psQuote(value)}, 'Process')`,
+    ),
+    "$ErrorActionPreference = 'Continue'",
+    `& ${[spec.program, ...spec.args].map(psQuote).join(' ')} *>> ${psQuote(log)}`,
+    'if ($null -eq $LASTEXITCODE) { exit 1 }',
+    'exit $LASTEXITCODE',
     '',
   ].join('\n')
 }
 
+function windowsTask(exec: ExecFn, action: string): ExecResult {
+  return exec('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    [
+      "$ErrorActionPreference = 'Stop'",
+      '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()',
+      '$user = $identity.Name',
+      "$taskName = 'Laurencio Sync-' + $identity.User.Value",
+      action,
+    ].join('; '),
+  ])
+}
+
+function registerWindowsTask(spec: ServiceSpec, exec: ExecFn): ExecResult {
+  const script = serviceFilePath(spec)
+  const args = `-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${script}"`
+  return windowsTask(
+    exec,
+    [
+      `$action = New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'powershell.exe') -Argument ${psQuote(args)} -WorkingDirectory ${psQuote(spec.home)}`,
+      '$trigger = New-ScheduledTaskTrigger -AtLogOn -User $user',
+      '$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited',
+      '$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries',
+      "Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Laurencio background sync' -Force | Out-Null",
+      'Start-ScheduledTask -TaskName $taskName',
+    ].join('; '),
+  )
+}
+
 export function serviceFileContent(spec: ServiceSpec): string {
   if (spec.platform === 'darwin') return launchdPlist(spec)
-  if (spec.platform === 'linux') return systemdUnit(spec)
+  if (spec.platform === 'win32') return windowsDaemonScript(spec)
   throw new Error('laurencio does not install a service on this platform')
 }
 
@@ -235,21 +250,30 @@ function readFileOrNull(filePath: string): string | null {
   }
 }
 
+function launchdRunning(spec: ServiceSpec, exec: ExecFn): boolean {
+  const result = exec('launchctl', ['print', `gui/${spec.uid}/${SERVICE_LABEL}`])
+  // `print` succeeds for loaded jobs even after a successful exit. Only the
+  // service's reported state makes an unchanged installation a no-op.
+  const state = result.stdout.match(/^[\t ]*state\s*=\s*([^\r\n]*)/m)?.[1]?.trim()
+  return result.status === 0 && state === 'running'
+}
+
 export function installService(spec: ServiceSpec, deps: InstallerDeps = {}): InstallResult {
   const exec = deps.exec ?? defaultExec
   const filePath = serviceFilePath(spec)
   const content = serviceFileContent(spec)
   const existing = readFileOrNull(filePath)
   const notes: string[] = []
-  if (spec.platform === 'darwin') {
-    const logFile = logFilePath(spec)
-    if (logFile !== null) fs.mkdirSync(path.dirname(logFile), { recursive: true, mode: 0o700 })
-  }
+  const logFile = logFilePath(spec)
+  if (logFile !== null) fs.mkdirSync(path.dirname(logFile), { recursive: true, mode: 0o700 })
   if (existing === content) {
     const running =
       spec.platform === 'darwin'
-        ? exec('launchctl', ['print', `gui/${spec.uid}/${SERVICE_LABEL}`]).status === 0
-        : exec('systemctl', ['--user', 'is-active', SYSTEMD_UNIT_NAME]).status === 0
+        ? launchdRunning(spec, exec)
+        : windowsTask(
+            exec,
+            "if ((Get-ScheduledTask -TaskName $taskName -ErrorAction Stop).State -ne 'Running') { exit 1 }",
+          ).status === 0
     if (running) {
       return { path: filePath, installed: true, started: true, alreadyInstalled: true, notes }
     }
@@ -266,15 +290,20 @@ export function installService(spec: ServiceSpec, deps: InstallerDeps = {}): Ins
       notes.push(`launchctl bootstrap failed: ${(boot.stderr || boot.stdout).trim()}`)
     }
   } else {
-    exec('systemctl', ['--user', 'daemon-reload'])
-    const enable = exec('systemctl', ['--user', 'enable', '--now', SYSTEMD_UNIT_NAME])
+    const enable = registerWindowsTask(spec, exec)
     started = enable.status === 0
     if (!started) {
-      notes.push(`systemctl enable failed: ${(enable.stderr || enable.stdout).trim()}`)
+      notes.push(`Task Scheduler registration failed: ${(enable.stderr || enable.stdout).trim()}`)
     }
-    notes.push('run `loginctl enable-linger $USER` to keep syncing after logout')
+    notes.push('Background sync runs while this Windows user is signed in.')
   }
-  return { path: filePath, installed: true, started, alreadyInstalled: false, notes }
+  return {
+    path: filePath,
+    installed: spec.platform === 'win32' ? started : true,
+    started,
+    alreadyInstalled: false,
+    notes,
+  }
 }
 
 export function uninstallService(spec: ServiceSpec, deps: InstallerDeps = {}): UninstallResult {
@@ -284,12 +313,16 @@ export function uninstallService(spec: ServiceSpec, deps: InstallerDeps = {}): U
   if (spec.platform === 'darwin') {
     stopped = exec('launchctl', ['bootout', `gui/${spec.uid}/${SERVICE_LABEL}`]).status === 0
   } else {
-    stopped = exec('systemctl', ['--user', 'disable', '--now', SYSTEMD_UNIT_NAME]).status === 0
+    const result = windowsTask(
+      exec,
+      '$task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue; if ($null -ne $task) { Stop-ScheduledTask -TaskName $taskName; Unregister-ScheduledTask -TaskName $taskName -Confirm:$false }',
+    )
+    stopped = result.status === 0
+    if (!stopped) return { path: filePath, removed: false, stopped: false }
   }
   const removed = fs.existsSync(filePath)
   fs.rmSync(filePath, { force: true })
   if (removed) deps.log?.(`removed ${filePath}`)
-  if (spec.platform === 'linux') exec('systemctl', ['--user', 'daemon-reload'])
   return { path: filePath, removed, stopped }
 }
 
@@ -300,11 +333,17 @@ export interface ServiceStatus {
   logHint: string
 }
 
-export function serviceStatus(spec: ServiceSpec): ServiceStatus {
+export function serviceStatus(spec: ServiceSpec, deps: InstallerDeps = {}): ServiceStatus {
   const filePath = serviceFilePath(spec)
   const logPath = logFilePath(spec)
   return {
-    installed: fs.existsSync(filePath),
+    installed:
+      fs.existsSync(filePath) &&
+      (spec.platform !== 'win32' ||
+        windowsTask(
+          deps.exec ?? defaultExec,
+          'Get-ScheduledTask -TaskName $taskName -ErrorAction Stop | Out-Null',
+        ).status === 0),
     path: filePath,
     logPath,
     logHint: logHint(spec),

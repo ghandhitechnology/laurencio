@@ -14,6 +14,10 @@ import { createDeviceRoutes } from './routes/devices'
 import { createHealthRoutes } from './routes/health'
 import { createKdfRoutes } from './routes/kdf'
 import { createMeRoutes } from './routes/me'
+import { createProfileRoutes } from './routes/profile'
+import { createProfileVersionRoutes } from './routes/profile-version'
+import { createVaultRoutes } from './routes/vault'
+import { createWorkbenchSessionRoutes } from './routes/workbench-sessions'
 import { createBlobStore, FsBlobStore } from './storage'
 import type { BlobStore } from './storage/types'
 import { createWebRoutes } from './web/routes'
@@ -28,6 +32,7 @@ export interface CreateAppOptions {
   auth: Auth
   logger?: Logger
   rateLimiter?: RateLimiter
+  now?: () => Date
 }
 
 export function createApp(options: CreateAppOptions): Hono<AppBindings> {
@@ -47,6 +52,7 @@ export function createApp(options: CreateAppOptions): Hono<AppBindings> {
       capacity: options.env.rate.approvalCapacity,
       refillPerSecond: options.env.rate.approvalRefillPerSecond,
     }),
+    now: options.now ?? (() => new Date()),
   }
 
   const app = new Hono<AppBindings>()
@@ -83,14 +89,18 @@ export function createApp(options: CreateAppOptions): Hono<AppBindings> {
     await next()
   })
 
-  app.use('/v1/*', createAuthMiddleware({ auth: options.auth, db: options.db }))
+  app.use('/v1/*', createAuthMiddleware({ auth: options.auth, db: options.db, now: deps.now }))
 
   app.route('/', createHealthRoutes(deps))
   app.route('/', createMeRoutes(deps))
+  app.route('/', createProfileVersionRoutes(deps))
+  app.route('/', createProfileRoutes(deps))
+  app.route('/', createVaultRoutes(deps))
   app.route('/', createDeviceRoutes(deps))
   app.route('/', createKdfRoutes(deps))
   app.route('/', createBlobRoutes(deps))
   app.route('/', createCommitRoutes(deps))
+  app.route('/', createWorkbenchSessionRoutes(deps))
   app.route(
     '/',
     createWebRoutes({

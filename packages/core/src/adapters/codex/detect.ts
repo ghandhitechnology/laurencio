@@ -26,11 +26,11 @@ export function codexCredentialStorage(ctx: AdapterContext): CodexCredentialStor
 function credentialNote(storage: CodexCredentialStorage): string {
   switch (storage) {
     case 'auth.json':
-      return 'credentials: auth.json file; values are never read or synced'
+      return 'credentials: auth.json file; portable profiles sync it through the encrypted credential vault'
     case 'keyring':
-      return 'credentials: OS keyring; no auth.json on this machine'
+      return 'credentials: OS keyring; encrypted vault sync starts when auth.json is present'
     case 'unknown':
-      return 'credentials: auth.json or OS keyring (not probed); values are never read or synced'
+      return 'credentials: auth.json or OS keyring (not probed); encrypted vault sync uses auth.json when present'
     default:
       return assertNever(storage)
   }

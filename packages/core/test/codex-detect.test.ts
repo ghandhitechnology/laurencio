@@ -42,7 +42,7 @@ describe('codex detect', () => {
       ctxWith('/Users/laurencio', ['credential-storage: auth.json']),
     ).notes.join('\n')
     expect(note).toContain('auth.json')
-    expect(note).toContain('never read')
+    expect(note).toContain('encrypted credential vault')
   })
 
   test('never reads credential values into the detection report', () => {

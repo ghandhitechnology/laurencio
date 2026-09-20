@@ -15,7 +15,7 @@ export function browserCommand(url: string, platform: Platform): BrowserCommand 
       args: ['url.dll,FileProtocolHandler', url],
     }
   }
-  return { program: 'xdg-open', args: [url] }
+  throw new Error('Laurencio browser launch supports macOS and Windows')
 }
 
 /** Opens an HTTP(S) URL in the default browser. Failures stay recoverable. */

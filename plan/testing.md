@@ -40,7 +40,7 @@ Real harness directories contain personal content, so fixtures are synthetic and
 Run before each milestone closes, on this machine, against a scratch HOME pair.
 
 - `laurencio surfaces --json` on the real machine lists every path from the DESIGN tables with the right policy, and flags nothing as `unknown`.
-- `laurencio init` enrolls, prints the KDF parameters and passphrase warning, caches the key in the keychain, and a re-run is a no-op.
+- `laurencio enroll` enrolls, prints the KDF parameters and passphrase warning, caches the key in the keychain, and a re-run is a no-op.
 - `laurencio diff <surface>` shows real edits made in a harness config directory.
 - Kill the daemon mid-apply, restart, confirm convergence and no duplicate conflict copies.
 - Real Claude Code, Codex, and OpenCode sessions still start and read their config after a sync, with no lock or permission regressions.

@@ -7,7 +7,12 @@ import { blobIdOf, open, sealText } from '../src/crypto/aead'
 import { deriveMasterKey, type KdfParams, kdfParamsToWire } from '../src/crypto/kdf'
 import type { Manifest } from '../src/model'
 import { createFileRemote } from '../src/remote/file'
-import { KdfGenerationConflictError, parseManifest, RemoteError } from '../src/remote/types'
+import {
+  KdfGenerationConflictError,
+  parseManifest,
+  RemoteError,
+  supportsProfile,
+} from '../src/remote/types'
 
 const storeId = StoreId.parse('00000000000000000000000001')
 const deviceId = DeviceId.parse('00000000000000000000000002')
@@ -40,6 +45,12 @@ describe('FileRemote', () => {
   test('seeds and reopens a store with stable kdf params and store id', async () => {
     const dir = tempDir()
     const remote = newRemote(dir)
+    expect(supportsProfile(remote)).toBe(true)
+    expect(
+      supportsProfile({ ...remote, getProfileHead: undefined } as unknown as Parameters<
+        typeof supportsProfile
+      >[0]),
+    ).toBe(false)
     expect(remote.storeId).toBe(storeId)
     expect(await remote.getKdfParams()).toEqual({ kdf, generation: 1 })
     const reopened = createFileRemote({ dir })
@@ -95,6 +106,75 @@ describe('FileRemote', () => {
     await expect(remote.getBlob(BlobId.parse('0'.repeat(64)))).rejects.toMatchObject({
       code: 'not-found',
     })
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('stores and rotates an opaque vault head with compare-and-swap', async () => {
+    const dir = tempDir()
+    const remote = newRemote(dir)
+    const key = deriveMasterKey('pass', kdf)
+    const first = sealText(key, 'vault', '{"version":1,"entries":[]}', {
+      storeId,
+      blobType: 'vault',
+      protocolVersion: 1,
+    })
+    const second = sealText(key, 'vault', '{"version":1,"entries":[] }', {
+      storeId,
+      blobType: 'vault',
+      protocolVersion: 1,
+    })
+    const firstRef = await remote.putBlob({ blobId: first.blobId, bytes: first.bytes })
+    const secondRef = await remote.putBlob({ blobId: second.blobId, bytes: second.bytes })
+
+    expect(await remote.getVaultHead()).toBeNull()
+    expect(await remote.putVaultHead({ blob: firstRef, expectedGeneration: null })).toMatchObject({
+      blob: firstRef,
+      generation: 1,
+    })
+    expect(await remote.putVaultHead({ blob: secondRef, expectedGeneration: 1 })).toMatchObject({
+      blob: secondRef,
+      generation: 2,
+    })
+    await expect(
+      remote.putVaultHead({ blob: firstRef, expectedGeneration: 1 }),
+    ).rejects.toMatchObject({ name: 'VaultGenerationConflictError', expected: 1, actual: 2 })
+    expect((await remote.getVaultHead())?.blob).toEqual(secondRef)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('stores and rotates an opaque profile head with compare-and-swap', async () => {
+    const dir = tempDir()
+    const remote = newRemote(dir)
+    const key = deriveMasterKey('pass', kdf)
+    const first = sealText(key, 'profile', '{"schemaVersion":2}', {
+      storeId,
+      blobType: 'profile',
+      protocolVersion: 1,
+    })
+    const second = sealText(key, 'profile', '{"schemaVersion":2,"id":"default"}', {
+      storeId,
+      blobType: 'profile',
+      protocolVersion: 1,
+    })
+    const firstRef = await remote.putBlob({ blobId: first.blobId, bytes: first.bytes })
+    const secondRef = await remote.putBlob({ blobId: second.blobId, bytes: second.bytes })
+
+    expect(await remote.getProfileHead()).toBeNull()
+    expect(await remote.putProfileHead({ blob: firstRef, expectedGeneration: null })).toMatchObject(
+      {
+        blob: firstRef,
+        generation: 1,
+      },
+    )
+    expect(await remote.putProfileHead({ blob: secondRef, expectedGeneration: 1 })).toMatchObject({
+      blob: secondRef,
+      generation: 2,
+    })
+    await expect(
+      remote.putProfileHead({ blob: firstRef, expectedGeneration: 1 }),
+    ).rejects.toMatchObject({ name: 'ProfileGenerationConflictError', expected: 1, actual: 2 })
+    expect((await remote.getProfileHead())?.blob).toEqual(secondRef)
+    key.zeroize()
     fs.rmSync(dir, { recursive: true, force: true })
   })
 

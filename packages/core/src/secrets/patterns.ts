@@ -1,4 +1,5 @@
 import { visit } from 'jsonc-parser'
+import { parse as parseToml } from 'smol-toml'
 
 /**
  * Key-shape rules for the pre-upload secret scanner.
@@ -23,6 +24,30 @@ export type SecretRuleId =
   | 'pem-private-key'
   | 'jwt'
   | 'entropy-string'
+  | 'sensitive-field'
+
+/** Field intent catches short or low-entropy credentials that shape rules cannot. */
+export function isSensitiveSecretValue(key: string, value: string): boolean {
+  const normalized = key
+    .replace(/([a-z])([A-Z])/g, '$1_$2')
+    .replace(/-/g, '_')
+    .toLowerCase()
+  if (
+    !/^(?:authorization|proxy_authorization|cookie|set_cookie|api_key|apikey|password|passwd|secret|token|private_key|.*_(?:api_key|apikey|password|passwd|secret|token))$/.test(
+      normalized,
+    )
+  )
+    return false
+  if (
+    value.trim() === '' ||
+    /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\{env:[A-Za-z_][A-Za-z0-9_]*\}/.test(value) ||
+    value.startsWith('laurencio:secret:')
+  )
+    return false
+  // Explicit documentation placeholders are public; a digest-shaped API key is not.
+  const reason = allowlistReason(value)
+  return reason?.startsWith('marker:') !== true && !/^(?:<[^>]+>|\{\{.*\}\})$/.test(value)
+}
 
 export interface SecretFinding {
   path: string
@@ -267,15 +292,22 @@ function lineOfOffset(content: string, offset: number): number {
 export function structuredValues(
   content: string,
   format: StructuredFormat,
-): { value: string; line: number }[] {
-  const values: { value: string; line: number }[] = []
+): { value: string; line: number; key?: string; referenceMap?: boolean }[] {
+  const values: { value: string; line: number; key?: string; referenceMap?: boolean }[] = []
   if (format !== 'toml') {
     visit(
       content,
       {
-        onLiteralValue(value, _offset, _length, startLine) {
+        onLiteralValue(value, _offset, _length, startLine, _startCharacter, pathSupplier) {
           if (typeof value === 'string' && value.length > 0) {
-            values.push({ value, line: startLine + 1 })
+            const parts = pathSupplier()
+            const key = parts.at(-1)
+            values.push({
+              value,
+              line: startLine + 1,
+              ...(typeof key === 'string' ? { key } : {}),
+              referenceMap: parts.at(-2) === 'env_http_headers',
+            })
           }
         },
       },
@@ -284,13 +316,33 @@ export function structuredValues(
     return values
   }
 
-  const pattern = /^[ \t]*[A-Za-z0-9_.-]+[ \t]*=[ \t]*(["'])((?:\\.|(?!\1)[^\\])*)\1/gm
+  try {
+    const walk = (value: unknown, parts: string[]): void => {
+      if (typeof value === 'string' && value.length > 0) {
+        const key = parts.at(-1)
+        values.push({
+          value,
+          line: lineOfOffset(content, Math.max(0, content.indexOf(value))),
+          ...(key === undefined ? {} : { key }),
+          referenceMap: parts.at(-2) === 'env_http_headers',
+        })
+      } else if (Array.isArray(value)) for (const entry of value) walk(entry, [...parts, ''])
+      else if (typeof value === 'object' && value !== null)
+        for (const [key, entry] of Object.entries(value)) walk(entry, [...parts, key])
+    }
+    walk(parseToml(content), [])
+    return values
+  } catch {
+    // Retain conservative scanning for incomplete TOML while users are editing it.
+  }
+  const pattern = /^[ \t]*([A-Za-z0-9_.-]+)[ \t]*=[ \t]*(["'])((?:\\.|(?!\2)[^\\])*)\2/gm
   for (const match of content.matchAll(pattern)) {
-    const value = match[2]
+    const value = match[3]
     if (value === undefined || value.length === 0) continue
     values.push({
       value: value.replace(/\\"/g, '"'),
       line: lineOfOffset(content, match.index ?? 0),
+      ...(match[1] === undefined ? {} : { key: match[1] }),
     })
   }
   return values

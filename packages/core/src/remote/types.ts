@@ -2,8 +2,12 @@ import type {
   BlobId,
   BlobRef,
   DeviceRecord,
+  ProfileHead,
+  ProfileHeadWriteRequest,
   RevisionId,
   RevisionSummary,
+  VaultHead,
+  VaultHeadWriteRequest,
 } from '@laurencio/protocol'
 import { BlobId as BlobIdSchema } from '@laurencio/protocol'
 import type { KdfParams } from '../crypto/kdf'
@@ -154,6 +158,56 @@ export interface Remote {
   getBlob(blobId: BlobId): Promise<Uint8Array>
   commit(commit: RemoteCommit): Promise<RemoteCommitResult>
   listDevices(): Promise<DeviceRecord[]>
+}
+
+/** Optional encrypted-vault capability implemented by v2 profile remotes. */
+export interface VaultRemote {
+  getVaultHead(): Promise<VaultHead | null>
+  putVaultHead(input: VaultHeadWriteRequest): Promise<VaultHead>
+}
+
+export class VaultGenerationConflictError extends Error {
+  readonly expected: number | null
+  readonly actual: number | null
+
+  constructor(expected: number | null, actual: number | null) {
+    super(`vault generation changed: expected ${expected ?? 'new'}, found ${actual ?? 'missing'}`)
+    this.name = 'VaultGenerationConflictError'
+    this.expected = expected
+    this.actual = actual
+  }
+}
+
+export function supportsVault(remote: Remote): remote is Remote & VaultRemote {
+  const candidate = remote as Partial<VaultRemote>
+  return (
+    typeof candidate.getVaultHead === 'function' && typeof candidate.putVaultHead === 'function'
+  )
+}
+
+/** Optional encrypted-profile capability implemented by v2 profile remotes. */
+export interface ProfileRemote {
+  getProfileHead(): Promise<ProfileHead | null>
+  putProfileHead(input: ProfileHeadWriteRequest): Promise<ProfileHead>
+}
+
+export class ProfileGenerationConflictError extends Error {
+  readonly expected: number | null
+  readonly actual: number | null
+
+  constructor(expected: number | null, actual: number | null) {
+    super(`profile generation changed: expected ${expected ?? 'new'}, found ${actual ?? 'missing'}`)
+    this.name = 'ProfileGenerationConflictError'
+    this.expected = expected
+    this.actual = actual
+  }
+}
+
+export function supportsProfile(remote: Remote): remote is Remote & ProfileRemote {
+  const candidate = remote as Partial<ProfileRemote>
+  return (
+    typeof candidate.getProfileHead === 'function' && typeof candidate.putProfileHead === 'function'
+  )
 }
 
 export type ManifestErrorCode =

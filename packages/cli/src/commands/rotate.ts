@@ -16,12 +16,17 @@ import {
   KdfValidationError,
   type Manifest,
   type ManifestEntry,
+  openProfile,
   type PublishedKdfParams,
   parseManifest,
   type RevisionRecord,
   releaseLock,
   StaleParentsError,
   type SyncState,
+  sealProfile,
+  supportsProfile,
+  supportsVault,
+  Vault,
 } from '@laurencio/core'
 import { newId, PROTOCOL_VERSION, type RevisionId, type StoreId } from '@laurencio/protocol'
 import type { CommandContext } from '../context'
@@ -34,6 +39,7 @@ import {
   writeKeyEpoch,
   writePendingRotation,
 } from '../key-epoch'
+import { ensureProfileV2 } from '../profile-version'
 import { readNewPassphrase, readPassphrase } from '../prompt'
 import { ok } from '../result'
 import type { CliSession } from '../session'
@@ -171,8 +177,115 @@ async function withKey<T>(key: crypto.KeyMaterial, action: () => Promise<T>): Pr
   }
 }
 
+interface SidecarRotationStats {
+  reEncrypted: number
+  replaced: number
+  bytesBefore: number
+  bytesAfter: number
+}
+
+/** Idempotently re-encrypts metadata heads before the new KDF generation is published. */
+async function ensureSidecarHeadsRotated(
+  session: CliSession,
+  oldKey: crypto.KeyMaterial,
+  newKey: crypto.KeyMaterial,
+): Promise<SidecarRotationStats> {
+  const context = {
+    storeId: session.credentials.storeId,
+    protocolVersion: PROTOCOL_VERSION,
+  }
+  const stats: SidecarRotationStats = {
+    reEncrypted: 0,
+    replaced: 0,
+    bytesBefore: 0,
+    bytesAfter: 0,
+  }
+
+  if (supportsProfile(session.remote)) {
+    const head = await session.remote.getProfileHead()
+    if (head !== null) {
+      const ciphertext = await session.remote.getBlob(head.blob.id)
+      try {
+        let needsRotation = false
+        try {
+          openProfile(newKey, ciphertext, context)
+        } catch (error) {
+          if (!(error instanceof crypto.EnvelopeError)) throw error
+          needsRotation = true
+        }
+        if (needsRotation) {
+          const profile = openProfile(oldKey, ciphertext, context)
+          const sealed = sealProfile(profile, newKey, context)
+          try {
+            const blob = await session.remote.putBlob({
+              blobId: sealed.blobId,
+              bytes: sealed.bytes,
+            })
+            await session.remote.putProfileHead({
+              blob,
+              expectedGeneration: head.generation,
+            })
+            stats.reEncrypted += 1
+            stats.replaced += 1
+            stats.bytesBefore += ciphertext.length
+            stats.bytesAfter += sealed.bytes.length
+          } finally {
+            sealed.bytes.fill(0)
+          }
+        }
+      } finally {
+        ciphertext.fill(0)
+      }
+    }
+  }
+
+  if (supportsVault(session.remote)) {
+    const head = await session.remote.getVaultHead()
+    if (head !== null) {
+      const ciphertext = await session.remote.getBlob(head.blob.id)
+      let vault: Vault | null = null
+      try {
+        let needsRotation = false
+        try {
+          const current = Vault.open(newKey, ciphertext, context)
+          current.zeroize()
+        } catch (error) {
+          if (!(error instanceof crypto.EnvelopeError)) throw error
+          needsRotation = true
+        }
+        if (needsRotation) {
+          vault = Vault.open(oldKey, ciphertext, context)
+          const sealed = vault.seal(newKey, context)
+          try {
+            const blob = await session.remote.putBlob({
+              blobId: sealed.blobId,
+              bytes: sealed.bytes,
+            })
+            await session.remote.putVaultHead({
+              blob,
+              expectedGeneration: head.generation,
+            })
+            stats.reEncrypted += 1
+            stats.replaced += 1
+            stats.bytesBefore += ciphertext.length
+            stats.bytesAfter += sealed.bytes.length
+          } finally {
+            sealed.bytes.fill(0)
+          }
+        }
+      } finally {
+        vault?.zeroize()
+        ciphertext.fill(0)
+      }
+    }
+  }
+
+  return stats
+}
+
 async function runRotation(ctx: CommandContext): Promise<RotationOutcome> {
   const session = await openSession(ctx)
+  await ensureProfileV2(session.remote)
   const state = openState(ctx)
   const holder = acquireLock(ctx.home)
   try {
@@ -187,7 +300,7 @@ async function runRotation(ctx: CommandContext): Promise<RotationOutcome> {
     const current = await session.remote.getKdfParams()
     if (current === null) {
       throw cliError('no-kdf', 'the store has no passphrase parameters yet', {
-        hint: 'Run `laurencio init` on the first device.',
+        hint: 'Run `laurencio enroll` on the first device.',
       })
     }
     const page = await session.remote.listRevisions()
@@ -214,7 +327,7 @@ async function runRotation(ctx: CommandContext): Promise<RotationOutcome> {
     const oldKey = crypto.deriveMasterKey(passphrase, current.kdf)
     const result = await withKey(oldKey, async () => {
       const manifest = openManifest(session, oldKey, headBytes)
-      return crypto.rotateStore({
+      const rotated = await crypto.rotateStore({
         remote: session.remote,
         storeId: session.credentials.storeId,
         protocolVersion: PROTOCOL_VERSION,
@@ -227,20 +340,36 @@ async function runRotation(ctx: CommandContext): Promise<RotationOutcome> {
         epoch: current.generation,
         ...(ctx.deps.calibrate === undefined ? {} : { calibrate: ctx.deps.calibrate }),
       })
+      const pending: PendingRotation = {
+        epoch: rotated.epoch.epoch,
+        generation: current.generation + 1,
+        expectedGeneration: current.generation,
+        revisionId: rotated.revision.id,
+        kdf: rotated.epoch.kdf,
+        createdAt: rotated.epoch.createdAt,
+      }
+      // The manifest commit is the first remote write under the new key. Persist recovery data
+      // immediately, before rotating either sidecar or replacing the cached key.
+      writePendingRotation(state, pending)
+      try {
+        const sidecars = await ensureSidecarHeadsRotated(session, oldKey, rotated.master)
+        return {
+          ...rotated,
+          pending,
+          sidecarReplaced: sidecars.replaced,
+          stats: {
+            reEncrypted: rotated.stats.reEncrypted + sidecars.reEncrypted,
+            bytesBefore: rotated.stats.bytesBefore + sidecars.bytesBefore,
+            bytesAfter: rotated.stats.bytesAfter + sidecars.bytesAfter,
+          },
+        }
+      } catch (error) {
+        rotated.master.zeroize()
+        throw error
+      }
     })
 
     return await withKey(result.master, async () => {
-      const pending: PendingRotation = {
-        epoch: result.epoch.epoch,
-        generation: current.generation + 1,
-        expectedGeneration: current.generation,
-        revisionId: result.revision.id,
-        kdf: result.epoch.kdf,
-        createdAt: result.epoch.createdAt,
-      }
-      // The pending record lands before the key cache: a crash in between is
-      // recoverable, because --resume can re-derive the key from this record.
-      writePendingRotation(state, pending)
       const cache = await crypto.openKeyCache(keychainOptions(ctx))
       const keyBackend = await cache.save(session.credentials.storeId, result.master)
       adoptRotation(session, state, {
@@ -260,13 +389,13 @@ async function runRotation(ctx: CommandContext): Promise<RotationOutcome> {
           role: 'base',
         },
       })
-      const published = await publishPending(session, state, pending)
+      const published = await publishPending(session, state, result.pending)
       return {
         revisionId: result.revision.id,
         epoch: result.epoch.epoch,
         generation: published.generation,
         reEncrypted: result.stats.reEncrypted,
-        replaced: result.replaced.length,
+        replaced: result.replaced.length + result.sidecarReplaced,
         bytesBefore: result.stats.bytesBefore,
         bytesAfter: result.stats.bytesAfter,
         keyBackend,
@@ -298,7 +427,6 @@ async function runRotation(ctx: CommandContext): Promise<RotationOutcome> {
 async function ensurePendingKey(
   ctx: CommandContext,
   session: CliSession,
-  state: SyncState,
   pending: PendingRotation,
 ): Promise<{ key: crypto.KeyMaterial; derived: boolean }> {
   const bytes = await session.remote.getManifest(pending.revisionId)
@@ -320,18 +448,12 @@ async function ensurePendingKey(
       hint: 'Pass the new passphrase set when this rotation committed.',
     })
   }
-  const cache = await crypto.openKeyCache(keychainOptions(ctx))
-  await cache.save(session.credentials.storeId, derived)
-  writeKeyEpoch(state, {
-    epoch: pending.epoch,
-    salt: pending.kdf.salt,
-    createdAt: pending.createdAt,
-  })
   return { key: derived, derived: true }
 }
 
 async function resumeRotation(ctx: CommandContext): Promise<RotationOutcome> {
   const session = await openSession(ctx)
+  await ensureProfileV2(session.remote)
   const state = openState(ctx)
   const holder = acquireLock(ctx.home)
   try {
@@ -364,17 +486,28 @@ async function resumeRotation(ctx: CommandContext): Promise<RotationOutcome> {
         { hint: 'Run `laurencio unlock` with the current passphrase, then rotate again.' },
       )
     }
-    const pendingKey = await ensurePendingKey(ctx, session, state, pending)
+    const pendingKey = await ensurePendingKey(ctx, session, pending)
     try {
+      const sidecars = pendingKey.derived
+        ? await ensureSidecarHeadsRotated(session, session.credentials.key, pendingKey.key)
+        : { reEncrypted: 0, replaced: 0, bytesBefore: 0, bytesAfter: 0 }
+      if (pendingKey.derived) {
+        await cache.save(session.credentials.storeId, pendingKey.key)
+        writeKeyEpoch(state, {
+          epoch: pending.epoch,
+          salt: pending.kdf.salt,
+          createdAt: pending.createdAt,
+        })
+      }
       const published = await publishPending(session, state, pending)
       return {
         revisionId: pending.revisionId,
         epoch: pending.epoch,
         generation: published.generation,
-        reEncrypted: 0,
-        replaced: 0,
-        bytesBefore: 0,
-        bytesAfter: 0,
+        reEncrypted: sidecars.reEncrypted,
+        replaced: sidecars.replaced,
+        bytesBefore: sidecars.bytesBefore,
+        bytesAfter: sidecars.bytesAfter,
         keyBackend: cache.backend,
         alreadyPublished: false,
       }

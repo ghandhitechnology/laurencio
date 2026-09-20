@@ -50,7 +50,7 @@ export const loginCommand: CommandSpec = {
     const existing = readDeviceIdentity(ctx.home)
     if (existing !== null) {
       throw cliError('already-enrolled', `this device is already enrolled as ${existing.name}`, {
-        hint: 'Run `laurencio status` or `laurencio init`.',
+        hint: 'Run `laurencio status` or `laurencio enroll`.',
       })
     }
     saveCliConfig(ctx.home, { ...loadCliConfig(ctx.home), server: baseUrl })
@@ -92,7 +92,7 @@ export const loginCommand: CommandSpec = {
         `Store: ${result.identity.storeId}`,
         `Device token: ${result.backend}`,
         `Store key: ${keySetup.backend}`,
-        'Next: `laurencio init` to select surfaces and push.',
+        'Next: `laurencio enroll` to select surfaces and push.',
       ].join('\n')
     return ok(data, human)
   },

@@ -28,6 +28,7 @@ import {
   openKeyCache,
   resolveKeychainStore,
 } from '../crypto/keyring'
+import { WindowsCredentialError } from '../crypto/windows-keyring'
 import { httpErrorFromResponse, PROTOCOL_HEADER } from '../remote/http'
 import { LAURENCIO_DIR } from '../secrets/scan'
 import type { Platform } from '../types'
@@ -142,7 +143,7 @@ export interface TokenStoreOptions {
   home: string
   /** Injected keychain backend. Tests pass a stub; production resolves the real one. */
   keychain?: CredentialStore | null
-  /** Set false to disable the 0600 file fallback entirely. */
+  /** Set false to disable the file fallback. Windows always disables it. */
   allowFileFallback?: boolean
   platform?: NodeJS.Platform
   warn?: (message: string) => void
@@ -161,23 +162,27 @@ function defaultWarn(message: string): void {
 }
 
 async function resolveBackend(options: TokenStoreOptions): Promise<ResolvedBackend> {
-  const allowFileFallback = options.allowFileFallback ?? true
   const platform = options.platform ?? process.platform
+  const allowFileFallback = platform !== 'win32' && (options.allowFileFallback ?? true)
   const warn = options.warn ?? defaultWarn
   let keychain: CredentialStore | null = options.keychain ?? null
   if (options.keychain === undefined) {
     try {
       keychain = await (options.loadKeyring ?? resolveKeychainStore)()
     } catch (error) {
+      if (platform === 'win32' && error instanceof WindowsCredentialError) throw error
       const reason = error instanceof Error ? error.message : String(error)
-      warn(`keychain unavailable (${reason}); device tokens fall back to the 0600 file store`)
+      if (allowFileFallback)
+        warn(`keychain unavailable (${reason}); device tokens fall back to the 0600 file store`)
       keychain = null
     }
   }
   if (keychain === null && !allowFileFallback) {
     throw new CredentialsError(
       'missing-token',
-      'keychain unavailable and the file fallback is disabled',
+      platform === 'win32'
+        ? 'Windows Credential Manager is unavailable; unlock it and retry.'
+        : 'keychain unavailable and the file fallback is disabled',
     )
   }
   return { keychain, warn, platform, allowFileFallback }
@@ -193,6 +198,7 @@ function makeTokenStore(resolved: ResolvedBackend, home: string): CredentialStor
           const secret = await resolved.keychain.get(service, account)
           if (secret !== null) return secret
         } catch (error) {
+          if (!resolved.allowFileFallback) throw error
           const reason = error instanceof Error ? error.message : String(error)
           warn(`keychain read failed (${reason}); falling back to the file store`)
         }
@@ -236,6 +242,7 @@ function makeTokenStore(resolved: ResolvedBackend, home: string): CredentialStor
         try {
           await resolved.keychain.delete(service, account)
         } catch (error) {
+          if (!resolved.allowFileFallback) throw error
           const reason = error instanceof Error ? error.message : String(error)
           warn(`keychain delete failed (${reason})`)
         }
@@ -253,9 +260,23 @@ export async function storeCredentials(
   options: TokenStoreOptions,
   input: { identity: DeviceIdentity; token: string },
 ): Promise<CredentialBackend> {
-  writeDeviceIdentity(options.home, input.identity)
   const store = await openTokenStore(options)
-  await store.set(KEYCHAIN_SERVICE, tokenAccount(input.identity.deviceId), encode(input.token))
+  const account = tokenAccount(input.identity.deviceId)
+  const previous = await store.get(KEYCHAIN_SERVICE, account)
+  const encoded = encode(input.token)
+  try {
+    await store.set(KEYCHAIN_SERVICE, account, encoded)
+    try {
+      writeDeviceIdentity(options.home, input.identity)
+    } catch (error) {
+      if (previous === null) await store.delete(KEYCHAIN_SERVICE, account)
+      else await store.set(KEYCHAIN_SERVICE, account, previous)
+      throw error
+    }
+  } finally {
+    encoded.fill(0)
+    previous?.fill(0)
+  }
   return store.backend
 }
 
@@ -385,7 +406,7 @@ export interface DeviceCodePrompt {
   intervalSeconds: number
 }
 
-export interface DeviceLoginOptions extends TokenStoreOptions {
+export interface DeviceAuthorizationOptions {
   baseUrl: string
   deviceName: string
   platform: Platform
@@ -397,6 +418,13 @@ export interface DeviceLoginOptions extends TokenStoreOptions {
   onPrompt?: (prompt: DeviceCodePrompt) => void | Promise<void>
   /** Test lever: stop after this many pending polls. */
   maxPolls?: number
+}
+
+export type DeviceLoginOptions = TokenStoreOptions & DeviceAuthorizationOptions
+
+export interface DeviceAuthorizationResult {
+  /** Short-lived Better Auth token. Exchange it for a device or workbench actor immediately. */
+  accessToken: string
 }
 
 export interface DeviceLoginResult {
@@ -456,11 +484,12 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 /**
- * Drives the whole device flow: request the code, surface it, poll for
- * approval, then create the device record and cache its token. The returned
- * identity is what `status`, `devices`, and the daemon read afterwards.
+ * Completes account authorization without creating or persisting a device.
+ * Temporary workbenches exchange the returned token for an expiring actor.
  */
-export async function loginWithDeviceCode(options: DeviceLoginOptions): Promise<DeviceLoginResult> {
+export async function authorizeWithDeviceCode(
+  options: DeviceAuthorizationOptions,
+): Promise<DeviceAuthorizationResult> {
   const fetchImpl = options.fetch ?? globalThis.fetch
   const sleep = options.sleep ?? defaultSleep
   const now = options.now ?? (() => Date.now())
@@ -496,7 +525,6 @@ export async function loginWithDeviceCode(options: DeviceLoginOptions): Promise<
 
   let intervalMs = Math.max(0, code.intervalSeconds) * 1000
   let polls = 0
-  let accessToken: string | null = null
   for (;;) {
     if (options.maxPolls !== undefined && polls >= options.maxPolls) {
       throw new CredentialsError('login-timeout', 'gave up waiting for device approval')
@@ -516,11 +544,11 @@ export async function loginWithDeviceCode(options: DeviceLoginOptions): Promise<
     })
     if (tokenResponse.ok) {
       const body = await loginJson(tokenResponse, 'device token request')
-      accessToken = readString(body, 'access_token')
+      const accessToken = readString(body, 'access_token')
       if (accessToken === null) {
         throw new CredentialsError('login-failed', 'the token response had no access_token')
       }
-      break
+      return { accessToken }
     }
     const errorBody = await loginJson(tokenResponse, 'device token request')
     const errorCode = readString(errorBody, 'error') ?? ''
@@ -545,6 +573,18 @@ export async function loginWithDeviceCode(options: DeviceLoginOptions): Promise<
       `device token request failed (${tokenResponse.status}): ${description}`,
     )
   }
+}
+
+/**
+ * Drives the whole device flow: request the code, surface it, poll for
+ * approval, then create the device record and cache its token. The returned
+ * identity is what `status`, `devices`, and the daemon read afterwards.
+ */
+export async function loginWithDeviceCode(options: DeviceLoginOptions): Promise<DeviceLoginResult> {
+  const fetchImpl = options.fetch ?? globalThis.fetch
+  const now = options.now ?? (() => Date.now())
+  const base = new URL(options.baseUrl)
+  const { accessToken } = await authorizeWithDeviceCode(options)
 
   const deviceResponse = await fetchImpl(new URL('/v1/devices', base).toString(), {
     method: 'POST',

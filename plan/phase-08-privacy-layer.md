@@ -13,7 +13,7 @@ Nothing unencrypted or secret ever leaves a device, and nothing derivable from t
 - `packages/core/src/secrets/placeholders.ts`: rewrite MCP `env` and header values to harness-native indirection where supported (`${ENV}` for Claude, `{env:VAR}` for OpenCode); otherwise move the value to the device-local secret store and leave a placeholder token behind.
 - `packages/core/src/crypto/kdf.ts`: Argon2id via `@noble/hashes`, parameters calibrated once per enrollment to a target duration, with the calibration result recorded in `KdfParams`. Never store the passphrase; only salt and parameters are public.
 - `packages/core/src/crypto/aead.ts`: HKDF-SHA256 subkeys per namespace (content, manifest, metadata) and XChaCha20-Poly1305 sealing. Envelope framing: magic, version, nonce, ciphertext, with AAD binding store id, blob type, and protocol version. `BlobId` equals sha256 of the framed ciphertext.
-- `packages/core/src/crypto/keyring.ts`: cache the derived key via `@napi-rs/keyring`; documented file fallback (0600, warning) for headless Linux. Never write the key into the store or any synced path.
+- `packages/core/src/crypto/keyring.ts`: cache the derived key via `@napi-rs/keyring`; Windows requires Credential Manager, while macOS can use a warned 0600 file fallback. Never write the key into the store or any synced path.
 - `packages/core/src/crypto/rotate.ts`: passphrase change re-encrypts all blobs client-side under a new epoch and commits a new revision; old blobs become garbage for phase 11.
 - Tests: RFC vectors for Argon2id and XChaCha20-Poly1305, tamper detection, wrong-passphrase failure, keychain fallback, rotation round-trip, and a secret corpus asserting every planted secret is blocked.
 

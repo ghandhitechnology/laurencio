@@ -92,6 +92,108 @@ describe('HttpRemote', () => {
     const call = server.calls[0]
     expect(call?.headers.get('authorization')).toBe(`Bearer ${token}`)
     expect(call?.headers.get('x-laurencio-protocol-version')).toBe('1')
+    expect(call?.headers.get('x-laurencio-profile-version')).toBe('2')
+  })
+
+  test('reads and compare-and-swaps the store profile version', async () => {
+    const server = makeFetch({
+      'GET /v1/stores/00000000000000000000000001/profile-version': () =>
+        json({ protocolVersion: 1, profileVersion: 1 }),
+      'PUT /v1/stores/00000000000000000000000001/profile-version': (_url, init) => {
+        expect(JSON.parse(String(init.body))).toEqual({ expectedVersion: 1, profileVersion: 2 })
+        return json({ protocolVersion: 1, profileVersion: 2 })
+      },
+    })
+    const remote = makeRemote(server)
+
+    expect(await remote.getProfileVersion()).toBe(1)
+    expect(await remote.migrateProfileVersion()).toBe(2)
+  })
+
+  test('reads and compare-and-swaps an opaque encrypted vault head', async () => {
+    const blob = { id: BlobId.parse('a'.repeat(64)), size: 321 }
+    const head = {
+      blob,
+      generation: 1,
+      updatedAt: '2026-09-20T00:00:00.000Z',
+    }
+    const server = makeFetch({
+      'GET /v1/stores/00000000000000000000000001/vault': () =>
+        json({ protocolVersion: 1, head: null }),
+      'PUT /v1/stores/00000000000000000000000001/vault': (_url, init) => {
+        expect(JSON.parse(String(init.body))).toEqual({ blob, expectedGeneration: null })
+        return json({ protocolVersion: 1, head })
+      },
+    })
+    const remote = makeRemote(server)
+
+    expect(await remote.getVaultHead()).toBeNull()
+    expect(await remote.putVaultHead({ blob, expectedGeneration: null })).toEqual(head)
+    expect(server.calls[1]?.headers.get('x-laurencio-profile-version')).toBe('2')
+
+    const conflict = makeFetch({
+      'PUT /v1/stores/00000000000000000000000001/vault': () =>
+        json(
+          {
+            error: {
+              code: 'conflict',
+              message: 'vault head generation changed',
+              details: { expectedGeneration: 1, generation: 2 },
+            },
+          },
+          409,
+        ),
+    })
+    await expect(
+      makeRemote(conflict).putVaultHead({ blob, expectedGeneration: 1 }),
+    ).rejects.toMatchObject({
+      name: 'VaultGenerationConflictError',
+      expected: 1,
+      actual: 2,
+    })
+  })
+
+  test('reads and compare-and-swaps an opaque encrypted profile head', async () => {
+    const blob = { id: BlobId.parse('b'.repeat(64)), size: 654 }
+    const head = {
+      blob,
+      generation: 3,
+      updatedAt: '2026-09-20T00:00:00.000Z',
+    }
+    const server = makeFetch({
+      'GET /v1/stores/00000000000000000000000001/profile': () =>
+        json({ protocolVersion: 1, head: null }),
+      'PUT /v1/stores/00000000000000000000000001/profile': (_url, init) => {
+        expect(JSON.parse(String(init.body))).toEqual({ blob, expectedGeneration: 2 })
+        return json({ protocolVersion: 1, head })
+      },
+    })
+    const remote = makeRemote(server)
+
+    expect(await remote.getProfileHead()).toBeNull()
+    expect(await remote.putProfileHead({ blob, expectedGeneration: 2 })).toEqual(head)
+    expect(server.calls[1]?.headers.get('x-laurencio-profile-version')).toBe('2')
+
+    const conflict = makeFetch({
+      'PUT /v1/stores/00000000000000000000000001/profile': () =>
+        json(
+          {
+            error: {
+              code: 'conflict',
+              message: 'profile head generation changed',
+              details: { expectedGeneration: 2, generation: 3 },
+            },
+          },
+          409,
+        ),
+    })
+    await expect(
+      makeRemote(conflict).putProfileHead({ blob, expectedGeneration: 2 }),
+    ).rejects.toMatchObject({
+      name: 'ProfileGenerationConflictError',
+      expected: 2,
+      actual: 3,
+    })
   })
 
   test('resolves a superseded KDF generation through ?version', async () => {

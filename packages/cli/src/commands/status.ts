@@ -59,7 +59,7 @@ function humanStatus(ctx: CommandContext, data: StatusData): string {
   const lines: string[] = []
   if (data.device === null) {
     lines.push('Device: not signed in')
-    lines.push('Run `laurencio init` to sign in and select surfaces.')
+    lines.push('Run `laurencio enroll` to sign in and select surfaces.')
     return lines.join('\n')
   }
   lines.push(`Device: ${data.device.name} (${data.device.id})`)
@@ -148,7 +148,11 @@ export const statusCommand: CommandSpec = {
       const baseId = state.getBaseRevision()
       const base = baseId === null ? null : state.getManifest(baseId)
       const inventory = scanInventory(ctx, { policy: config.policy })
-      const drift = computeDrift(localManifestWithProjections(inventory), base)
+      const drift = computeDrift(
+        localManifestWithProjections(inventory),
+        base,
+        new Set(inventory.surfaces.keys()),
+      )
       const data: StatusData = {
         enrolled: true,
         device: { id: identity.deviceId, name: identity.name },

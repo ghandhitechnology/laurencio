@@ -1,21 +1,25 @@
 # Laurencio design
 
-v0.2. Decisions locked 2026-09-19 after grilling. Implementation plan lives in `plan/`.
-Scope: sync user configuration for AI coding harnesses across a user's devices through a hosted account. The server stores and transports config. Agents never run on it.
+v0.3. Portable-workbench decisions locked 2026-09-20 after grilling. Implementation plan lives in `plan/`.
+Scope: make one encrypted agent workbench available through a temporary private session or a full native-device enrollment. The server stores and transports opaque profile, revision, and credential-vault blobs. Agents run on the user's device.
 
 ## 1. Goals and non-goals
 
 Goals
 
 - One account, many devices. Sign in on a new machine and the selected config appears.
+- Two lifecycles. Temporary mode creates a disposable private home around a normal host project; full mode migrates native paths and keeps them synchronized.
+- Temporary cleanup. Closing the tmux or WezTerm runtime removes its private configuration, token, downloaded tools, and decrypted credentials unless the user explicitly selected a cache or save operation.
 - Per-harness management. Claude Code, Codex, and OpenCode have separate scopes, formats, and policies. Syncing one never touches another.
-- Safe by construction. Credentials never leave a machine. Conflicts surface as diffs or conflict copies, never silent overwrites.
+- Safe by construction. Agent credentials and explicitly referenced MCP secrets travel only inside a separately encrypted vault. Conflicts surface as diffs or conflict copies, never silent overwrites.
 - End-to-end encrypted. Content is encrypted client-side before upload. The server stores opaque blobs, the revision graph, and account metadata only.
 - Reversible. Every sync run is a revision with history and restore.
 
 Non-goals
 
 - Cloud execution. Sessions, transcripts, and run state stay on the device that made them.
+- A filesystem sandbox, arbitrary package manager, general secrets vault, browser workspace, or live-session synchronization.
+- An end-user Linux client. The hosted server remains Linux-compatible.
 - Cross-harness translation in v1 (for example generating Codex skills from Claude skills). Later, optional.
 - Org policy distribution. Enterprise managed settings stay with MDM and admin tooling.
 
@@ -37,7 +41,7 @@ Precedence: managed policy > CLI `--settings` > project local > shared project >
 | `~/.claude/plugins/{cache,marketplaces,data,synced}/` | downloaded copies, account-keyed claude.ai sync | never |
 | `~/.claude/projects/<slug>/memory/` | auto memory, `MEMORY.md` index plus topics | transform (re-key slug), opt-in |
 | `~/.claude/projects/*.jsonl`, `history.jsonl`, `stats-cache.json`, `sessions/`, `shell-snapshots/`, `backups/`, `cache/`, `jobs/`, `daemon/` | transcripts and machine state | never |
-| `~/.claude/.credentials.json` | OAuth tokens | never |
+| `~/.claude/.credentials.json` | OAuth tokens | encrypted vault only; never a config surface |
 | `~/.claude.json` | oauthAccount, machineID, per-project trust, global and local MCP servers | extract `mcpServers` and chosen global keys only, never whole-file |
 | repo `.claude/*`, `./CLAUDE.md`, `.mcp.json` | team surfaces | travels with the repo's git |
 | `/Library/Application Support/ClaudeCode/`, `/etc/claude-code/`, `C:\Program Files\ClaudeCode\` | managed policy | never |
@@ -64,7 +68,7 @@ Precedence: CLI flags and `-c` > project `.codex/config.toml` (trusted dirs only
 | `~/.codex/automations/<name>/{automation.toml,memory.md}` | scheduled tasks with absolute cwds | transform |
 | `~/.codex/rules/default.rules` | Starlark execpolicy | sync; path transform |
 | `~/.codex/hooks.json`, inline `[hooks]` | lifecycle shell commands | transform |
-| `~/.codex/auth.json` or OS keyring | tokens | never |
+| `~/.codex/auth.json` or OS keyring | tokens | encrypted vault adapter only; never a config surface |
 | `~/.codex/{sessions,archived_sessions}/`, `history.jsonl`, `session_index.jsonl` | transcripts, prompt history | never |
 | `state_*.sqlite`, `thread_history_*.sqlite`, `logs_*.sqlite`, `queue_*.sqlite`, `memories_*.sqlite`, caches | machine state, generated memory | never |
 | `/etc/codex/*` | admin layer | never |
@@ -89,7 +93,7 @@ Both versions read `~/.config/opencode` with different schemas. v1 uses `plugins
 | `~/.config/opencode/plugins/`, `package.json`, lockfile | local plugins and deps | sync; exclude `node_modules` |
 | `~/.config/opencode/tools/*.ts` | v1 custom tools | sync |
 | `~/.config/opencode/service.json` | generated local service password | never |
-| `~/.local/share/opencode/{auth.json,opencode.db,mcp-auth.json,snapshot,shell,tool-output,log}` | credentials, sessions, OAuth for MCP | never |
+| `~/.local/share/opencode/{auth.json,opencode.db,mcp-auth.json,snapshot,shell,tool-output,log}` | credentials, sessions, OAuth for MCP | `auth.json` may use the encrypted vault; the rest never sync |
 | `~/.local/state/opencode/*`, `~/.cache/opencode/*` | last model, session, history, binaries, caches | never |
 | repo `opencode.json(c)`, `.opencode/**`, `AGENTS.md` | project config; `.opencode/` overrides every direct config | travels with repo git |
 | `.well-known/opencode`, managed dir | org defaults, admin policy | never |
@@ -163,7 +167,8 @@ Safety rules
 
 ## 6. Secrets and encryption
 
-- Never-sync inventory per harness, derived from the tables above: `.credentials.json`, `auth.json`, `service.json`, `mcp-auth.json`, `opencode.db`, keyring-backed credentials, `settings.local.json`.
+- Config-surface denylist per harness: `.credentials.json`, `auth.json`, `service.json`, `mcp-auth.json`, `opencode.db`, keyring-backed credentials, and `settings.local.json` never enter revision manifests.
+- Separate credential vault. Claude, Codex, and OpenCode login files plus explicitly referenced MCP environment values are captured by named adapters, encrypted with a dedicated HKDF subkey, and rotated with compare-and-swap. The server sees one opaque vault blob and generation.
 - Scanner before upload. Pattern match for key shapes (`sk-`, `ghp_`, `xoxb-`, `AKIA`, PEM blocks) plus entropy heuristics on string values. Fail closed; an explicit override is logged.
 - Env indirection. Prefer harness-native expansion (`${ENV}` in Claude MCP config, `{env:VAR}` in OpenCode). Where a harness has no expansion, MCP secret values move to a per-device secret store backed by the OS keychain.
 - End-to-end encryption from launch. Argon2id stretches the user's passphrase into a 32-byte master key. HKDF-SHA256 derives per-namespace subkeys. Manifests and blobs are sealed with XChaCha20-Poly1305 and random nonces. Blob ids are the hash of ciphertext.
@@ -187,6 +192,8 @@ MVP
 | Secret denylist plus scanner | Tokens hide in these files | harness auth docs |
 | Opt-in, kill switch, store wipe | Trust and reversibility | Atuin, VS Code |
 | Watcher plus interval sync, coalesced and atomic | Sync every few turns without thrash | Warp, this machine's usage |
+| Disposable workbench with explicit selective save | Use the same setup on a borrowed or one-off computer without adopting its config | Codespaces, dev containers, tmux |
+| Pinned curated tools with checksums | Reproduce command-line dependencies without a package manager | Nix, mise |
 
 Later
 
@@ -227,7 +234,7 @@ Data shape first
 - `LocalLayout`: resolved path to link mode and link target, per device.
 - `MarkerRange`: file, line range, content hash.
 
-Server endpoints stay thin: device auth, device registry, KDF parameters, blob presign and fetch, revision commit and listing, quota and GC. The server never parses config.
+Server endpoints stay thin: device auth, temporary actors, device registry, KDF parameters, blob presign and fetch, revision commit and listing, opaque profile and vault heads, quota and GC. The server never parses config or credentials.
 
 ## 10. Resolved decisions
 
@@ -238,5 +245,7 @@ Server endpoints stay thin: device auth, device registry, KDF parameters, blob p
 5. Trust: end-to-end encryption from launch, passphrase-derived key, no server escrow, no recovery code.
 6. Default sync set: skills, instructions, agents and commands, model and provider prefs, MCP definitions. Memory is opt-in and file-based only.
 7. Exclusion: marker blocks for partial files, per-file ignore list for whole files.
+8. Lifecycles: `laurencio open` creates an expiring private runtime; `laurencio enroll` migrates native paths and enables background sync. Temporary edits are discarded unless explicitly saved.
+9. Client platforms: macOS uses a private tmux server; Windows uses portable WezTerm and PowerShell 7. Linux remains a server platform only.
 
 Defaults, changeable by evidence: daemon runs after enrollment (watch plus interval, harness hooks later), sync policy is device-local so toggles never sync themselves, and Windows falls back to copy mode where symlinks need privileges.

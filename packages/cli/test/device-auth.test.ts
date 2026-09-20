@@ -106,7 +106,7 @@ describe('browser launch commands', () => {
   test('uses the native default-browser launcher on each platform', () => {
     const url = 'https://sync.example/device?user_code=ABCD2345'
     expect(browserCommand(url, 'darwin')).toEqual({ program: 'open', args: [url] })
-    expect(browserCommand(url, 'linux')).toEqual({ program: 'xdg-open', args: [url] })
+    expect(() => browserCommand(url, 'linux')).toThrow('macOS and Windows')
     expect(browserCommand(url, 'win32')).toEqual({
       program: 'rundll32.exe',
       args: ['url.dll,FileProtocolHandler', url],

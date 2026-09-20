@@ -1,11 +1,12 @@
 /**
  * `laurencio daemon` subcommands: run the loop, and install or remove the
- * launchd agent / systemd user unit that keeps it running.
+ * launchd agent / Windows Scheduled Task that keeps it running.
  */
 
 import type { Platform } from '@laurencio/core'
 import { LockHeldError, SyncLoop } from '@laurencio/core'
 import { adapterContext, type CommandContext } from '../context'
+import { syncSessionCredentials } from '../credential-sync'
 import {
   daemonProgram,
   installService,
@@ -21,6 +22,7 @@ import { cliError } from '../errors'
 import { readPause } from '../pause'
 import { ok } from '../result'
 import { adaptersFor, openSession, openState } from '../session'
+import { reapWorkbenchStartup } from '../workbench/context'
 import type { CommandSpec } from './command'
 
 export interface DaemonData {
@@ -46,9 +48,9 @@ export interface DaemonData {
 }
 
 function requireSupported(ctx: CommandContext): void {
-  if (ctx.platform === 'win32') {
-    throw cliError('unsupported-platform', 'the daemon service is not supported on Windows', {
-      hint: 'Run `laurencio daemon run` in a terminal or a task scheduler of your choosing.',
+  if (ctx.platform === 'linux') {
+    throw cliError('unsupported-platform', 'the Laurencio client supports macOS and Windows', {
+      hint: 'Use a macOS or Windows client. The hosted server continues to run on Linux.',
     })
   }
 }
@@ -152,7 +154,16 @@ async function runDaemon(ctx: CommandContext): Promise<DaemonData> {
     runtime = DaemonRuntime.start({
       home: ctx.home,
       state,
-      runner: loop,
+      runner: {
+        async runOnce() {
+          await reapWorkbenchStartup(ctx)
+          const result = await loop.runOnce()
+          if (result.status === 'synced' || result.status === 'idle') {
+            await syncSessionCredentials(ctx, session, state)
+          }
+          return result
+        },
+      },
       policy,
       watchRoots,
       log: (line) => {
@@ -199,7 +210,7 @@ async function runDaemon(ctx: CommandContext): Promise<DaemonData> {
   }
 }
 
-function installDaemon(ctx: CommandContext): DaemonData {
+export function installBackgroundSync(ctx: CommandContext): DaemonData {
   requireSupported(ctx)
   const spec = serviceSpec(ctx)
   const result = installService(spec, {
@@ -208,7 +219,9 @@ function installDaemon(ctx: CommandContext): DaemonData {
       ctx.io.out(line)
     },
   })
-  const status = serviceStatus(spec)
+  const status = serviceStatus(spec, {
+    ...(ctx.deps.exec === undefined ? {} : { exec: ctx.deps.exec }),
+  })
   return {
     action: 'install',
     platform: ctx.platform,
@@ -234,7 +247,9 @@ function uninstallDaemon(ctx: CommandContext): DaemonData {
   const result = uninstallService(spec, {
     ...(ctx.deps.exec === undefined ? {} : { exec: ctx.deps.exec }),
   })
-  const status = serviceStatus(spec)
+  const status = serviceStatus(spec, {
+    ...(ctx.deps.exec === undefined ? {} : { exec: ctx.deps.exec }),
+  })
   return {
     action: 'uninstall',
     platform: ctx.platform,
@@ -252,7 +267,9 @@ function uninstallDaemon(ctx: CommandContext): DaemonData {
 
 function statusDaemon(ctx: CommandContext): DaemonData {
   requireSupported(ctx)
-  const status = serviceStatus(serviceSpec(ctx))
+  const status = serviceStatus(serviceSpec(ctx), {
+    ...(ctx.deps.exec === undefined ? {} : { exec: ctx.deps.exec }),
+  })
   return {
     action: 'status',
     platform: ctx.platform,
@@ -273,9 +290,8 @@ export const daemonCommand: CommandSpec = {
   summary: 'Run, install, or inspect the background sync daemon',
   usage: 'laurencio daemon [run|install|uninstall|status] [--json]',
   details: [
-    'install writes a launchd agent on macOS (~/Library/LaunchAgents) or a systemd user unit',
-    'on Linux (~/.config/systemd/user), then starts it. Logs land in ~/Library/Logs/laurencio',
-    'on macOS and in journald on Linux.',
+    'install writes a launchd agent on macOS or a per-user Scheduled Task on Windows.',
+    'Logs land in ~/Library/Logs/laurencio on macOS and ~/.laurencio/logs on Windows.',
     '`laurencio pause` and `laurencio resume` stop and restart background syncs.',
   ],
   async run(ctx) {
@@ -286,7 +302,7 @@ export const daemonCommand: CommandSpec = {
         return ok(data, () => humanDaemon(data))
       }
       case 'install': {
-        const data = installDaemon(ctx)
+        const data = installBackgroundSync(ctx)
         return ok(data, () => humanDaemon(data))
       }
       case 'uninstall': {

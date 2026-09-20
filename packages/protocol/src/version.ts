@@ -1,4 +1,6 @@
 export const PROTOCOL_VERSION = 1
+export const PROFILE_VERSION_HEADER = 'x-laurencio-profile-version'
+export const CURRENT_PROFILE_VERSION = 2
 
 export type ProtocolCompatibility = { ok: true } | { ok: false; reason: string }
 

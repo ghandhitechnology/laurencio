@@ -1,10 +1,10 @@
 # Setup edge cases: Mac mini and MacBook Air
 
-This is a living record of the edge cases found while linking Andy's two Macs. Each entry records the setup decision and the product change needed to make the next enrollment safer.
+This is a living record of the edge cases found while linking two Macs. Each entry records the setup decision and the product change needed to make the next enrollment safer.
 
 ## Current setup policy
 
-- Account: staging email login for `heemang12bo@gmail.com`.
+- Account: an allowlisted staging email login.
 - Canonical shared content: the Mac mini wins for files present on both devices.
 - Laptop-only skills: preserve and add them to the shared state.
 - Initial sync scope: Claude skills, shared agent skills, and Codex skills only.
@@ -23,7 +23,7 @@ The laptop is reached over Tailscale and SSH. Bun and other user-installed tools
 
 ### The CLI package is not published
 
-The documented package-manager install path was not available. A validated arm64 standalone binary was built from this checkout and installed as `~/.local/bin/laurencio` on both Macs. Tagged releases now publish checksum-protected standalone binaries for both macOS architectures and Linux; the quickstart uses a one-line installer that keeps the previous executable for rollback. npm publication can remain a later distribution channel.
+The documented package-manager install path was not available. A validated arm64 standalone binary was built from this checkout and installed as `~/.local/bin/laurencio` on both Macs. Tagged releases publish checksum-protected standalone binaries for macOS and Windows on x64 and ARM64; the quickstart uses platform installers that keep the previous executable for rollback. npm publication can remain a later distribution channel.
 
 ### Tool versions and layouts differ
 
@@ -81,7 +81,7 @@ Enrollment now opens the complete short-lived approval link in the default brows
 
 ### Staging email access needs a server-side allowlist
 
-The original staging email form used one internal password and accepted any email address, which let an uninvited visitor create or enter an account. Staging now refuses to boot with email sign-in enabled unless `STAGING_EMAIL_ALLOWLIST` is populated. Both the browser form and the underlying auth endpoints normalize and enforce the allowlist. The current invite is `heemang12bo@gmail.com`.
+The original staging email form used one internal password and accepted any email address, which let an uninvited visitor create or enter an account. Staging now refuses to boot with email sign-in enabled unless `STAGING_EMAIL_ALLOWLIST` is populated. Both the browser form and the underlying auth endpoints normalize and enforce the deployment-only allowlist.
 
 ### A device code is claimed by the first signed-in account that views it
 

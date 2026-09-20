@@ -126,11 +126,21 @@ export interface DriftEntry {
 }
 
 /** Local files that differ from the last synced revision. Pure over two manifests. */
-export function computeDrift(local: Manifest, base: Manifest | null): DriftEntry[] {
+export function computeDrift(
+  local: Manifest,
+  base: Manifest | null,
+  activeSurfaceIds?: ReadonlySet<string>,
+): DriftEntry[] {
   const baseByPath = new Map<string, ManifestEntry>()
-  for (const entry of base?.entries ?? []) baseByPath.set(entry.path, entry)
+  for (const entry of base?.entries ?? []) {
+    if (activeSurfaceIds !== undefined && !activeSurfaceIds.has(entry.surfaceId)) continue
+    baseByPath.set(entry.path, entry)
+  }
   const localByPath = new Map<string, ManifestEntry>()
-  for (const entry of local.entries) localByPath.set(entry.path, entry)
+  for (const entry of local.entries) {
+    if (activeSurfaceIds !== undefined && !activeSurfaceIds.has(entry.surfaceId)) continue
+    localByPath.set(entry.path, entry)
+  }
   const drift: DriftEntry[] = []
   for (const [storePath, entry] of localByPath) {
     const previous = baseByPath.get(storePath)

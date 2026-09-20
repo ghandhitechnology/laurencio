@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { BlobId, DeviceId, RevisionId, StoreId, SurfaceId, UserId } from './ids'
-import { PROTOCOL_VERSION } from './version'
+import { BlobId, DeviceId, RevisionId, StoreId, SurfaceId, UserId, WorkbenchSessionId } from './ids'
+import { CURRENT_PROFILE_VERSION, PROTOCOL_VERSION } from './version'
 
 const isoDate = z.string().datetime()
 
@@ -53,6 +53,63 @@ export const DeviceCreateResponse = z.object({
 })
 export type DeviceCreateResponse = z.infer<typeof DeviceCreateResponse>
 
+export const WORKBENCH_SESSION_DEFAULT_TTL_SECONDS = 24 * 60 * 60
+export const WORKBENCH_SESSION_MIN_TTL_SECONDS = 60 * 60
+export const WORKBENCH_SESSION_MAX_TTL_SECONDS = 7 * 24 * 60 * 60
+
+export const WorkbenchSession = z.object({
+  id: WorkbenchSessionId,
+  deviceId: DeviceId,
+  name: z.string().min(1).max(80),
+  platform: z.string().min(1).max(40),
+  createdAt: isoDate,
+  expiresAt: isoDate,
+  closedAt: isoDate.optional(),
+})
+export type WorkbenchSession = z.infer<typeof WorkbenchSession>
+
+export const WorkbenchSessionCreateRequest = z.object({
+  name: z.string().min(1).max(80),
+  platform: z.string().min(1).max(40),
+  expiresInSeconds: z.number().int().positive().optional(),
+})
+export type WorkbenchSessionCreateRequest = z.infer<typeof WorkbenchSessionCreateRequest>
+
+export const WorkbenchSessionCreateResponse = z.object({
+  protocolVersion: z.number().int().positive(),
+  session: WorkbenchSession,
+  /** Temporary device token, shown once and valid only for this session. */
+  token: z.string().min(16),
+})
+export type WorkbenchSessionCreateResponse = z.infer<typeof WorkbenchSessionCreateResponse>
+
+export const WorkbenchSessionListResponse = z.object({
+  protocolVersion: z.number().int().positive(),
+  sessions: z.array(WorkbenchSession),
+})
+export type WorkbenchSessionListResponse = z.infer<typeof WorkbenchSessionListResponse>
+
+export const WorkbenchSessionCloseResponse = z.object({
+  protocolVersion: z.number().int().positive(),
+  session: WorkbenchSession,
+})
+export type WorkbenchSessionCloseResponse = z.infer<typeof WorkbenchSessionCloseResponse>
+
+export const ProfileVersion = z.union([z.literal(1), z.literal(2)])
+export type ProfileVersion = z.infer<typeof ProfileVersion>
+
+export const ProfileVersionWriteRequest = z.object({
+  expectedVersion: z.literal(1),
+  profileVersion: z.literal(CURRENT_PROFILE_VERSION),
+})
+export type ProfileVersionWriteRequest = z.infer<typeof ProfileVersionWriteRequest>
+
+export const ProfileVersionResponse = z.object({
+  protocolVersion: z.number().int().positive(),
+  profileVersion: ProfileVersion,
+})
+export type ProfileVersionResponse = z.infer<typeof ProfileVersionResponse>
+
 export const BlobDownloadResponse = z.object({
   protocolVersion: z.number().int().positive(),
   blobId: BlobId,
@@ -100,6 +157,44 @@ export const BlobRef = z.object({
   size: z.number().int().nonnegative(),
 })
 export type BlobRef = z.infer<typeof BlobRef>
+
+export const VaultHead = z.object({
+  blob: BlobRef,
+  generation: z.number().int().positive(),
+  updatedAt: isoDate,
+})
+export type VaultHead = z.infer<typeof VaultHead>
+
+export const VaultHeadWriteRequest = z.object({
+  blob: BlobRef,
+  expectedGeneration: z.number().int().positive().nullable(),
+})
+export type VaultHeadWriteRequest = z.infer<typeof VaultHeadWriteRequest>
+
+export const VaultHeadResponse = z.object({
+  protocolVersion: z.number().int().positive(),
+  head: VaultHead.nullable(),
+})
+export type VaultHeadResponse = z.infer<typeof VaultHeadResponse>
+
+export const ProfileHead = z.object({
+  blob: BlobRef,
+  generation: z.number().int().positive(),
+  updatedAt: isoDate,
+})
+export type ProfileHead = z.infer<typeof ProfileHead>
+
+export const ProfileHeadWriteRequest = z.object({
+  blob: BlobRef,
+  expectedGeneration: z.number().int().positive().nullable(),
+})
+export type ProfileHeadWriteRequest = z.infer<typeof ProfileHeadWriteRequest>
+
+export const ProfileHeadResponse = z.object({
+  protocolVersion: z.number().int().positive(),
+  head: ProfileHead.nullable(),
+})
+export type ProfileHeadResponse = z.infer<typeof ProfileHeadResponse>
 
 export const PresignRequest = z.object({
   blob: BlobRef,

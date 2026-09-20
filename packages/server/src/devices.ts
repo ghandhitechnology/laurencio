@@ -10,7 +10,7 @@ import {
 import { and, desc, eq, gt, isNull, or } from 'drizzle-orm'
 import type { Principal } from './context'
 import type { Database } from './db/client'
-import { auditLog, devices, deviceTokens, stores } from './db/schema'
+import { auditLog, devices, deviceTokens, stores, workbenchSessions } from './db/schema'
 import { forbidden, notFound } from './http/errors'
 import { asDeviceId, asUserId } from './ids'
 
@@ -97,8 +97,8 @@ export async function createDevice(
 }
 
 export async function mintDeviceToken(
-  db: Database,
-  input: { userId: UserId; deviceId: DeviceId },
+  db: Pick<Database, 'insert'>,
+  input: { userId: UserId; deviceId: DeviceId; expiresAt?: Date },
 ): Promise<string> {
   const token = newDeviceToken()
   await db.insert(deviceTokens).values({
@@ -106,7 +106,7 @@ export async function mintDeviceToken(
     deviceId: input.deviceId,
     userId: input.userId,
     tokenHash: hashToken(token),
-    expiresAt: new Date(Date.now() + TOKEN_TTL_MS),
+    expiresAt: input.expiresAt ?? new Date(Date.now() + TOKEN_TTL_MS),
   })
   return token
 }
@@ -115,6 +115,8 @@ export interface DeviceAuth {
   principal: Principal
   device: DeviceRow
   token: DeviceTokenRow
+  /** Temporary actors cannot renew beyond their workbench session. */
+  expiresAtCap: Date | null
 }
 
 export type DeviceAuthFailure = 'unknown' | 'revoked' | 'expired'
@@ -127,6 +129,7 @@ export type DeviceAuthResult =
 export async function authenticateDeviceToken(
   db: Database,
   token: string,
+  now: Date = new Date(),
 ): Promise<DeviceAuthResult> {
   const found = await db
     .select({ token: deviceTokens, device: devices })
@@ -137,8 +140,20 @@ export async function authenticateDeviceToken(
   const row = found.at(0)
   if (!row) return { ok: false, reason: 'unknown' }
   if (row.token.revokedAt || row.device.revokedAt) return { ok: false, reason: 'revoked' }
-  if (row.token.expiresAt && row.token.expiresAt.getTime() <= Date.now()) {
+  if (row.token.expiresAt && row.token.expiresAt.getTime() <= now.getTime()) {
     return { ok: false, reason: 'expired' }
+  }
+  let expiresAtCap: Date | null = null
+  if (row.device.kind === 'temporary') {
+    const sessionRows = await db
+      .select({ expiresAt: workbenchSessions.expiresAt, closedAt: workbenchSessions.closedAt })
+      .from(workbenchSessions)
+      .where(eq(workbenchSessions.deviceId, row.device.id))
+      .limit(1)
+    const session = sessionRows.at(0)
+    if (!session || session.closedAt) return { ok: false, reason: 'revoked' }
+    if (session.expiresAt.getTime() <= now.getTime()) return { ok: false, reason: 'expired' }
+    expiresAtCap = session.expiresAt
   }
   return {
     ok: true,
@@ -147,9 +162,11 @@ export async function authenticateDeviceToken(
         userId: asUserId(row.token.userId),
         deviceId: asDeviceId(row.device.id),
         tokenId: row.token.id,
+        kind: row.device.kind === 'temporary' ? 'temporary-workbench' : 'full-device',
       },
       device: row.device,
       token: row.token,
+      expiresAtCap,
     },
   }
 }
@@ -164,7 +181,10 @@ export async function touchDevice(
   if (now.getTime() - lastUsed < 60_000) return
   await db
     .update(deviceTokens)
-    .set({ lastUsedAt: now, expiresAt: new Date(now.getTime() + TOKEN_TTL_MS) })
+    .set({
+      lastUsedAt: now,
+      expiresAt: auth.expiresAtCap ?? new Date(now.getTime() + TOKEN_TTL_MS),
+    })
     .where(
       and(
         eq(deviceTokens.id, auth.token.id),
@@ -238,8 +258,8 @@ export async function listDevices(
     .from(devices)
     .where(
       options.includeRevoked
-        ? eq(devices.userId, userId)
-        : and(eq(devices.userId, userId), isNull(devices.revokedAt)),
+        ? and(eq(devices.userId, userId), eq(devices.kind, 'full'))
+        : and(eq(devices.userId, userId), eq(devices.kind, 'full'), isNull(devices.revokedAt)),
     )
     .orderBy(desc(devices.createdAt))
   return rows.map(toDeviceRecord)

@@ -7,8 +7,17 @@ import {
   ErrorResponse,
   KdfParams,
   newId,
+  PROFILE_VERSION_HEADER,
+  ProfileHeadResponse,
+  ProfileHeadWriteRequest,
+  ProfileVersionWriteRequest,
   RevisionId,
   SurfaceId,
+  VaultHeadResponse,
+  VaultHeadWriteRequest,
+  WorkbenchSession,
+  WorkbenchSessionCreateRequest,
+  WorkbenchSessionId,
 } from '../src/index'
 
 const storeId = newId()
@@ -28,6 +37,7 @@ describe('ids', () => {
     expect(() => DeviceId.parse('not-an-id')).toThrow()
     expect(() => BlobId.parse('XYZ')).toThrow()
     expect(SurfaceId.parse('claude.skills') as string).toBe('claude.skills')
+    expect(WorkbenchSessionId.parse(newId())).toHaveLength(26)
   })
 })
 
@@ -84,6 +94,73 @@ describe('protocol schemas', () => {
 
   test('revision ids are required where declared', () => {
     expect(() => RevisionId.parse('abc')).toThrow()
+  })
+
+  test('workbench sessions carry their temporary actor and lifecycle', () => {
+    const session = WorkbenchSession.parse({
+      id: newId(),
+      deviceId: newId(),
+      name: 'review sandbox',
+      platform: 'linux',
+      createdAt: '2026-09-20T00:00:00.000Z',
+      expiresAt: '2026-09-21T00:00:00.000Z',
+    })
+    expect(session.closedAt).toBeUndefined()
+    expect(
+      WorkbenchSessionCreateRequest.parse({ name: 'review sandbox', platform: 'linux' }),
+    ).toEqual({ name: 'review sandbox', platform: 'linux' })
+    expect(
+      WorkbenchSessionCreateRequest.parse({
+        name: 'review sandbox',
+        platform: 'linux',
+        expiresInSeconds: 3599,
+      }).expiresInSeconds,
+    ).toBe(3599)
+  })
+
+  test('profile version migrations are an explicit compare-and-set', () => {
+    expect(PROFILE_VERSION_HEADER).toBe('x-laurencio-profile-version')
+    expect(ProfileVersionWriteRequest.parse({ expectedVersion: 1, profileVersion: 2 })).toEqual({
+      expectedVersion: 1,
+      profileVersion: 2,
+    })
+    expect(() =>
+      ProfileVersionWriteRequest.parse({ expectedVersion: 2, profileVersion: 3 }),
+    ).toThrow()
+  })
+
+  test('vault heads expose only an opaque blob reference and generation', () => {
+    const blob = { id: BlobId.parse('b'.repeat(64)), size: 128 }
+    expect(VaultHeadWriteRequest.parse({ blob, expectedGeneration: null })).toEqual({
+      blob,
+      expectedGeneration: null,
+    })
+    const response = VaultHeadResponse.parse({
+      protocolVersion: 1,
+      head: {
+        blob,
+        generation: 3,
+        updatedAt: '2026-09-20T00:00:00.000Z',
+      },
+    })
+    expect(response.head?.generation).toBe(3)
+  })
+
+  test('profile heads expose only an opaque blob reference and generation', () => {
+    const blob = { id: BlobId.parse('c'.repeat(64)), size: 256 }
+    expect(ProfileHeadWriteRequest.parse({ blob, expectedGeneration: null })).toEqual({
+      blob,
+      expectedGeneration: null,
+    })
+    const response = ProfileHeadResponse.parse({
+      protocolVersion: 1,
+      head: {
+        blob,
+        generation: 2,
+        updatedAt: '2026-09-20T00:00:00.000Z',
+      },
+    })
+    expect(Object.keys(response.head ?? {}).sort()).toEqual(['blob', 'generation', 'updatedAt'])
   })
 })
 

@@ -1,0 +1,321 @@
+import { createHash, randomUUID } from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
+import { type PortableProfile, projectProfile } from '@laurencio/core'
+import { cliError } from '../errors'
+import {
+  importTmuxTerminalSettings,
+  luaQuote,
+  terminalBindings,
+  terminalSettings,
+  tmuxQuote,
+} from './runtime'
+
+interface TerminalInput {
+  home: string
+  platform: 'darwin' | 'win32'
+  environment: NodeJS.ProcessEnv
+  profile: PortableProfile
+  powershell?: string
+  wezterm?: string
+}
+
+interface FileChange {
+  path: string
+  before: string | null
+  after: string
+}
+
+export interface NativeTerminalPlan {
+  configPath: string
+  generatedPath: string
+  changes: FileChange[]
+}
+
+const marker = 'laurencio:terminal'
+const digest = (value: string) => createHash('sha256').update(value).digest('hex')
+
+function conflict(message: string): never {
+  throw cliError('terminal-config-conflict', message, {
+    hint: 'Keep the native settings outside Laurencio markers. Restore the marked block or generated file from its backup, then sync again.',
+  })
+}
+
+/** Resolve the native lookup order, including Windows portable WezTerm installations. */
+export function nativeTerminalConfigPath(
+  input: Omit<TerminalInput, 'profile'>,
+  exists: (file: string) => boolean,
+): string {
+  const paths = input.platform === 'win32' ? path.win32 : path.posix
+  const xdg = input.environment.XDG_CONFIG_HOME
+  if (input.platform === 'darwin') {
+    const candidates = [
+      paths.join(input.home, '.tmux.conf'),
+      ...(xdg ? [paths.join(xdg, 'tmux', 'tmux.conf')] : []),
+      paths.join(input.home, '.config', 'tmux', 'tmux.conf'),
+    ]
+    return candidates.find(exists) ?? paths.join(input.home, '.tmux.conf')
+  }
+  const explicit = input.environment.WEZTERM_CONFIG_FILE
+  if (explicit) return explicit
+  const candidates = [
+    ...(input.wezterm ? [paths.join(paths.dirname(input.wezterm), 'wezterm.lua')] : []),
+    ...(xdg ? [paths.join(xdg, 'wezterm', 'wezterm.lua')] : []),
+    paths.join(input.home, '.config', 'wezterm', 'wezterm.lua'),
+  ]
+  return candidates.find(exists) ?? paths.join(input.home, '.wezterm.lua')
+}
+
+function tmuxInclude(source: string, generatedPath: string): string {
+  const block = `# ${marker}:begin\nsource-file ${tmuxQuote(generatedPath)}\n# ${marker}:end`
+  if (!source.includes(marker)) {
+    return `${source}${source && !source.endsWith('\n') ? '\n' : ''}${block}\n`
+  }
+  const start = source.indexOf(block)
+  if (
+    start < 0 ||
+    (start > 0 && source[start - 1] !== '\n') ||
+    !['', '\n', '\r'].includes(source[start + block.length] ?? '') ||
+    source.replace(block, '').includes(marker)
+  ) {
+    conflict('The Laurencio tmux include is modified or has duplicate markers.')
+  }
+  return source
+}
+
+function weztermInclude(source: string, generatedPath: string): string {
+  const bom = source.startsWith('\uFEFF') ? '\uFEFF' : ''
+  const body = source.slice(bom.length)
+  const prefix = `-- ${marker}:begin\nlocal function laurencio_native_config(...)\n-- ${marker}:user-config\n`
+  const suffix = `\n-- ${marker}:apply\nend\nreturn dofile(${luaQuote(generatedPath)})(laurencio_native_config(...))\n-- ${marker}:end\n`
+  if (!body.includes(marker)) return `${bom}${prefix}${body || 'return {}\n'}${suffix}`
+  if (
+    !body.startsWith(prefix) ||
+    !body.endsWith(suffix) ||
+    body.slice(prefix.length, -suffix.length).includes(marker)
+  ) {
+    conflict('The Laurencio WezTerm wrapper is modified or has duplicate markers.')
+  }
+  return source
+}
+
+/** Validate every merge before the first native write. The supplied reader also supports dry review. */
+export function planNativeTerminal(
+  input: TerminalInput,
+  read: (file: string) => string | null,
+): NativeTerminalPlan {
+  const paths = input.platform === 'win32' ? path.win32 : path.posix
+  const projected = projectProfile(input.profile, input.platform)
+  const settings = terminalSettings(JSON.stringify(projected))
+  const bindings = terminalBindings(settings)
+  const generatedPath = paths.join(
+    input.home,
+    '.laurencio',
+    'generated',
+    input.platform === 'darwin' ? 'tmux.conf' : 'wezterm.lua',
+  )
+  const statePath = `${generatedPath}.state.json`
+  const previousState = read(statePath)
+  const empty =
+    bindings.length === 0 && Object.keys(settings.layout).length === 0 && previousState === null
+  const configPath = nativeTerminalConfigPath(input, (file) => !empty && read(file) !== null)
+  for (const file of [generatedPath, configPath]) {
+    if (
+      !paths.isAbsolute(file) ||
+      [...file].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+    ) {
+      conflict('Native terminal paths must be absolute and contain no control characters.')
+    }
+  }
+  // An empty migrated profile has nothing to add to the user's terminal config.
+  if (empty) {
+    return { configPath, generatedPath, changes: [] }
+  }
+
+  const generated =
+    input.platform === 'darwin'
+      ? [
+          '# Generated by Laurencio. Edit the portable profile to change these settings.',
+          ...bindings.map(({ key, action }) => `bind-key -n ${tmuxQuote(key.tmux)} ${action.tmux}`),
+          ...(settings.layout.columns || settings.layout.rows
+            ? [
+                `set -g default-size ${settings.layout.columns ?? '80'}x${settings.layout.rows ?? '24'}`,
+              ]
+            : []),
+          '',
+        ].join('\n')
+      : [
+          '-- Generated by Laurencio. Edit the portable profile to change these settings.',
+          'local wezterm = require "wezterm"',
+          `wezterm.add_to_config_reload_watch_list(${luaQuote(generatedPath)})`,
+          'return function(config)',
+          'config = config or {}',
+          `config.default_prog = config.default_prog or { ${luaQuote(input.powershell ?? 'pwsh.exe')}, "-NoLogo" }`,
+          ...(settings.layout.columns ? [`config.initial_cols = ${settings.layout.columns}`] : []),
+          ...(settings.layout.rows ? [`config.initial_rows = ${settings.layout.rows}`] : []),
+          ...(bindings.length
+            ? [
+                'local keys = config.keys or {}',
+                'local function modifiers(value)',
+                '  local parts = {}',
+                '  for part in string.gmatch(value or "NONE", "[^|]+") do',
+                '    part = string.upper(part):gsub("%s", "")',
+                '    if part ~= "NONE" then table.insert(parts, part) end',
+                '  end',
+                '  table.sort(parts)',
+                '  return table.concat(parts, "|")',
+                'end',
+                ...bindings.flatMap(({ key, action }) => [
+                  // Delete only the matching native chord. Other user bindings retain their order.
+                  'for i = #keys, 1, -1 do',
+                  `  if keys[i].key == ${luaQuote(key.key)} and modifiers(keys[i].mods) == modifiers(${luaQuote(key.modifiers)}) then table.remove(keys, i) end`,
+                  'end',
+                  `table.insert(keys, { key = ${luaQuote(key.key)}, mods = ${luaQuote(key.modifiers)}, action = wezterm.action.${action.wezterm} })`,
+                ]),
+                'config.keys = keys',
+              ]
+            : []),
+          'return config',
+          'end',
+          '',
+        ].join('\n')
+  const oldGenerated = read(generatedPath)
+  let expectedHash: string | null = null
+  if (previousState !== null) {
+    try {
+      const parsed = JSON.parse(previousState) as { version?: unknown; generatedHash?: unknown }
+      if (
+        parsed.version !== 1 ||
+        typeof parsed.generatedHash !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(parsed.generatedHash)
+      ) {
+        conflict('The native terminal merge state is invalid.')
+      }
+      expectedHash = parsed.generatedHash
+    } catch {
+      conflict('The native terminal merge state is invalid.')
+    }
+  }
+  if (
+    oldGenerated !== null &&
+    oldGenerated !== generated &&
+    digest(oldGenerated) !== expectedHash
+  ) {
+    conflict(`The generated terminal config was edited locally: ${generatedPath}`)
+  }
+  const oldConfig = read(configPath)
+  const native =
+    input.platform === 'darwin'
+      ? tmuxInclude(oldConfig ?? '', generatedPath)
+      : weztermInclude(oldConfig ?? '', generatedPath)
+  const state = `${JSON.stringify({ version: 1, generatedHash: digest(generated) })}\n`
+  return {
+    configPath,
+    generatedPath,
+    changes: [
+      { path: generatedPath, before: oldGenerated, after: generated },
+      { path: configPath, before: oldConfig, after: native },
+      { path: statePath, before: previousState, after: state },
+    ].filter((change) => change.before !== change.after),
+  }
+}
+
+function nativeWritePath(file: string, home: string): string {
+  let stat: fs.Stats
+  try {
+    stat = fs.lstatSync(file)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return file
+    throw error
+  }
+  if (!stat.isSymbolicLink()) {
+    if (!stat.isFile()) conflict(`Native terminal config must be a regular file: ${file}`)
+    return file
+  }
+  let target: string
+  try {
+    target = fs.realpathSync(file)
+  } catch {
+    conflict(`The native terminal config link cannot be resolved: ${file}`)
+  }
+  const relative = path.relative(fs.realpathSync(home), target)
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    conflict(`The native terminal config link points outside the home directory: ${file}`)
+  }
+  if (!fs.statSync(target).isFile()) {
+    conflict(`The native terminal config link must point to a regular file: ${file}`)
+  }
+  return target
+}
+
+function readNativeFile(file: string, home: string): string | null {
+  const target = nativeWritePath(file, home)
+  try {
+    return fs.readFileSync(target, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
+
+/** Capture only terminal settings that have an exact portable semantic equivalent. */
+export function importNativeTerminalSettings(
+  input: Omit<TerminalInput, 'profile'>,
+): PortableProfile['shared'] {
+  if (input.platform !== 'darwin') return { keybindings: {}, layout: {} }
+  const configPath = nativeTerminalConfigPath(input, (file) => fs.existsSync(file))
+  return importTmuxTerminalSettings(readNativeFile(configPath, input.home) ?? '')
+}
+
+/** Preserve exact preimages in content-addressed backups before replacing any native file. */
+export function applyNativeTerminal(input: TerminalInput): NativeTerminalPlan {
+  const plan = planNativeTerminal(input, (file) => readNativeFile(file, input.home))
+  if (plan.changes.length === 0) return plan
+  if (
+    nativeWritePath(plan.configPath, input.home) === nativeWritePath(plan.generatedPath, input.home)
+  ) {
+    conflict('The native terminal config points to its generated overlay.')
+  }
+  const changes = plan.changes.map((change) => ({
+    ...change,
+    target: nativeWritePath(change.path, input.home),
+  }))
+  if (new Set(changes.map((change) => change.target)).size !== changes.length) {
+    conflict('Native terminal files resolve to overlapping targets.')
+  }
+  const backupRoot = path.join(input.home, '.laurencio', 'backups', 'terminal')
+  for (const change of changes) {
+    if (readNativeFile(change.path, input.home) !== change.before) {
+      conflict(`The terminal config changed during sync: ${change.path}`)
+    }
+    if (change.before !== null) {
+      fs.mkdirSync(backupRoot, { recursive: true, mode: 0o700 })
+      const backupPath = path.join(
+        backupRoot,
+        `${path.basename(change.path)}.${digest(change.before)}`,
+      )
+      try {
+        fs.writeFileSync(backupPath, change.before, { flag: 'wx', mode: 0o600 })
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      }
+    }
+  }
+  for (const change of changes) {
+    if (
+      nativeWritePath(change.path, input.home) !== change.target ||
+      readNativeFile(change.path, input.home) !== change.before
+    ) {
+      conflict(`The terminal config changed during sync: ${change.path}`)
+    }
+    fs.mkdirSync(path.dirname(change.target), { recursive: true, mode: 0o700 })
+    const staging = `${change.target}.${randomUUID()}.tmp`
+    try {
+      fs.writeFileSync(staging, change.after, { flag: 'wx', mode: 0o600 })
+      fs.renameSync(staging, change.target)
+    } finally {
+      fs.rmSync(staging, { force: true })
+    }
+  }
+  return plan
+}

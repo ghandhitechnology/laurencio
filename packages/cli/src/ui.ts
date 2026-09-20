@@ -19,6 +19,7 @@ export interface CliIo {
   err(text: string): void
   readLine(prompt: string): Promise<string>
   readSecret(prompt: string): Promise<string>
+  close?(): void
 }
 
 function write(stream: NodeJS.WriteStream, text: string): void {
@@ -103,6 +104,10 @@ export function createIo(): CliIo {
     err: (text) => write(process.stderr, text),
     readLine,
     readSecret,
+    close: () => {
+      rl?.close()
+      rl = null
+    },
   }
 }
 

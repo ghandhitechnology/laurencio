@@ -8,11 +8,13 @@ import type { CredentialStore } from '../src/crypto/keyring'
 import { openKeyCache } from '../src/crypto/keyring'
 import { DeviceAuthError } from '../src/remote/http'
 import {
+  authorizeWithDeviceCode,
   CredentialsError,
   clearCredentials,
   loadCredentials,
   loginWithDeviceCode,
   openTokenStore,
+  readDeviceIdentity,
   refreshCredentials,
   storeCredentials,
 } from '../src/sync/credentials'
@@ -100,6 +102,73 @@ const codeResponse = {
 }
 
 describe('sync credentials', () => {
+  test('failed token storage leaves the previous enrollment unchanged', async () => {
+    const home = tempHome()
+    const store = memoryStore()
+    try {
+      await storeCredentials({ home, keychain: store }, { identity: identity(), token: 'original' })
+      const previous = readDeviceIdentity(home)
+      const failing: CredentialStore = {
+        ...store,
+        set: async () => {
+          throw new Error('write denied')
+        },
+      }
+      await expect(
+        storeCredentials(
+          { home, keychain: failing, platform: 'win32' },
+          {
+            identity: { ...identity(), deviceId: DeviceId.parse('00000000000000000000000003') },
+            token: 'new-token',
+          },
+        ),
+      ).rejects.toThrow('write denied')
+      expect(readDeviceIdentity(home)).toEqual(previous)
+      expect(store.entries.size).toBe(1)
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  test('identity publication failure removes the newly cached token', async () => {
+    const home = tempHome()
+    const store = memoryStore()
+    try {
+      fs.mkdirSync(path.join(home, '.laurencio', 'device.json'), { recursive: true })
+      await expect(
+        storeCredentials({ home, keychain: store }, { identity: identity(), token: 'new-token' }),
+      ).rejects.toThrow()
+      expect(store.entries.size).toBe(0)
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  test('can authorize a temporary actor without enrolling or persisting a device', async () => {
+    const requests: string[] = []
+    const routed = mockFetch({
+      'POST /api/auth/device/code': { body: codeResponse },
+      'POST /api/auth/device/token': { body: { access_token: 'ephemeral-account-token' } },
+    })
+    const fetchImpl = (async (input, init) => {
+      requests.push(
+        new URL(typeof input === 'string' ? input : input instanceof URL ? input : input.url)
+          .pathname,
+      )
+      return routed(input, init)
+    }) as typeof fetch
+
+    const authorization = await authorizeWithDeviceCode({
+      baseUrl,
+      deviceName: 'one-off-workbench',
+      platform: 'win32',
+      fetch: fetchImpl,
+    })
+
+    expect(authorization.accessToken).toBe('ephemeral-account-token')
+    expect(requests).toEqual(['/api/auth/device/code', '/api/auth/device/token'])
+  })
+
   test('stores and loads the identity, token, and cached key', async () => {
     const home = tempHome()
     const store = memoryStore()

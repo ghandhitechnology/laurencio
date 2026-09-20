@@ -79,6 +79,7 @@ export interface RewriteOutcome {
 
 /** True when a value already carries a secret, by shape or by entropy. */
 export function looksLikeSecretValue(value: string): boolean {
+  if (/^--[a-z][a-z-]*=\d+$/.test(value)) return false
   return looksLikeHighEntropySecret(value) || scanLineMatches(value).length > 0
 }
 
@@ -99,7 +100,9 @@ export function rewriteValue(
   if (!looksLikeSecretValue(value) || allowlistReason(value) !== null) return { value, moved: null }
   const envName = envVarName(context.scope, key)
   const reference = nativeReference(harness, envName)
-  if (reference !== null) return { value: reference, moved: null }
+  if (reference !== null) {
+    return { value: reference, moved: { name: envName, path: context.path, value } }
+  }
   return {
     value: placeholderToken(envName),
     moved: { name: envName, path: context.path, value },

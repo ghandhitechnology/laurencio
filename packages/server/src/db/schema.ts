@@ -1,6 +1,9 @@
+import { sql } from 'drizzle-orm'
 import {
   bigint,
   boolean,
+  check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -8,6 +11,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core'
 
 /**
@@ -84,16 +88,21 @@ export const deviceCodes = pgTable(
 )
 
 /** One encrypted object store per user. */
-export const stores = pgTable('stores', {
-  id: text('id').primaryKey(),
-  userId: text('user_id')
-    .notNull()
-    .unique()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  maxBytes: bigint('max_bytes', { mode: 'number' }),
-  maxBlobs: bigint('max_blobs', { mode: 'number' }),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-})
+export const stores = pgTable(
+  'stores',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .unique()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    maxBytes: bigint('max_bytes', { mode: 'number' }),
+    maxBlobs: bigint('max_blobs', { mode: 'number' }),
+    profileVersion: integer('profile_version').notNull().default(1),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [check('stores_profile_version_check', sql`${table.profileVersion} in (1, 2)`)],
+)
 
 export const devices = pgTable(
   'devices',
@@ -104,11 +113,33 @@ export const devices = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     platform: text('platform').notNull(),
+    kind: text('kind').notNull().default('full'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
   },
-  (table) => [index('devices_user_idx').on(table.userId)],
+  (table) => [
+    index('devices_user_idx').on(table.userId),
+    check('devices_kind_check', sql`${table.kind} in ('full', 'temporary')`),
+  ],
+)
+
+/** A bounded workbench actor backed by a temporary device. */
+export const workbenchSessions = pgTable(
+  'workbench_sessions',
+  {
+    id: text('id').primaryKey(),
+    deviceId: text('device_id')
+      .notNull()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    closedAt: timestamp('closed_at', { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex('workbench_sessions_device_idx').on(table.deviceId),
+    index('workbench_sessions_expires_idx').on(table.expiresAt),
+  ],
 )
 
 export const deviceTokens = pgTable(
@@ -200,6 +231,48 @@ export const blobs = pgTable(
   (table) => [
     primaryKey({ columns: [table.storeId, table.id] }),
     index('blobs_store_created_idx').on(table.storeId, table.createdAt),
+  ],
+)
+
+/** Current opaque encrypted-vault snapshot for a store. */
+export const vaultHeads = pgTable(
+  'vault_heads',
+  {
+    storeId: text('store_id')
+      .primaryKey()
+      .references(() => stores.id, { onDelete: 'cascade' }),
+    blobId: text('blob_id').notNull(),
+    blobSize: bigint('blob_size', { mode: 'number' }).notNull(),
+    generation: integer('generation').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      name: 'vault_heads_store_blob_fk',
+      columns: [table.storeId, table.blobId],
+      foreignColumns: [blobs.storeId, blobs.id],
+    }),
+  ],
+)
+
+/** Current opaque encrypted profile snapshot for a store. */
+export const profileHeads = pgTable(
+  'profile_heads',
+  {
+    storeId: text('store_id')
+      .primaryKey()
+      .references(() => stores.id, { onDelete: 'cascade' }),
+    blobId: text('blob_id').notNull(),
+    blobSize: bigint('blob_size', { mode: 'number' }).notNull(),
+    generation: integer('generation').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      name: 'profile_heads_store_blob_fk',
+      columns: [table.storeId, table.blobId],
+      foreignColumns: [blobs.storeId, blobs.id],
+    }),
   ],
 )
 

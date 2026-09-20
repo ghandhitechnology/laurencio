@@ -13,6 +13,7 @@ import { blobs } from '../db/schema'
 import { requireStore } from '../devices'
 import { badRequest, conflict, notFound } from '../http/errors'
 import { parseParam, readJson } from '../http/parse'
+import { requireCompatibleProfileWrite } from '../profile-version'
 import { assertWithinQuota, limitsFor } from '../quota'
 import { enforceRateLimit } from '../rate'
 import type { FsBlobStore } from '../storage'
@@ -29,6 +30,7 @@ export function createBlobRoutes(deps: RouteDeps): Hono<AppBindings> {
     enforceRateLimit(deps.rateLimiter, `presign:${rateLimitKey(principal)}`)
     const storeId = parseParam(StoreId, c.req.param('id'), 'store id')
     const store = await requireStore(deps.db, principal.userId, storeId)
+    requireCompatibleProfileWrite(store, c.req.raw.headers)
     const body = PresignRequest.safeParse(await readJson(c))
     if (!body.success)
       throw badRequest('blob id and size are required', { issues: body.error.issues })

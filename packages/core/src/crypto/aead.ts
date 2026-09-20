@@ -28,10 +28,10 @@ export const NONCE_BYTES = 24
 export const TAG_BYTES = 16
 export const HEADER_BYTES = ENVELOPE_MAGIC.length + 1 + NONCE_BYTES
 
-export const NAMESPACES = ['content', 'manifest', 'metadata'] as const
+export const NAMESPACES = ['content', 'manifest', 'metadata', 'vault', 'profile'] as const
 export type Namespace = (typeof NAMESPACES)[number]
 
-export const BLOB_TYPES = ['file', 'manifest', 'revision', 'metadata'] as const
+export const BLOB_TYPES = ['file', 'manifest', 'revision', 'metadata', 'vault', 'profile'] as const
 export type BlobType = (typeof BLOB_TYPES)[number]
 
 export interface BlobContext {

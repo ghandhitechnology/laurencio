@@ -2,7 +2,7 @@ import type { StoreId } from '@laurencio/protocol'
 import { and, eq, isNull, lt } from 'drizzle-orm'
 import type { Database } from './db/client'
 import { openDatabase } from './db/client'
-import { blobs, revisionBlobs } from './db/schema'
+import { blobs, profileHeads, revisionBlobs, vaultHeads } from './db/schema'
 import { loadEnv } from './env'
 import { asBlobId, asStoreId } from './ids'
 import { createBlobStore } from './storage'
@@ -61,7 +61,23 @@ export async function selectOrphans(options: GcOptions): Promise<OrphanSelection
       revisionBlobs,
       and(eq(revisionBlobs.storeId, blobs.storeId), eq(revisionBlobs.blobId, blobs.id)),
     )
-    .where(and(scope, isNull(revisionBlobs.revisionId), lt(blobs.createdAt, cutoff)))
+    .leftJoin(
+      vaultHeads,
+      and(eq(vaultHeads.storeId, blobs.storeId), eq(vaultHeads.blobId, blobs.id)),
+    )
+    .leftJoin(
+      profileHeads,
+      and(eq(profileHeads.storeId, blobs.storeId), eq(profileHeads.blobId, blobs.id)),
+    )
+    .where(
+      and(
+        scope,
+        isNull(revisionBlobs.revisionId),
+        isNull(vaultHeads.storeId),
+        isNull(profileHeads.storeId),
+        lt(blobs.createdAt, cutoff),
+      ),
+    )
 
   return { scanned: scannedRows.length, candidates }
 }
@@ -83,21 +99,48 @@ export async function deleteOrphans(
       bytesFreed += candidate.size
       continue
     }
-    const removed = await options.db.transaction(async (tx) => {
-      const references = await tx
-        .select({ revisionId: revisionBlobs.revisionId })
-        .from(revisionBlobs)
-        .where(
-          and(eq(revisionBlobs.storeId, candidate.storeId), eq(revisionBlobs.blobId, candidate.id)),
-        )
-        .limit(1)
-      if (references.length > 0) return false
-      const gone = await tx
-        .delete(blobs)
-        .where(and(eq(blobs.storeId, candidate.storeId), eq(blobs.id, candidate.id)))
-        .returning({ id: blobs.id })
-      return gone.length > 0
-    })
+    let removed: boolean
+    try {
+      removed = await options.db.transaction(async (tx) => {
+        const references = await tx
+          .select({ revisionId: revisionBlobs.revisionId })
+          .from(revisionBlobs)
+          .where(
+            and(
+              eq(revisionBlobs.storeId, candidate.storeId),
+              eq(revisionBlobs.blobId, candidate.id),
+            ),
+          )
+          .limit(1)
+        if (references.length > 0) return false
+        const vaultReferences = await tx
+          .select({ storeId: vaultHeads.storeId })
+          .from(vaultHeads)
+          .where(
+            and(eq(vaultHeads.storeId, candidate.storeId), eq(vaultHeads.blobId, candidate.id)),
+          )
+          .limit(1)
+        if (vaultReferences.length > 0) return false
+        const profileReferences = await tx
+          .select({ storeId: profileHeads.storeId })
+          .from(profileHeads)
+          .where(
+            and(eq(profileHeads.storeId, candidate.storeId), eq(profileHeads.blobId, candidate.id)),
+          )
+          .limit(1)
+        if (profileReferences.length > 0) return false
+        const gone = await tx
+          .delete(blobs)
+          .where(and(eq(blobs.storeId, candidate.storeId), eq(blobs.id, candidate.id)))
+          .returning({ id: blobs.id })
+        return gone.length > 0
+      })
+    } catch (error) {
+      // A head published after the checks wins. The database foreign key keeps
+      // the blob durable, and the next sweep will observe the new reference.
+      if (isForeignKeyViolation(error)) continue
+      throw error
+    }
     if (!removed) continue
     await options.storage.delete(blobKey(asStoreId(candidate.storeId), asBlobId(candidate.id)))
     deleted += 1
@@ -109,6 +152,15 @@ export async function deleteOrphans(
     bytesFreed,
     kept: selection.scanned - deleted,
   }
+}
+
+function isForeignKeyViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code: unknown }).code === '23503'
+  )
 }
 
 function parseArgs(argv: string[]): {

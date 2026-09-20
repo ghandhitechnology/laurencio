@@ -240,7 +240,7 @@ export function devicesPage(options: {
 <p class="account-email">${escapeHtml(options.user.email)}</p>
 <p class="lede">${active.length} active ${active.length === 1 ? 'device' : 'devices'}. Devices stay signed in while they sync. After 90 days without connecting, sign in again.</p>
 ${options.flash ? `<div class="notice">${escapeHtml(options.flash)}</div>` : ''}
-<div class="notice"><strong>Add another device</strong><br>Run <code>laurencio init</code> on that computer, then sign in with ${escapeHtml(options.user.email)}. Have your recovery passphrase ready to unlock your files.</div>
+<div class="notice"><strong>Add another device</strong><br>Run <code>laurencio enroll</code> on that computer, then sign in with ${escapeHtml(options.user.email)}. Have your recovery passphrase ready to unlock your files.</div>
 ${cards || '<p class="muted">Your devices will appear here after setup.</p>'}
 <form method="post" action="/sign-out">
   <div class="row"><button type="submit">Sign out</button></div>
@@ -258,7 +258,7 @@ export function revokeDevicePage(options: { user: PageUser; device: DeviceListIt
     user: options.user,
     body: `<h1>Revoke ${escapeHtml(options.device.name)}?</h1>
 <p>This computer will stop syncing immediately. Its local files stay on the computer. Your other devices keep syncing.</p>
-<p class="muted">To reconnect it later, run <code>laurencio init</code> there and sign in again.</p>
+<p class="muted">To reconnect it later, run <code>laurencio enroll</code> there and sign in again.</p>
 <form method="post" action="/account/devices/${escapeHtml(options.device.id)}/revoke">
   <input type="hidden" name="confirm" value="${escapeHtml(options.device.id)}">
   <div class="row"><button class="danger" type="submit">Revoke access</button><a href="/account/devices">Keep device connected</a></div>

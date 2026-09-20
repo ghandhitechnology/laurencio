@@ -1,6 +1,6 @@
 # Laurencio implementation plan
 
-Status: draft, not started. Design decisions live in `../DESIGN.md`.
+Status: portable-workbench refactor in implementation. Design decisions live in `../DESIGN.md`.
 Plan directory: `plan/`. Fourteen phases in four milestones. Each phase is independently shippable and ends in a check.
 
 ## Context
@@ -22,14 +22,14 @@ Explicitly excluded
 - Cloud agent execution, sessions, transcripts, run state.
 - Project-level config (`.claude/`, `.codex/`, `.opencode/` in repos). Repo git owns those.
 - Cross-harness translation, team sharing, org policy, memory sync beyond file-based memory.
-- Windows as a first-class platform: copy mode only, no symlink preservation.
+- End-user Linux clients. The Railway server remains Linux-compatible.
 - Mobile, web UI beyond device approval and device management.
 
 ## Constraints
 
-- Toolchain on this machine: bun 1.3.14, node 26.7, git 2.50, railway CLI, gh 2.100, psql. Package manager and test runner: bun. Orientation: macOS primary, Linux remote second, Windows best effort.
+- Toolchain on this machine: bun 1.3.14, node 26.7, git 2.50, railway CLI, gh 2.100, psql. Package manager and test runner: bun. Clients support macOS and Windows; the Railway server remains Linux-compatible.
 - Crypto must run under both bun and node (npm-installed CLI): audited pure-TS primitives (`@noble/hashes` Argon2id, `@noble/ciphers` XChaCha20-Poly1305) with a native fast path when available. No native modules in the CLI path.
-- Keychain access via `@napi-rs/keyring`, with a documented file fallback for headless Linux.
+- Keychain access via `@napi-rs/keyring`, with required Windows Credential Manager and a warned macOS file fallback.
 - Server: Hono + Drizzle + Postgres, deployed on Railway; blobs in a Railway storage bucket with presigned URLs. Better Auth device authorization flow with email sign-in for invited staging accounts.
 - Protocol version negotiation from day one: `protocolVersion` on every request, server rejects on mismatch with a clear upgrade message.
 - Adapters are data plus small pure transforms. No harness-specific logic inside the engine.
@@ -52,7 +52,7 @@ Explicitly excluded
 | M1 Local core | 1-9 | `bun run e2e:two-home` converges two fake HOMEs through a file-based remote, encrypted, secrets blocked, markers preserved. |
 | M2 Server | 10-11 | Two curl clients push and pull revisions against the deployed dev server; bucket holds ciphertext only. |
 | M3 Product loop | 12-13 | Real CLI syncs this machine's harness config against the dev server; `status`, `diff`, `restore`, `devices`, `resolve` work. |
-| M4 Ship | 14 | Daemon runs unattended; npm package and macOS/Linux binaries install cleanly. |
+| M4 Ship | 14 | Daemon runs unattended; npm package and macOS/Windows binaries install cleanly. |
 
 ## Phases
 

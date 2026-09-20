@@ -112,7 +112,7 @@ export async function unlockStoreKey(
   const published = await input.remote.getKdfParams()
   if (published === null) {
     throw cliError('no-kdf', 'the store has no passphrase parameters yet', {
-      hint: 'Run `laurencio init` on the first device.',
+      hint: 'Run `laurencio enroll` on the first device.',
     })
   }
   const kdf = published.kdf

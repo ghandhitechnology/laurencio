@@ -83,7 +83,8 @@ describe('env and header maps', () => {
     })
     expect(result.values.Authorization).toBe(CLAUDE_HEADER)
     expect(result.values['x-api-key']).toBe(CLAUDE_HEADER_API_KEY)
-    expect(result.moved).toHaveLength(0)
+    expect(result.moved).toHaveLength(2)
+    expect(result.moved[0]?.value).toBe(`Bearer ${githubToken}`)
   })
 })
 

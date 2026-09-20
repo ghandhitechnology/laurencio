@@ -20,6 +20,7 @@ import {
 
 const CHILD_SCRIPT = path.resolve(import.meta.dir, 'helpers/lock-child.ts')
 const CREATED_AT = '2026-01-01T00:00:00.000Z'
+const TEST_PLATFORM = process.platform === 'win32' ? 'win32' : 'darwin'
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'laurencio-lock-'))
@@ -89,7 +90,7 @@ const seedEntries: FakeHomeOptions['entries'] = [
 describe('cross-process sync lock', () => {
   test('one process holds the lock, the other exits busy, and no reconcile touches the holder', async () => {
     const remoteDir = tempDir()
-    const seed = buildFakeHome({ entries: seedEntries })
+    const seed = buildFakeHome({ entries: seedEntries, platform: TEST_PLATFORM })
     const seedState = SyncState.open({ path: stateDbPath(seed.home) })
     await sync({
       adapters: [testAdapter('claude', lockSurfaces())],
@@ -110,7 +111,10 @@ describe('cross-process sync lock', () => {
     seed.cleanup()
 
     // The holder home lacks the file the remote has, so its first plan writes.
-    const home = buildFakeHome({ entries: [{ kind: 'dir', path: '.claude' }] })
+    const home = buildFakeHome({
+      entries: [{ kind: 'dir', path: '.claude' }],
+      platform: TEST_PLATFORM,
+    })
     const marker = path.join(home.home, 'holding')
     const release = path.join(home.home, 'release')
     const holder = runChild([

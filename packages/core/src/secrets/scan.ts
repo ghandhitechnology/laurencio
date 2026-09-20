@@ -8,6 +8,7 @@ import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import {
   entropyMatch,
+  isSensitiveSecretValue,
   type SecretFinding,
   type SecretRuleId,
   scanLineMatches,
@@ -75,7 +76,13 @@ export function scanText(path: string, content: string): SecretFinding[] {
     for (const entry of structuredValues(content, format)) {
       // A value that already matches a shape rule is reported by that rule only.
       if (scanLineRawMatches(entry.value).length > 0) continue
-      const match = entropyMatch(entry.value)
+      const match =
+        entropyMatch(entry.value) ??
+        (entry.key !== undefined &&
+        !entry.referenceMap &&
+        isSensitiveSecretValue(entry.key, entry.value)
+          ? { rule: 'sensitive-field' as const, severity: 'high' as const, match: '****' }
+          : null)
       if (match === null) continue
       findings.push({
         path,
