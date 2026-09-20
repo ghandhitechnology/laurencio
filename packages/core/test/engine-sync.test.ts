@@ -1298,4 +1298,73 @@ describe('engine sync', () => {
     b.cleanup()
     fs.rmSync(h.remoteDir, { recursive: true, force: true })
   })
+
+  test('two declared paths sharing one physical file download once and never defer', async () => {
+    const linked = [...surfaces(), tree({ id: 'codex.skills', path: '$HOME/.codex/skills' })]
+    const adapters = [testAdapter('claude', linked)]
+    const h = harness()
+    const a = engineHome([
+      { kind: 'file', path: '.claude/skills/x/SKILL.md', content: '# v1\n' },
+      { kind: 'file', path: '.codex/skills/x/SKILL.md', content: '# v1\n' },
+    ])
+    const b = engineHome([
+      { kind: 'file', path: '.claude/skills/x/SKILL.md', content: '# v1\n' },
+      { kind: 'dir', path: '.codex/skills' },
+    ])
+    fs.symlinkSync('../../.claude/skills/x', b.path('.codex/skills/x'), 'dir')
+    try {
+      await h.run(a, deviceA, { adapters })
+      await h.run(b, deviceB, { adapters })
+      a.write('.claude/skills/x/SKILL.md', '# v2\n')
+      a.write('.codex/skills/x/SKILL.md', '# v2\n')
+      await h.run(a, deviceA, { adapters })
+
+      const report = await h.run(b, deviceB, { adapters })
+
+      expect(report.deferred).toEqual([])
+      expect(report.downloaded).toBe(1)
+      expect(b.read('.claude/skills/x/SKILL.md')).toBe('# v2\n')
+      expect(b.read('.codex/skills/x/SKILL.md')).toBe('# v2\n')
+      expect(fs.lstatSync(b.path('.codex/skills/x')).isSymbolicLink()).toBe(true)
+    } finally {
+      a.cleanup()
+      b.cleanup()
+      fs.rmSync(h.remoteDir, { recursive: true, force: true })
+    }
+  })
+
+  test('a remote entry under a surface exclude glob is neither downloaded nor tombstoned', async () => {
+    const h = harness()
+    const aSurfaces = [...surfaces(), tree({ id: 'codex.skills', path: '$HOME/.codex/skills' })]
+    const bSurfaces = [
+      ...surfaces(),
+      tree({
+        id: 'codex.skills',
+        path: '$HOME/.codex/skills',
+        exclude: ['.system', '.system/**'],
+      }),
+    ]
+    const a = engineHome([
+      { kind: 'file', path: '.codex/skills/.system/foo/SKILL.md', content: '# stale\n' },
+    ])
+    const b = engineHome([{ kind: 'dir', path: '.codex/skills' }])
+    try {
+      await h.run(a, deviceA, { adapters: [testAdapter('claude', aSurfaces)] })
+
+      const report = await h.run(b, deviceB, { adapters: [testAdapter('claude', bSurfaces)] })
+
+      expect(report.downloaded).toBe(0)
+      expect(report.changed).toEqual([])
+      expect(fs.existsSync(b.path('.codex/skills/.system/foo/SKILL.md'))).toBe(false)
+      const manifest = await h.headManifest()
+      const stale = manifest.entries.find(
+        (entry) => entry.path === '$HOME/.codex/skills/.system/foo/SKILL.md',
+      )
+      expect(stale?.kind === 'tombstone').toBe(false)
+    } finally {
+      a.cleanup()
+      b.cleanup()
+      fs.rmSync(h.remoteDir, { recursive: true, force: true })
+    }
+  })
 })

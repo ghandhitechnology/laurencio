@@ -164,6 +164,7 @@ Safety rules
 - OpenCode schema handling. Detect which version owns the config dir, write keys each version reads, never silently drop unknown keys.
 - Partial file exclusion. `<!-- laurencio:local -->` blocks are stripped before upload, re-inserted at their markers on apply, and never silently dropped. An unclosed marker fails that file loudly. Whole files are excluded per device with an ignore list.
 - Per-device overrides. `devices/<id>.toml` holds values that must differ per machine (model choice, provider region, MCP command binaries present locally).
+- Symlinked tree entries. A link stays a layout entry and its target content also syncs under the declared path. A deletion arriving under a link removes the link, never the shared content.
 
 ## 6. Secrets and encryption
 

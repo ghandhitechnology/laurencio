@@ -125,6 +125,8 @@ interface WalkTarget {
   /** Absolute declared root, used to place layout entries in declared space. */
   declaredRoot: string
   counters: Counters
+  /** Realpaths of the directories on the current walk stack; stops link cycles. */
+  visiting: Set<string>
 }
 
 function newCounters(): Counters {
@@ -336,7 +338,63 @@ function recordSkipped(
   state.entries.push(entry)
 }
 
-function walkTree(state: ScanState, target: WalkTarget, dir: string, rel: string): void {
+/** Links a single path may follow before the walk stops descending. */
+const MAX_LINK_DEPTH = 8
+
+/** True when `resolved` is a directory already on the walk stack or encloses one. */
+function onWalkStack(target: WalkTarget, resolved: string): boolean {
+  for (const real of target.visiting) {
+    if (resolved === real || real.startsWith(`${resolved}${path.sep}`)) return true
+  }
+  return false
+}
+
+/**
+ * The link entry is already recorded; this records the content behind it under
+ * the declared path, so a device without the same links still gets the files.
+ * The link path itself is what gets walked, keeping every child in declared
+ * space while the filesystem reads through the link.
+ */
+function followLink(
+  state: ScanState,
+  target: WalkTarget,
+  localPath: string,
+  relPath: string,
+  relPosix: string,
+  linkDepth: number,
+): void {
+  if (linkDepth >= MAX_LINK_DEPTH) return
+  const resolved = tryRealpath(localPath)
+  if (resolved === null) return
+  if (onWalkStack(target, resolved)) return
+  // The link entry already names the owning surface; a walk would duplicate that tree.
+  if (state.boundary.has(resolved)) return
+  if (isExcluded(state, target.surface, relPosix)) return
+  let targetStat: fs.Stats
+  try {
+    targetStat = fs.statSync(localPath)
+  } catch {
+    return
+  }
+  if (targetStat.isDirectory()) {
+    target.visiting.add(resolved)
+    try {
+      walkTree(state, target, localPath, relPath, linkDepth + 1)
+    } finally {
+      target.visiting.delete(resolved)
+    }
+  } else if (targetStat.isFile()) {
+    recordFile(state, target, localPath, relPosix, targetStat)
+  }
+}
+
+function walkTree(
+  state: ScanState,
+  target: WalkTarget,
+  dir: string,
+  rel: string,
+  linkDepth = 0,
+): void {
   let names: string[]
   try {
     names = fs.readdirSync(dir).sort()
@@ -360,6 +418,7 @@ function walkTree(state: ScanState, target: WalkTarget, dir: string, rel: string
     }
     if (stat.isSymbolicLink()) {
       recordLink(state, target, localPath, relPath, stat)
+      followLink(state, target, localPath, relPath, relPosix, linkDepth)
       continue
     }
     if (stat.isDirectory() || stat.isFile()) {
@@ -372,7 +431,7 @@ function walkTree(state: ScanState, target: WalkTarget, dir: string, rel: string
         recordSkipped(state, target, localPath, stat, kind, 'nested')
         continue
       }
-      if (stat.isDirectory()) walkTree(state, target, localPath, relPath)
+      if (stat.isDirectory()) walkTree(state, target, localPath, relPath, linkDepth)
       else recordFile(state, target, localPath, relPosix, stat)
       continue
     }
@@ -393,6 +452,7 @@ function scanSurface(state: ScanState, resolved: ResolvedSurface, counters: Coun
     surfaceId: surface.id,
     declaredRoot: resolved.declaredPath,
     counters,
+    visiting: new Set([tryRealpath(resolved.resolvedPath) ?? resolved.resolvedPath]),
   }
   let stat: fs.Stats
   try {
