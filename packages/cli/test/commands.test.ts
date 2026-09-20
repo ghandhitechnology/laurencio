@@ -78,7 +78,7 @@ describe('cli parsing', () => {
     try {
       const version = await runForTest(['--version'], { home: scratch.home })
       expect(version.exitCode).toBe(0)
-      expect(version.output).toBe('laurencio 0.1.0\n')
+      expect(version.output).toBe('laurencio 0.1.1\n')
 
       const help = await runForTest(['--help'], { home: scratch.home })
       expect(help.exitCode).toBe(0)

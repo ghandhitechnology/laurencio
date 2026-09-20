@@ -105,6 +105,10 @@ Large `--dry-run --json` plans also exposed an abrupt-exit bug: the process coul
 
 Device tokens originally expired 90 days after enrollment even when the computer synced every day. Active tokens now use a sliding 90-day window, refreshed with last-seen presence at most once per minute. Revoked and expired tokens cannot renew. The account page separates active and revoked computers, shows exact connection times, supports rename, and requires a dedicated confirmation before revocation.
 
+### Release runner labels expire
+
+The first `v0.1.0` release stalled because GitHub retired the `macos-13` hosted runner label. The Intel build now uses `macos-15-intel`. A failed tag stays in the repository, and the corrected workflow publishes the next patch version instead of rewriting public tag history.
+
 ### A real round trip needs content and cleanup verification
 
 A disposable skill was created on the Mac mini, uploaded, downloaded to the laptop, and verified by SHA-256. The laptop then changed the file, uploaded it, and the Mac mini downloaded the exact matching hash. The Mac mini published the deletion and the laptop removed its copy. Every transfer completed without conflicts, blocked secrets, deferred files, or queued work.
