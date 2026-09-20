@@ -423,3 +423,67 @@ describe('Applier', () => {
     fs.rmSync(home, { recursive: true, force: true })
   })
 })
+
+test('every replaced or deleted file has an immutable private preimage', () => {
+  const home = tempDir()
+  const target = path.join(home, 'config.toml')
+  const link = path.join(home, 'linked.toml')
+  fs.writeFileSync(target, 'original', { mode: 0o600 })
+  fs.symlinkSync('config.toml', link)
+  const { state, applier } = makeApplier({ home, planPaths: [link] })
+  try {
+    applier.write({
+      storePath: 'config',
+      declaredPath: link,
+      content: 'updated',
+      expected: applier.fingerprint(link),
+    })
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true)
+    applier.remove({
+      storePath: 'config',
+      declaredPath: link,
+      surfaceId,
+      expected: applier.fingerprint(link),
+    })
+    const root = path.join(home, '.laurencio/backups/files')
+    const versions = fs.readdirSync(root).flatMap((dir) =>
+      fs
+        .readdirSync(path.join(root, dir))
+        .filter((name) => name.endsWith('.content'))
+        .map((name) => path.join(root, dir, name)),
+    )
+    expect(versions.map((file) => fs.readFileSync(file, 'utf8')).sort()).toEqual([
+      'original',
+      'updated',
+    ])
+    expect(versions.every((file) => (fs.statSync(file).mode & 0o777) === 0o600)).toBe(true)
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true)
+  } finally {
+    state.close()
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a changed deletion target and a dangling link are preserved', () => {
+  const home = tempDir()
+  const target = path.join(home, 'config')
+  fs.writeFileSync(target, 'original')
+  const { state, applier } = makeApplier({ home, planPaths: [target] })
+  try {
+    const before = applier.fingerprint(target)
+    fs.writeFileSync(target, 'edited by the agent')
+    expect(() =>
+      applier.remove({ storePath: 'config', surfaceId, declaredPath: target, expected: before }),
+    ).toThrow(StaleWriteError)
+    expect(fs.readFileSync(target, 'utf8')).toBe('edited by the agent')
+    fs.unlinkSync(target)
+    fs.symlinkSync('missing', target)
+    expect(() =>
+      applier.write({ storePath: 'config', declaredPath: target, content: 'replacement' }),
+    ).toThrow('dangling symlink')
+    expect(fs.readlinkSync(target)).toBe('missing')
+  } finally {
+    state.close()
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})

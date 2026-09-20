@@ -3,12 +3,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DeviceId, type RevisionId, StoreId } from '@laurencio/protocol'
+import { hashContent } from '../src/apply'
 import { deriveMasterKey, type KdfParams, kdfParamsToWire } from '../src/crypto/kdf'
 import type { DevicePolicy } from '../src/model'
 import { createFileRemote } from '../src/remote/file'
 import { DeviceAuthError, HttpRemoteError } from '../src/remote/http'
 import type { Remote } from '../src/remote/types'
-import { SyncState } from '../src/state'
+import { acquireLock, releaseLock, SyncState } from '../src/state'
 import { LAST_SYNC_META_KEY, readLastSync, SyncLoop } from '../src/sync/loop'
 import { parsePolicyToml } from '../src/sync/policy'
 import { file, testAdapter } from './helpers/adapter-fixtures'
@@ -142,7 +143,7 @@ describe('SyncLoop', () => {
     }
   })
 
-  test('queues an offline run and replays it after reconnect', async () => {
+  test('rescans local changes after reconnect without serializing remote operations', async () => {
     const box = sandbox()
     try {
       box.home.write('.claude/CLAUDE.md', '# before offline\n')
@@ -153,20 +154,40 @@ describe('SyncLoop', () => {
       const offline = await box.loop.runOnce()
       expect(offline.status).toBe('offline')
       expect(offline.error?.name).toBe('HttpRemoteError')
-      expect(box.state.listPendingOps().map((op) => op.kind)).toContain('sync')
       expect(readLastSync(box.state)?.status).toBe('offline')
 
-      // A second offline run must not grow the queue with more markers.
+      // A second offline run remains a plain retryable status. Local state is
+      // the durable source of truth, so no replay row is needed.
       await box.loop.runOnce()
-      expect(box.state.listPendingOps().filter((op) => op.kind === 'sync')).toHaveLength(1)
 
       box.remote.setOffline(false)
       const replayed = await box.loop.runOnce()
       expect(replayed.status).toBe('synced')
-      expect(replayed.queue.pending).toBe(0)
-      expect(box.state.listPendingOps()).toHaveLength(0)
       expect((await makeRemote(box.remoteDir).listRevisions()).head).not.toBeNull()
     } finally {
+      box.close()
+    }
+  })
+
+  test('does not reconcile another sync while its lock is held', async () => {
+    const box = sandbox()
+    const target = box.home.path('.claude/CLAUDE.md')
+    box.home.write('.claude/CLAUDE.md', '# in flight\n')
+    box.state.beginOp({
+      opId: 'in-flight-write',
+      op: 'write',
+      targetPath: target,
+      resultHash: hashContent('# in flight\n'),
+      startedAt: '2026-09-19T00:00:00.000Z',
+    })
+    const holder = acquireLock(box.home.home)
+    try {
+      const result = await box.loop.runOnce()
+      expect(result.status).toBe('failed')
+      expect(result.error?.name).toBe('LockHeldError')
+      expect(box.state.listJournal().map((row) => row.opId)).toEqual(['in-flight-write'])
+    } finally {
+      releaseLock(box.home.home, holder.pid, holder)
       box.close()
     }
   })
@@ -207,7 +228,6 @@ describe('SyncLoop', () => {
       expect(result.status).toBe('failed')
       expect(result.error?.code).toBe('unauthenticated')
       expect(result.error?.message).toContain('laurencio login')
-      expect(box.state.listPendingOps()).toHaveLength(0)
     } finally {
       box.close()
       fs.rmSync(deadDir, { recursive: true, force: true })

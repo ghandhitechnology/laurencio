@@ -134,14 +134,14 @@ describe('cli parsing', () => {
     }
   })
 
-  test('init without a server exits clean on the offline path', async () => {
+  test('offline enrollment preserves its choices and reports incomplete setup', async () => {
     const scratch = makeScratch()
     try {
       const out = await runForTest(['init', '--server', 'http://127.0.0.1:1', '--yes'], {
         home: scratch.home,
       })
-      expect(out.exitCode).toBe(0)
-      expect(out.output).toContain('skipped, the server is not reachable')
+      expect(out.exitCode).toBe(1)
+      expect(out.errorOutput).toContain('skipped, the server is not reachable')
       const config = readHomeFile(scratch.home, '.laurencio/config.toml')
       expect(config).toContain('server = "http://127.0.0.1:1"')
     } finally {
@@ -406,6 +406,123 @@ describe('init and sync', () => {
     }
   })
 
+  test('dry run and status ignore a preserved machine-only shell after remote deletion', async () => {
+    const publisher = makeScratch()
+    const receiver = makeScratch()
+    const config = 'model = "gpt-5"\nnotify = ["local-command"]\n'
+    try {
+      await seedStore({
+        home: publisher.home,
+        remoteDir: publisher.remoteDir,
+        deviceName: 'publisher',
+      })
+      writeHomeFile(publisher.home, '.codex/config.toml', config)
+      expect(
+        (
+          await runForTest(['init', '--yes', '--harness', 'codex'], {
+            home: publisher.home,
+            remoteDir: publisher.remoteDir,
+            deps: QUICK,
+          })
+        ).exitCode,
+      ).toBe(0)
+
+      await seedStore({
+        home: receiver.home,
+        remoteDir: publisher.remoteDir,
+        deviceName: 'receiver',
+      })
+      writeHomeFile(receiver.home, '.codex/config.toml', config)
+      expect(
+        (
+          await runForTest(['init', '--yes', '--harness', 'codex'], {
+            home: receiver.home,
+            remoteDir: publisher.remoteDir,
+            deps: QUICK,
+          })
+        ).exitCode,
+      ).toBe(0)
+
+      fs.rmSync(path.join(publisher.home, '.codex/config.toml'))
+      expect(
+        (
+          await runForTest(['sync', '--prune'], {
+            home: publisher.home,
+            remoteDir: publisher.remoteDir,
+            deps: QUICK,
+          })
+        ).exitCode,
+      ).toBe(0)
+      expect(
+        (
+          await runForTest(['sync'], {
+            home: receiver.home,
+            remoteDir: publisher.remoteDir,
+            deps: QUICK,
+          })
+        ).exitCode,
+      ).toBe(0)
+      expect(readHomeFile(receiver.home, '.codex/config.toml')).toContain('local-command')
+      expect(readHomeFile(receiver.home, '.codex/config.toml')).not.toContain('model =')
+
+      const dryRun = await runForTest(['sync', '--dry-run', '--json'], {
+        home: receiver.home,
+        remoteDir: publisher.remoteDir,
+        deps: QUICK,
+      })
+      expect(dryRun.exitCode).toBe(0)
+      const planned = JSON.parse(dryRun.output) as {
+        plan: { files: { resolution: string }[] }
+      }
+      expect(planned.plan.files.filter((file) => file.resolution !== 'unchanged')).toEqual([])
+
+      const status = await runForTest(['status', '--json'], {
+        home: receiver.home,
+        remoteDir: publisher.remoteDir,
+        deps: QUICK,
+      })
+      expect(status.exitCode).toBe(0)
+      expect((JSON.parse(status.output) as { drift: unknown[] }).drift).toEqual([])
+    } finally {
+      publisher.cleanup()
+      receiver.cleanup()
+    }
+  })
+
+  test('enrollment using remote values preserves local-only files in the same surface', async () => {
+    const scratch = makeScratch()
+    const other = makeScratch()
+    try {
+      await seedStore({ home: other.home, remoteDir: scratch.remoteDir })
+      writeHomeFile(other.home, '.claude/skills/shared/SKILL.md', 'remote skill\n')
+      await runForTest(['init', '--yes'], {
+        home: other.home,
+        remoteDir: scratch.remoteDir,
+        deps: QUICK,
+      })
+      await seedStore({ home: scratch.home, remoteDir: scratch.remoteDir })
+      writeHomeFile(scratch.home, '.claude/skills/shared/SKILL.md', 'local skill\n')
+      writeHomeFile(scratch.home, '.claude/skills/private/SKILL.md', 'keep this skill\n')
+      const policy = defaultPolicy()
+      policy.harnesses.claude = { enabled: true, surfaces: { 'claude.skills': 'on' } }
+      saveCliConfig(scratch.home, { server: null, policy })
+      const out = await runForTest(['init'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        answers: ['k', 'r'],
+        deps: QUICK,
+      })
+      expect(out.exitCode).toBe(0)
+      expect(readHomeFile(scratch.home, '.claude/skills/shared/SKILL.md')).toBe('remote skill\n')
+      expect(readHomeFile(scratch.home, '.claude/skills/private/SKILL.md')).toBe(
+        'keep this skill\n',
+      )
+    } finally {
+      scratch.cleanup()
+      other.cleanup()
+    }
+  })
+
   test('init enrollment replaces this device after a backup', async () => {
     const scratch = makeScratch()
     const other = makeScratch()
@@ -437,8 +554,7 @@ describe('init and sync', () => {
       expect(out.output).toContain('Enrollment: claude.instructions r')
       expect(readHomeFile(scratch.home, '.claude/CLAUDE.md')).toBe('remote version\n')
       const backups = fs.readdirSync(path.join(scratch.home, '.laurencio/backups'))
-      expect(backups.length).toBe(1)
-      const firstBackup = backups[0]
+      const firstBackup = backups.filter((name) => /^\d{8}T\d{6}Z/.test(name)).sort()[0]
       expect(firstBackup).toBeDefined()
       const backedUp = fs.readFileSync(
         path.join(scratch.home, '.laurencio/backups', firstBackup ?? '', '01-claude.instructions'),
@@ -587,8 +703,8 @@ describe('init and sync', () => {
         remoteDir: scratch.remoteDir,
         deps: QUICK,
       })
-      expect(out.exitCode).toBe(0)
-      const data = JSON.parse(out.output) as { blocked: string[] }
+      expect(out.exitCode).toBe(1)
+      const data = JSON.parse(out.errorOutput) as { blocked: string[] }
       expect(data.blocked.length).toBeGreaterThan(0)
       const remote = createFileRemote({ dir: scratch.remoteDir })
       const page = await remote.listRevisions()

@@ -110,6 +110,17 @@ export function resolveLayoutTarget(options: ResolveLayoutOptions): LayoutTarget
   const declaredPath = path.resolve(options.declaredPath)
   const copyMode = copyModeFor(options.platform, options.copyMode)
   const entry = layoutEntryFor(options.layout, declaredPath)
+  // existsSync follows links and reports a dangling link as absent. Never turn
+  // such a link into a regular file or manufacture a directory over its slot.
+  let component = declaredPath
+  while (true) {
+    if (tryReadlink(component) !== null && !fs.existsSync(component)) {
+      throw new Error(`refusing to replace a dangling symlink: ${component}`)
+    }
+    const parent = path.dirname(component)
+    if (parent === component) break
+    component = parent
+  }
   const physical = physicalPathFor(declaredPath)
   const linked = physical !== declaredPath
   const exists = fs.existsSync(declaredPath)

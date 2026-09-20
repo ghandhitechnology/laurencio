@@ -1,5 +1,7 @@
 import {
+  acquireLock,
   DEFAULT_VAULT_REFERENCES,
+  releaseLock,
   supportsProfile,
   supportsVault,
   type VaultReference,
@@ -12,10 +14,10 @@ import {
   writeCredentialBaselines,
 } from '../credential-sync'
 import { cliError } from '../errors'
+import { createNativeCredentialIo } from '../native-credential-io'
 import { ensureProfileV2 } from '../profile-version'
 import { ok } from '../result'
 import { openSession, openState } from '../session'
-import { createSystemCredentialIo } from '../workbench/credentials'
 import { loadPortableProfile } from '../workbench/profile'
 import {
   captureCredentialVault,
@@ -105,22 +107,19 @@ export const credentialsCommand: CommandSpec = {
     )
     const reference = referenceNamed(eligible, name)
     const selected = [reference]
-    const io = createSystemCredentialIo(ctx.env, {
-      durableMcp: {
-        platform: ctx.platform,
-        ...(ctx.deps.keychain === undefined ? {} : { keychain: ctx.deps.keychain }),
-      },
-    })
-    const vaultInput = {
-      remote: session.remote,
-      storeId: session.credentials.storeId,
-      key: session.credentials.key,
-      references: selected,
-      tokenEnv: adapterContext(ctx),
-      io,
-    }
     const state = openState(ctx)
+    let holder: ReturnType<typeof acquireLock> | undefined
     try {
+      holder = acquireLock(ctx.home)
+      const io = createNativeCredentialIo(ctx, state, selected)
+      const vaultInput = {
+        remote: session.remote,
+        storeId: session.credentials.storeId,
+        key: session.credentials.key,
+        references: selected,
+        tokenEnv: adapterContext(ctx),
+        io,
+      }
       const operation =
         direction === 'keep-local'
           ? (
@@ -167,6 +166,7 @@ export const credentialsCommand: CommandSpec = {
       )
     } finally {
       state.close()
+      if (holder !== undefined) releaseLock(ctx.home, holder.pid, holder)
     }
   },
 }

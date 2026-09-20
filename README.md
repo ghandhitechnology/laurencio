@@ -2,7 +2,7 @@
 
 Your agent workbench on any Mac or Windows computer.
 
-Temporary mode opens an isolated tmux or WezTerm session with your synced setup, leaves the host configuration alone, and deletes the private runtime when the session closes. Full mode migrates the native setup, keeps it synchronized, and preserves backups and revision history.
+Temporary mode opens an isolated tmux or WezTerm session with your synced setup, leaves the host configuration alone, and deletes the private runtime when the session closes. Enrolled devices reuse their cached sign-in and store key, and verified public tools stay cached between launches. Full mode migrates the native setup, keeps it synchronized, and preserves backups and revision history.
 
 Skills, instructions, agents, model preferences, MCP definitions, and explicitly selected credentials follow your account with end-to-end encryption. The server stores opaque blobs only.
 

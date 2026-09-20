@@ -3,7 +3,7 @@
  * local port with PGlite and the filesystem blob store, enrolls two fake HOMEs
  * as two devices of one account, and drives the real SyncLoop over HTTP.
  *
- * Asserts convergence, the offline queue, revoked devices, the wrong
+ * Asserts convergence, offline recovery, revoked devices, the wrong
  * passphrase, protocol mismatch messaging, idempotent duplicate commits, and
  * that the store holds ciphertext only.
  *
@@ -13,7 +13,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { EnvelopeError, openText, sealText } from '../packages/core/src/crypto/aead'
+import { EnvelopeError, openText } from '../packages/core/src/crypto/aead'
 import type { KeyMaterial } from '../packages/core/src/crypto/kdf'
 import { deriveMasterKey, type KdfParams, kdfParamsToWire } from '../packages/core/src/crypto/kdf'
 import { type CredentialStore, openKeyCache } from '../packages/core/src/crypto/keyring'
@@ -30,7 +30,6 @@ import {
   storeCredentials,
 } from '../packages/core/src/sync/credentials'
 import { SyncLoop, type SyncRunResult } from '../packages/core/src/sync/loop'
-import { enqueueUpload } from '../packages/core/src/sync/queue'
 import { file, testAdapter, tree } from '../packages/core/test/helpers/adapter-fixtures'
 import { buildFakeHome, type FakeHome } from '../packages/core/test/helpers/fake-home'
 import {
@@ -333,15 +332,6 @@ function readStoreBytes(dir: string): string {
   return chunks.join('\n')
 }
 
-function pendingKinds(home: FakeHome): string[] {
-  const state = SyncState.open({ path: stateDbPath(home.home) })
-  try {
-    return state.listPendingOps().map((op) => op.kind)
-  } finally {
-    state.close()
-  }
-}
-
 async function main(): Promise<void> {
   const keychain = memoryKeychain()
   const server = await bootServer()
@@ -560,22 +550,9 @@ async function main(): Promise<void> {
       )
     }
 
-    step('offline queue: stop the server, edit, queue a blob, reconnect')
+    step('offline recovery: stop the server, edit, reconnect')
     await server.stop()
     a.write('.claude/CLAUDE.md', '# shared rules\nA edited while offline\n')
-    const queuedBlob = sealText(boxA.credentials.key, 'content', 'sealed while offline\n', {
-      storeId: boxA.credentials.storeId,
-      blobType: 'file',
-      protocolVersion: PROTOCOL_VERSION,
-    })
-    const offlineState = SyncState.open({ path: stateDbPath(a.home) })
-    enqueueUpload(
-      offlineState,
-      { id: queuedBlob.blobId, size: queuedBlob.bytes.length },
-      queuedBlob.bytes,
-      { createdAt: NOW },
-    )
-    offlineState.close()
     const offlineRun = await runHome(server.baseUrl, boxA)
     check('offline run reports offline', offlineRun.status === 'offline', offlineRun.status)
     check(
@@ -583,27 +560,9 @@ async function main(): Promise<void> {
       offlineRun.error?.name === 'HttpRemoteError' && offlineRun.error?.code === 'network',
       offlineRun.error?.message ?? '',
     )
-    check(
-      'the offline run keeps both pending ops',
-      pendingKinds(a).includes('sync') && pendingKinds(a).includes('upload'),
-    )
     await server.start()
     const replayRun = await runHome(server.baseUrl, boxA)
-    check('reconnected run replays the queue', replayRun.status === 'synced', replayRun.status)
-    check('the queued blob op replayed', replayRun.queue.replayed.length === 1)
-    const delivered = await readRemote.getBlob(queuedBlob.blobId)
-    check(
-      'the server holds the replayed ciphertext',
-      openText(boxA.credentials.key, 'content', delivered, {
-        storeId: boxA.credentials.storeId,
-        blobType: 'file',
-        protocolVersion: PROTOCOL_VERSION,
-      }) === 'sealed while offline\n',
-    )
-    check(
-      'queue is empty after replay',
-      replayRun.queue.pending === 0 && pendingKinds(a).length === 0,
-    )
+    check('reconnected run rescans and syncs', replayRun.status === 'synced', replayRun.status)
     await runHome(server.baseUrl, boxB)
     check('B sees the offline edit', b.read('.claude/CLAUDE.md').includes('A edited while offline'))
 

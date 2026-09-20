@@ -23,6 +23,8 @@ export interface WorkbenchClient {
   close(id: WorkbenchSessionId): Promise<WorkbenchSession>
 }
 
+const WORKBENCH_REQUEST_TIMEOUT_MS = 10_000
+
 export function createWorkbenchClient(options: {
   baseUrl: string
   bearer: string
@@ -37,7 +39,11 @@ export function createWorkbenchClient(options: {
     headers.set('authorization', `Bearer ${bearer}`)
     headers.set(PROTOCOL_HEADER, String(PROTOCOL_VERSION))
     if (init.body !== undefined) headers.set('content-type', 'application/json')
-    const response = await fetchImpl(new URL(path, base).toString(), { ...init, headers })
+    const response = await fetchImpl(new URL(path, base).toString(), {
+      ...init,
+      headers,
+      signal: init.signal ?? AbortSignal.timeout(WORKBENCH_REQUEST_TIMEOUT_MS),
+    })
     if (!response.ok) throw await httpErrorFromResponse(response, 'workbench session')
     return response.json()
   }

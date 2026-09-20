@@ -1,8 +1,8 @@
 /**
  * The deferral rule around live harness writers. A file may only be replaced
  * when its mtime is older than the window and it has not changed between the
- * plan read and the apply read. Anything else is deferred and re-queued so a
- * harness mid-write is never clobbered.
+ * plan read and the apply read. Anything else is deferred for a later scan so
+ * a harness mid-write is never clobbered.
  */
 
 export const DEFAULT_QUIESCENCE_WINDOW_MS = 1500

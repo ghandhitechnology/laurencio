@@ -21,7 +21,7 @@ import {
   releaseDaemonLock,
 } from '../src/daemon/lock'
 import { DaemonRuntime } from '../src/daemon/runtime'
-import { readDaemonState } from '../src/daemon/state'
+import { readDaemonState, writeDaemonState } from '../src/daemon/state'
 import { surfaceWatchRoots } from '../src/daemon/watcher'
 import { clearPause, writePause } from '../src/pause'
 import { DEVICE_ID, makeScratch, NOW, STORE_ID, seedStore, writeHomeFile } from './helpers'
@@ -30,7 +30,6 @@ function idleResult(): SyncRunResult {
   return {
     status: 'idle',
     report: null,
-    queue: { replayed: [], failed: [], pending: 0, offline: false },
     error: null,
     finishedAt: new Date().toISOString(),
   }
@@ -167,6 +166,40 @@ describe('daemon watchers', () => {
 })
 
 describe('daemon runtime', () => {
+  test('keeps the last sync record while a restarted daemon is starting', async () => {
+    const scratch = makeScratch()
+    const state = SyncState.open({ home: scratch.home })
+    let finishRun: (() => void) | undefined
+    try {
+      writeDaemonState(state, {
+        pid: 1,
+        startedAt: '2026-09-18T00:00:00.000Z',
+        paused: false,
+        lastSync: '2026-09-19T00:00:00.000Z',
+        lastResult: 'synced',
+      })
+      const runtime = DaemonRuntime.start({
+        home: scratch.home,
+        state,
+        runner: {
+          runOnce: () =>
+            new Promise((resolve) => {
+              finishRun = () => resolve(idleResult())
+            }),
+        },
+        intervalMs: 60_000,
+      })
+      expect(readDaemonState(state)?.lastSync).toBe('2026-09-19T00:00:00.000Z')
+      expect(readDaemonState(state)?.lastResult).toBe('synced')
+      finishRun?.()
+      await runtime.stop()
+    } finally {
+      finishRun?.()
+      state.close()
+      scratch.cleanup()
+    }
+  })
+
   test('skips syncs while paused and resumes after resume', async () => {
     const scratch = makeScratch()
     const state = SyncState.open({ home: scratch.home })

@@ -580,7 +580,7 @@ describe('engine sync', () => {
 
     const before = await h.revisionCount()
     const again = await h.run(b, deviceB)
-    expect(again.conflicts).toEqual([])
+    expect(again.conflicts.map((conflict) => conflict.path)).toEqual([recordPath(copyPath, b.home)])
     expect(again.changed).toEqual([])
     expect(await h.revisionCount()).toBe(before)
     expect(
@@ -647,6 +647,101 @@ describe('engine sync', () => {
     a.cleanup()
     b.cleanup()
     fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('remote deletion removes portable Codex keys but keeps device-local settings', async () => {
+    const config: Surface = {
+      ...file({ id: 'codex.config', path: '$HOME/.codex/config.toml', format: 'toml' }),
+      merge: 'tomlKeyMerge',
+      transforms: [{ kind: 'codexTomlSplit' }],
+    }
+    const h = harness([config])
+    const content = 'model = "gpt-5"\nnotify = ["local-command"]\n'
+    const a = engineHome([{ kind: 'file', path: '.codex/config.toml', content }])
+    const b = engineHome([{ kind: 'file', path: '.codex/config.toml', content }])
+    try {
+      await h.run(a, deviceA)
+      await h.run(b, deviceB)
+      fs.rmSync(a.path('.codex/config.toml'))
+      await h.run(a, deviceA, {
+        policy: {
+          version: 1,
+          harnesses: {},
+          ignore: [],
+          prune: true,
+          cadence: { watch: false, intervalSeconds: 300 },
+        },
+      })
+
+      const report = await h.run(b, deviceB)
+
+      expect(report.deferred).toEqual([])
+      expect(b.read('.codex/config.toml')).toContain('local-command')
+      expect(b.read('.codex/config.toml')).not.toContain('model =')
+      const head = await h.headManifest()
+      expect(head.entries.find((entry) => entry.path === '$HOME/.codex/config.toml')?.kind).toBe(
+        'tombstone',
+      )
+      const before = await h.revisionCount()
+      const repeated = await h.run(b, deviceB)
+      expect(repeated.changed).toEqual([])
+      expect(await h.revisionCount()).toBe(before)
+      expect(b.read('.codex/config.toml')).toContain('local-command')
+      const otherDevice = await h.run(a, deviceA)
+      expect(otherDevice.changed).toEqual([])
+      expect(fs.existsSync(a.path('.codex/config.toml'))).toBe(false)
+      b.write('.codex/config.toml', 'model = "gpt-new"\nnotify = ["local-command"]\n')
+      const recreated = await h.run(b, deviceB)
+      expect(recreated.changed).toContain('$HOME/.codex/config.toml')
+      await h.run(a, deviceA)
+      expect(a.read('.codex/config.toml')).toContain('model = "gpt-new"')
+      expect(a.read('.codex/config.toml')).not.toContain('local-command')
+    } finally {
+      a.cleanup()
+      b.cleanup()
+      fs.rmSync(h.remoteDir, { recursive: true, force: true })
+    }
+  })
+
+  test('remote deletion keeps local Markdown marker blocks', async () => {
+    const markerSurface = tree({
+      id: 'claude.skills',
+      path: '$HOME/.claude/skills',
+      transforms: [{ kind: 'markerBlocks' }],
+    })
+    const h = harness([markerSurface])
+    const shared = '# Notes\n<!-- laurencio:local -->\n<!-- /laurencio:local -->\n'
+    const local =
+      '# Notes\n<!-- laurencio:local -->\nkeep this device note\n<!-- /laurencio:local -->\n'
+    const a = engineHome([{ kind: 'file', path: '.claude/skills/notes.md', content: shared }])
+    const b = engineHome([{ kind: 'file', path: '.claude/skills/notes.md', content: local }])
+    try {
+      await h.run(a, deviceA)
+      await h.run(b, deviceB)
+      fs.rmSync(a.path('.claude/skills/notes.md'))
+      await h.run(a, deviceA)
+
+      const report = await h.run(b, deviceB)
+
+      expect(report.deferred).toEqual([])
+      expect(b.read('.claude/skills/notes.md')).toContain('keep this device note')
+      const head = await h.headManifest()
+      expect(
+        head.entries.find((entry) => entry.path === '$HOME/.claude/skills/notes.md')?.kind,
+      ).toBe('tombstone')
+      const before = await h.revisionCount()
+      const repeated = await h.run(b, deviceB)
+      expect(repeated.changed).toEqual([])
+      expect(await h.revisionCount()).toBe(before)
+      expect(b.read('.claude/skills/notes.md')).toContain('keep this device note')
+      const otherDevice = await h.run(a, deviceA)
+      expect(otherDevice.changed).toEqual([])
+      expect(fs.existsSync(a.path('.claude/skills/notes.md'))).toBe(false)
+    } finally {
+      a.cleanup()
+      b.cleanup()
+      fs.rmSync(h.remoteDir, { recursive: true, force: true })
+    }
   })
 
   test('a device that disables a surface carries its entries forward instead of deleting them elsewhere', async () => {
@@ -1069,7 +1164,7 @@ describe('engine sync', () => {
     fs.rmSync(h.remoteDir, { recursive: true, force: true })
   })
 
-  test('deferred paths drain their pending rows instead of piling up', async () => {
+  test('deferred paths are rediscovered from the working copy until they settle', async () => {
     const baseText = 'line one\nline two\nline three\n'
     const h = harness()
     const a = engineHome([
@@ -1098,19 +1193,11 @@ describe('engine sync', () => {
     touch()
     const first = await h.run(b, deviceB, bigWindow)
     expect(first.deferred).toEqual([storePath])
-    const firstState = SyncState.open({ path: stateDbPath(b.home) })
-    expect(firstState.listPendingOps().length).toBe(1)
-    firstState.close()
-
     a.write(path, 'line one\nline two\nA round two\n')
     await h.run(a, deviceA)
     touch()
     const second = await h.run(b, deviceB, bigWindow)
     expect(second.deferred).toEqual([storePath])
-    // The previous row was drained; only this run's fresh one is queued.
-    const secondState = SyncState.open({ path: stateDbPath(b.home) })
-    expect(secondState.listPendingOps().length).toBe(1)
-    secondState.close()
     // The deferred run must not revert A's head in the manifest.
     const deferredHead = await h.headManifest()
     expect(deferredHead.entries.find((entry) => entry.path === storePath)?.hash).toBe(
@@ -1119,9 +1206,6 @@ describe('engine sync', () => {
 
     const settled = await h.run(b, deviceB, { quiescence: { windowMs: 0 } })
     expect(settled.deferred).toEqual([])
-    const thirdState = SyncState.open({ path: stateDbPath(b.home) })
-    expect(thirdState.listPendingOps()).toEqual([])
-    thirdState.close()
     expect(b.read(path)).toBe('B local line\nline two\nA round two\n')
     a.cleanup()
     b.cleanup()
@@ -1299,3 +1383,7 @@ describe('engine sync', () => {
     fs.rmSync(h.remoteDir, { recursive: true, force: true })
   })
 })
+
+function recordPath(copyPath: string, home: string): string {
+  return `$HOME/${path.relative(home, copyPath).split(path.sep).join('/')}`
+}

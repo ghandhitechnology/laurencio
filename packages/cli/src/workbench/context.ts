@@ -1,10 +1,13 @@
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import type { WorkbenchSessionId } from '@laurencio/protocol'
 import type { CommandContext } from '../context'
+import { cliProgram } from '../daemon/installer'
 import { createWorkbenchClient } from './client'
 import { WorkbenchController } from './controller'
-import { openWorkbenchRegistry } from './registry'
+import { openWorkbenchRegistry, workbenchOwnerPath } from './registry'
 import { createWorkbenchRuntime, type WorkbenchLaunch } from './runtime'
 
 /** Best effort cleanup must not prevent an unrelated command or background sync. */
@@ -31,6 +34,58 @@ export function controllerFor(ctx: CommandContext): WorkbenchController {
         ...(ctx.deps.fetch === undefined ? {} : { fetch: ctx.deps.fetch }),
       }),
     root: () => fs.mkdtempSync(path.join(os.tmpdir(), 'lwb-')),
+    startOwner: (id) =>
+      ctx.deps.startWorkbenchOwner?.(id) ?? startWorkbenchOwner(ctx.home, id, ctx.env),
+  })
+}
+
+function startWorkbenchOwner(
+  home: string,
+  id: WorkbenchSessionId,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  const invocation = cliProgram(
+    {
+      execPath: process.execPath,
+      main: typeof Bun === 'undefined' ? (process.argv[1] ?? null) : Bun.main,
+    },
+    ['workbench-owner', id, '--home', home],
+  )
+  const readyPath = workbenchOwnerPath(home, id)
+  fs.rmSync(readyPath, { force: true })
+  return new Promise((resolve, reject) => {
+    const child = spawn(invocation.program, invocation.args, {
+      detached: true,
+      stdio: 'ignore',
+      env: environment,
+    })
+    let settled = false
+    const finish = (error?: Error): void => {
+      if (settled) return
+      settled = true
+      if (error === undefined) {
+        const waitForReady = async (): Promise<void> => {
+          const deadline = Date.now() + 5_000
+          while (Date.now() < deadline) {
+            if (fs.existsSync(readyPath)) {
+              child.unref()
+              resolve()
+              return
+            }
+            if (child.exitCode !== null) {
+              reject(new Error('Workbench cleanup owner exited before it was ready.'))
+              return
+            }
+            await new Promise<void>((next) => setTimeout(next, 25))
+          }
+          child.kill()
+          reject(new Error('Workbench cleanup owner did not become ready.'))
+        }
+        waitForReady().catch(reject)
+      } else reject(error)
+    }
+    child.once('error', finish)
+    child.once('spawn', () => finish())
   })
 }
 

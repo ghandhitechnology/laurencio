@@ -53,6 +53,7 @@ export interface WorkbenchControllerDeps {
   registry: WorkbenchRegistry
   client(server: string, bearer: string): WorkbenchClient
   root(id: WorkbenchSessionId): string
+  startOwner(id: WorkbenchSessionId): Promise<void>
 }
 
 /** Owns the boundary between the expiring server actor and its private terminal runtime. */
@@ -61,12 +62,14 @@ export class WorkbenchController {
   readonly #registry: WorkbenchRegistry
   readonly #client: WorkbenchControllerDeps['client']
   readonly #root: WorkbenchControllerDeps['root']
+  readonly #startOwner: WorkbenchControllerDeps['startOwner']
 
   constructor(deps: WorkbenchControllerDeps) {
     this.#runtime = deps.runtime
     this.#registry = deps.registry
     this.#client = deps.client
     this.#root = deps.root
+    this.#startOwner = deps.startOwner
   }
 
   async open(input: WorkbenchOpenInput): Promise<WorkbenchOpenResult> {
@@ -124,9 +127,22 @@ export class WorkbenchController {
       this.#registry.save(record, created.token)
       registered = true
       input.onPhase?.('ready')
-      await this.#runtime.attach(runtimeSession)
+      try {
+        await this.#runtime.attach(runtimeSession)
+      } catch (error) {
+        await this.#closeRecord(record, created.token)
+        throw error
+      }
       const state = await this.#runtime.inspect(runtimeSession)
-      if (state.state !== 'stopped') return { record, disposition: 'running' }
+      if (state.state !== 'stopped') {
+        try {
+          await this.#startOwner(record.remote.id)
+        } catch (error) {
+          await this.#closeRecord(record, created.token)
+          throw error
+        }
+        return { record, disposition: 'running' }
+      }
       await this.#closeRecord(record, created.token)
       return { record, disposition: 'closed' }
     } catch (error) {
@@ -157,6 +173,12 @@ export class WorkbenchController {
       results.push({ record, state: (await this.#runtime.inspect(record.runtime)).state })
     }
     return results
+  }
+
+  async status(id: WorkbenchSessionId): Promise<WorkbenchStatus | null> {
+    const record = this.#registry.get(id)
+    if (record === null) return null
+    return { record, state: (await this.#runtime.inspect(record.runtime)).state }
   }
 
   async withSession<T>(
@@ -232,13 +254,13 @@ export class WorkbenchController {
   }
 
   async #closeRecord(record: RegisteredWorkbench, token: string): Promise<void> {
+    await this.#closeLocal(record)
     const client = this.#client(record.server, token)
     try {
       await client.close(record.remote.id)
     } catch {
-      // The expiring actor will close server-side; local secret cleanup still proceeds.
+      // The expiring actor will close server-side; private local files are already gone.
     }
-    await this.#closeLocal(record)
   }
 
   async #closeLocal(record: RegisteredWorkbench): Promise<void> {

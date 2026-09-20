@@ -41,9 +41,9 @@ Release targets are `bun-darwin-arm64`, `bun-darwin-x64`, `bun-windows-x64`, and
 laurencio open ~/project
 ```
 
-Sign in and enter the workbench passphrase. On macOS 15 or later, a clean host downloads the pinned tmux build shipped in the CLI and starts a private server. Older macOS releases need a host tmux executable. On Windows x64, a clean host downloads pinned portable WezTerm and PowerShell 7 releases. Windows ARM64 downloads portable PowerShell 7, but currently needs a host WezTerm executable because upstream does not publish a Windows ARM64 archive. The project directory remains the real host directory, while `HOME`, agent config roots, credentials, and downloaded tools point into the private runtime.
+On a clean host, sign in and enter the workbench passphrase. An enrolled device reuses its device token and cached store key, so `laurencio open` proceeds directly to setup. On macOS 15 or later, a clean host downloads the pinned tmux build shipped in the CLI and starts a private server. Older macOS releases need a host tmux executable. On Windows x64, a clean host downloads pinned portable WezTerm and PowerShell 7 releases. Windows ARM64 downloads portable PowerShell 7, but currently needs a host WezTerm executable because upstream does not publish a Windows ARM64 archive. The project directory remains the real host directory, while `HOME`, agent config roots, and credentials point into the private runtime. Verified public tools use the local cache.
 
-Closing the runtime deletes its private configuration and session token. Project edits remain. To keep selected configuration edits before closing:
+Detaching from tmux returns to the host shell while the workbench keeps running. On Windows, the command returns after the WezTerm window opens. Before returning, Laurencio confirms that a background owner is ready to delete the private configuration and session token when the terminal exits. `laurencio close` stops and deletes it immediately. Project edits remain. To keep selected configuration edits before closing:
 
 ```sh
 laurencio sessions
@@ -51,7 +51,7 @@ laurencio save <session-id> --surface codex.config
 laurencio close <session-id>
 ```
 
-Public tool caching is offered at launch and defaults to deletion. When enabled, verified tools stay under `~/.laurencio/tools`; later temporary launches reuse a matching checksum receipt without downloading the artifact again.
+Laurencio caches verified public tools under `~/.laurencio/tools`. Later temporary launches reuse a matching checksum receipt instead of downloading the artifact again.
 
 The shipped catalog is the fallback when the encrypted profile has an empty tool lock. `laurencio tools update` returns the account to the catalog shipped with the current client. A lock file may select exact entries from that embedded catalog; Laurencio rejects new executable names, sources, versions, or checksums. Catalog and profile artifacts use versioned HTTPS release URLs and pinned SHA-256 hashes.
 
@@ -61,7 +61,7 @@ The shipped catalog is the fallback when the encrypted profile has an empty tool
 laurencio enroll
 ```
 
-`enroll` detects the harnesses you have installed, guides the sync selection, asks for the store passphrase, signs you in through the browser, and pushes the first revision. It backs up enabled native surfaces before replacing anything and provisions the matching pinned runtimes under `~/.laurencio/tools`. Memory stays off unless explicitly selected. The passphrase derives the encryption key; every linked computer needs the same one. `init` remains a deprecated compatibility alias.
+`enroll` detects the harnesses you have installed, guides the sync selection, asks for the store passphrase, signs you in through the browser, and pushes the first revision. It backs up enabled native surfaces before replacing anything and provisions the matching pinned runtimes under `~/.laurencio/tools`. Choosing remote values updates matching files and keeps local-only files, native machine settings, and instruction blocks marked local. Memory stays off unless explicitly selected. The passphrase derives the encryption key; every linked computer needs the same one. `init` remains a deprecated compatibility alias.
 
 For the public beta, `enroll` connects to the staging service automatically. It first offers:
 
@@ -88,16 +88,20 @@ For deliberate skill editing, pause background sync through the menu first, edit
 `laurencio config --json` lists the available actions for scripts. Piped output and `--yes` also list actions without opening prompts or executing them.
 
 ```
-laurencio status          # last sync, pending queue, conflicts
+laurencio status          # last sync, local changes, conflicts
 laurencio sync            # run once now
 laurencio diff CLAUDE.md  # local vs remote vs base
 laurencio log             # revision history
 laurencio restore <rev>   # bring back a file, a surface, or everything
+laurencio backups         # browse local originals, works offline
+laurencio backups restore <id>  # recover one original and pause background sync
 laurencio devices         # list, rename, revoke
 laurencio doctor          # versions, link topology, secret scan, keychain
 ```
 
 Exit codes: `0` clean, `1` error, `2` conflicts are present and need a decision.
+
+Every guarded configuration overwrite or deletion saves the existing file under `~/.laurencio/backups/files` before changing it. These copies keep the actual bytes behind symlinks and are checked before recovery. Distinct file versions and the first enrollment snapshot are retained. Backup creation failure stops the write. `laurencio backups restore <id>` also backs up the file it replaces, and pauses background sync so you can review the recovery before running `laurencio resume`.
 
 ## Deletions and `--prune`
 
@@ -116,7 +120,7 @@ laurencio pause | resume     # stop and restart background syncs
 laurencio daemon uninstall   # stops and removes the background service
 ```
 
-The daemon watches the enabled surfaces, syncs on an interval, backs off on failures, and defers any file a harness is actively writing. Logs go to `~/Library/Logs/laurencio` on macOS and `%USERPROFILE%\.laurencio\logs` on Windows. The Windows task starts at sign-in and runs as your account while you remain signed in, keeping access to your Credential Manager entries without an administrator prompt.
+The daemon watches the enabled surfaces, syncs on an interval, backs off on failures, and defers any file a harness is actively writing. After an interruption it rescans the current files and remote revision before retrying. Incomplete or conflicted passes leave credential and terminal configuration updates pending. Logs go to `~/Library/Logs/laurencio` on macOS and `%USERPROFILE%\.laurencio\logs` on Windows. The Windows task starts at sign-in and runs as your account while you remain signed in, keeping access to your Credential Manager entries without an administrator prompt.
 
 ## Per-device overrides
 

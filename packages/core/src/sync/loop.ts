@@ -1,8 +1,7 @@
 /**
- * One live sync pass: reconcile, drain the offline queue, pull, plan, apply,
- * push, and record. The engine does the merging and writing; this module only
- * supplies the remote, the device-local policy, and the offline bookkeeping
- * around it.
+ * One live sync pass: pull, plan, apply, push, and record. The local files are
+ * the durable source of truth while offline, so reconnecting simply runs the
+ * same pass again instead of replaying stale serialized operations.
  */
 
 import type { DeviceId, RevisionId, StoreId } from '@laurencio/protocol'
@@ -25,13 +24,6 @@ import { ManifestError, RemoteError } from '../remote/types'
 import { LockHeldError, type SyncState } from '../state'
 import type { AdapterContext, HarnessAdapter } from '../types'
 import { activeAdapters } from './policy'
-import {
-  clearSyncMarkers,
-  drainQueue,
-  enqueueSync,
-  listQueue,
-  type QueueDrainReport,
-} from './queue'
 
 export const LAST_SYNC_META_KEY = 'last_sync'
 
@@ -47,7 +39,6 @@ export interface SyncRunResult {
   status: SyncRunStatus
   /** Full report for this run, absent when the run never reached the engine. */
   report: SyncReport | null
-  queue: QueueDrainReport
   error: SyncRunError | null
   finishedAt: string
 }
@@ -63,7 +54,6 @@ export interface LastSyncRecord {
   conflicts: string[]
   blocked: string[]
   deferred: string[]
-  queue: { replayed: number; failed: number; pending: number }
   error: SyncRunError | null
 }
 
@@ -81,10 +71,6 @@ export interface SyncLoopOptions {
   now?: () => Date
   createRevisionId?: () => RevisionId
   onProgress?: (progress: SyncProgress) => void
-}
-
-function reasonFor(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 function describeError(error: unknown): SyncRunError {
@@ -132,11 +118,6 @@ function recordLastSync(state: SyncState, result: SyncRunResult): LastSyncRecord
     conflicts: report?.conflicts.map((conflict) => conflict.path) ?? [],
     blocked: report?.blocked ?? [],
     deferred: report?.deferred ?? [],
-    queue: {
-      replayed: result.queue.replayed.length,
-      failed: result.queue.failed.length,
-      pending: result.queue.pending,
-    },
     error: result.error,
   }
   state.setMeta(LAST_SYNC_META_KEY, JSON.stringify(record))
@@ -155,10 +136,6 @@ export function readLastSync(state: SyncState): LastSyncRecord | null {
     if (typeof record.downloaded !== 'number') return null
     if (!Array.isArray(record.conflicts) || !Array.isArray(record.blocked)) return null
     if (!Array.isArray(record.deferred)) return null
-    const queue: Record<string, unknown> =
-      typeof record.queue === 'object' && record.queue !== null
-        ? (record.queue as Record<string, unknown>)
-        : {}
     const errorRecord =
       typeof record.error === 'object' && record.error !== null
         ? (record.error as Record<string, unknown>)
@@ -180,11 +157,6 @@ export function readLastSync(state: SyncState): LastSyncRecord | null {
       conflicts: record.conflicts.filter((item): item is string => typeof item === 'string'),
       blocked: record.blocked.filter((item): item is string => typeof item === 'string'),
       deferred: record.deferred.filter((item): item is string => typeof item === 'string'),
-      queue: {
-        replayed: numberField(queue, 'replayed'),
-        failed: numberField(queue, 'failed'),
-        pending: numberField(queue, 'pending'),
-      },
       error:
         errorRecord !== null &&
         typeof errorRecord.name === 'string' &&
@@ -201,11 +173,6 @@ export function readLastSync(state: SyncState): LastSyncRecord | null {
   }
 }
 
-function numberField(record: Record<string, unknown>, key: string): number {
-  const value = record[key]
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0
-}
-
 export class SyncLoop {
   readonly options: SyncLoopOptions
 
@@ -220,9 +187,6 @@ export class SyncLoop {
   async runOnce(): Promise<SyncRunResult> {
     const now = this.options.now ?? (() => new Date())
     const state = this.options.state
-    state.reconcile()
-
-    const drained = await drainQueue({ state, remote: this.options.remote })
 
     let report: SyncReport
     try {
@@ -247,14 +211,9 @@ export class SyncLoop {
     } catch (error) {
       const finishedAt = now().toISOString()
       if (isOfflineError(error)) {
-        // One marker is enough; a daemon offline for hours must not grow the queue.
-        if (!listQueue(state).some((entry) => entry.kind === 'sync')) {
-          enqueueSync(state, reasonFor(error), { createdAt: finishedAt })
-        }
         const result: SyncRunResult = {
           status: 'offline',
           report: null,
-          queue: { ...drained, offline: true, pending: state.listPendingOps().length },
           error: describeError(error),
           finishedAt,
         }
@@ -265,7 +224,6 @@ export class SyncLoop {
       const result: SyncRunResult = {
         status: 'failed',
         report: null,
-        queue: { ...drained, pending: state.listPendingOps().length },
         error: describeError(error),
         finishedAt,
       }
@@ -273,15 +231,25 @@ export class SyncLoop {
       return result
     }
 
-    clearSyncMarkers(state)
     const result: SyncRunResult = {
       status: isIdle(report) ? 'idle' : 'synced',
       report,
-      queue: { ...drained, pending: state.listPendingOps().length },
       error: null,
       finishedAt: now().toISOString(),
     }
     recordLastSync(state, result)
     return result
   }
+}
+
+/** True when follow-up configuration work can safely build on this pass. */
+export function isCleanSyncResult(result: SyncRunResult): boolean {
+  if (result.status !== 'synced' && result.status !== 'idle') return false
+  const report = result.report
+  return (
+    report !== null &&
+    report.conflicts.length === 0 &&
+    report.blocked.length === 0 &&
+    report.deferred.length === 0
+  )
 }

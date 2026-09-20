@@ -229,11 +229,29 @@ function mergeTables(base: TomlTable, patch: TomlTable): TomlTable {
   return merged
 }
 
-function applySplit(machineText: string | null, projectionText: string): string {
-  const projection = parse(projectionText)
-  if (machineText === null || machineText.trim() === '') return stringify(projection)
-  const merged = mergeTables(parse(machineText), projection)
-  return stringify(merged)
+function applySplit(
+  machineText: string | null,
+  projectionText: string,
+  classify: (path: readonly string[]) => CodexKeyClass,
+): string {
+  // A downloaded projection owns only portable keys. Old clients and restored
+  // revisions may contain machine state, which must never replace this device's.
+  const projection = splitToml(parse(projectionText), classify).portable
+  const local = machineText === null || machineText.trim() === '' ? {} : parse(machineText)
+  const preserve = (table: TomlTable, keyPath: readonly string[]): TomlTable => {
+    const result: TomlTable = {}
+    for (const [key, value] of Object.entries(table)) {
+      const childPath = [...keyPath, key]
+      const kind = classify(childPath)
+      if (kind === 'portable') continue
+      if (kind === 'mixed' && isTable(value)) {
+        const children = preserve(value, childPath)
+        if (Object.keys(children).length > 0) result[key] = children
+      } else result[key] = value
+    }
+    return result
+  }
+  return stringify(mergeTables(projection, preserve(local, [])))
 }
 
 /**
@@ -242,12 +260,12 @@ function applySplit(machineText: string | null, projectionText: string): string 
  * sources, `shell_environment_policy.set`) survive the download.
  */
 export function codexTomlApply(machineText: string | null, projectionText: string): string {
-  return applySplit(machineText, projectionText)
+  return applySplit(machineText, projectionText, classifyCodexConfigKey)
 }
 
 /** Apply-side inverse of `codexAutomationSplit`: definition keys land, device keys stay. */
 export function codexAutomationApply(machineText: string | null, projectionText: string): string {
-  return applySplit(machineText, projectionText)
+  return applySplit(machineText, projectionText, classifyCodexAutomationKey)
 }
 
 const absolutePathPattern = /\/(?:[A-Za-z0-9._~@+-]+\/)*[A-Za-z0-9._~@+-]+/g

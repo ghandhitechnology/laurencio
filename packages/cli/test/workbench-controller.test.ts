@@ -10,6 +10,7 @@ import {
   type PendingWorkbench,
   type RegisteredWorkbench,
   type WorkbenchRegistry,
+  workbenchOwnerPath,
 } from '../src/workbench/registry'
 import { WorkbenchLaunchError, type WorkbenchRuntime } from '../src/workbench/runtime'
 
@@ -68,6 +69,9 @@ function harness(state: 'running' | 'stopped', root = '/tmp/lwb-test') {
     runtime,
     registry,
     root: () => root,
+    startOwner: async () => {
+      events.push('owner-started')
+    },
     client: (_server, initialBearer) => {
       bearer = initialBearer
       return {
@@ -105,6 +109,7 @@ describe('workbench controller', () => {
       runtime: h.runtime,
       registry,
       root: () => root,
+      startOwner: async () => {},
       client: () => {
         throw new Error('cleanup must not need network access')
       },
@@ -219,6 +224,7 @@ describe('workbench controller', () => {
       'saved',
       'ready',
       'attached',
+      'owner-started',
     ])
     expect(h.records.size).toBe(1)
   })
@@ -240,9 +246,9 @@ describe('workbench controller', () => {
       'launched',
       'saved',
       'attached',
-      'remote-closed:lrn_temporary-token',
       'runtime-closed',
       'forgotten',
+      'remote-closed:lrn_temporary-token',
     ])
     expect(h.records.size).toBe(0)
   })
@@ -269,6 +275,103 @@ describe('workbench controller', () => {
       expect(h.events).not.toContain('forgotten')
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('closes the workbench if its detached cleanup owner cannot start', async () => {
+    const h = harness('running')
+    const controller = new WorkbenchController({
+      runtime: h.runtime,
+      registry: {
+        save: (record, token) => h.records.set(record.remote.id, { record, token }),
+        get: (id) => h.records.get(id)?.record ?? null,
+        list: () => [...h.records.values()].map((entry) => entry.record),
+        token: (record) => h.records.get(record.remote.id)?.token ?? null,
+        remove: (id) => h.records.delete(id),
+      },
+      root: () => '/tmp/lwb-test',
+      startOwner: async () => {
+        throw new Error('owner process failed to start')
+      },
+      client: () => ({
+        setBearer: () => {},
+        account: async () => {
+          throw new Error('unused')
+        },
+        create: async () => ({ session: remoteSession, token: 'lrn_temporary-token' }),
+        list: async () => [],
+        close: async () => remoteSession,
+      }),
+    })
+
+    await expect(
+      controller.open({
+        server: 'https://laurencio.test',
+        accountBearer: 'account-token',
+        name: 'temporary',
+        platform: 'darwin',
+        cwd: '/project',
+        executables: { tmux: '/bin/tmux' },
+        materialize: async () => null,
+      }),
+    ).rejects.toThrow('owner process failed to start')
+    expect(h.events).toContain('runtime-closed')
+    expect(h.records.size).toBe(0)
+  })
+
+  test('cleans a launched workbench when terminal attachment fails', async () => {
+    const h = harness('running')
+    h.runtime.attach = async () => {
+      throw new Error('terminal does not support clear')
+    }
+
+    await expect(
+      h.controller.open({
+        server: 'https://laurencio.test',
+        accountBearer: 'account-token',
+        name: 'temporary',
+        platform: 'darwin',
+        cwd: '/project',
+        executables: { tmux: '/bin/tmux' },
+        materialize: async () => null,
+      }),
+    ).rejects.toThrow('terminal does not support clear')
+    expect(h.events).toContain('runtime-closed')
+    expect(h.events).toContain('forgotten')
+    expect(h.records.size).toBe(0)
+  })
+
+  test('cleanup owner retries transient inspection and cleanup failures', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'lwb-owner-retry-'))
+    const h = harness('stopped', path.join(home, 'private'))
+    let inspections = 0
+    let closes = 0
+    const controller = {
+      reap: async () => [],
+      status: async () => {
+        inspections += 1
+        if (inspections === 1) throw new Error('temporary process inspection failure')
+        return { record: { remote: remoteSession, runtime: h.runtimeSession }, state: 'stopped' }
+      },
+      close: async () => {
+        closes += 1
+        if (closes === 1) throw new Error('temporary filesystem cleanup failure')
+        return true
+      },
+    } as unknown as WorkbenchController
+    try {
+      const result = await runCli(['workbench-owner', remoteSession.id], {
+        home,
+        platform: 'darwin',
+        workbenchController: controller,
+        sleep: async () => {},
+      })
+      expect(result.exitCode).toBe(0)
+      expect(inspections).toBe(3)
+      expect(closes).toBe(2)
+      expect(fs.existsSync(workbenchOwnerPath(home, remoteSession.id))).toBe(false)
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
     }
   })
 })

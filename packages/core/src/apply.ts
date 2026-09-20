@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { RevisionId, SurfaceId } from '@laurencio/protocol'
+import { backupFile } from './file-backup'
 import {
   ensureLayoutLink,
   ensureParentDirectories,
@@ -111,6 +112,8 @@ export interface ApplyDelete {
   declaredPath: string
   /** Base revision whose manifest gets the tombstone. */
   baseRevision?: RevisionId | null
+  /** Pre-read fingerprint; a concurrent edit cancels deletion. */
+  expected?: FileFingerprint | null
 }
 
 export interface ApplyResult {
@@ -275,7 +278,7 @@ export class Applier {
   fingerprint(localPath: string): FileFingerprint | null {
     let stat: fs.Stats
     try {
-      stat = fs.lstatSync(localPath)
+      stat = fs.statSync(localPath)
     } catch {
       return null
     }
@@ -293,8 +296,13 @@ export class Applier {
   write(op: ApplyWrite): ApplyResult {
     const target = this.resolve(op.declaredPath)
     this.#assertWithinRoots(target.declaredPath)
+    for (const writePath of target.writePaths) {
+      if (!this.isAllowed(writePath)) throw new NotInPlanError(writePath)
+    }
     if (target.linkMissing) ensureLayoutLink(target)
-    const expected = op.expected
+    const expected =
+      op.expected ??
+      (op.expected === null ? null : this.fingerprint(target.writePaths[0] ?? target.declaredPath))
     const declaredResolved = path.resolve(target.declaredPath)
     const hash = hashContent(op.content)
     const mode = (op.mode ?? DEFAULT_FILE_MODE) & PERMISSION_MASK
@@ -348,7 +356,15 @@ export class Applier {
           throw new StaleWriteError(item.writePath, expected, this.fingerprint(item.writePath))
         }
       }
-      this.#writeOne(`${baseOpId}_${item.index}`, item.writePath, op.content, mode, hash, verify)
+      this.#writeOne(
+        `${baseOpId}_${item.index}`,
+        item.writePath,
+        op.content,
+        mode,
+        hash,
+        verify,
+        target.declaredPath,
+      )
     }
     return { physicalPaths: [...target.writePaths], hash }
   }
@@ -370,6 +386,7 @@ export class Applier {
     mode: number,
     hash: string,
     verify: () => void,
+    declaredPath: string,
   ): void {
     ensureParentDirectories(targetPath)
     const tempPath = path.join(path.dirname(targetPath), `.laurencio-${opId}.tmp`)
@@ -391,6 +408,12 @@ export class Applier {
     fs.chmodSync(tempPath, mode)
     this.#hooks.beforeRename?.({ opId, op: 'write', targetPath, tempPath })
     try {
+      verify()
+      backupFile(
+        path.join(path.dirname(this.state.path), 'backups', 'files'),
+        targetPath,
+        declaredPath,
+      )
       verify()
     } catch (error) {
       // The target or its symlink chain moved under us: roll the temp back and
@@ -448,6 +471,20 @@ export class Applier {
         targetPath: writePath,
         startedAt: this.#now().toISOString(),
       })
+      const before = op.expected === undefined ? this.fingerprint(writePath) : op.expected
+      if (!this.#unchanged(writePath, before, true)) {
+        this.state.finishOp(opId)
+        throw new StaleWriteError(writePath, before, this.fingerprint(writePath))
+      }
+      backupFile(
+        path.join(path.dirname(this.state.path), 'backups', 'files'),
+        writePath,
+        op.declaredPath,
+      )
+      if (!this.#unchanged(writePath, before, true)) {
+        this.state.finishOp(opId)
+        throw new StaleWriteError(writePath, before, this.fingerprint(writePath))
+      }
       fs.unlinkSync(writePath)
       this.state.markApplied(opId, '')
       this.state.finishOp(opId)

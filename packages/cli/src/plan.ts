@@ -10,9 +10,12 @@ import {
   ConflictLedger,
   computeSyncPlan,
   type FileResolution,
+  filterLocalTombstoneOverlays,
   hashContent,
+  LOCAL_TOMBSTONE_OVERLAYS_META_KEY,
   type Manifest,
   type ManifestEntry,
+  parseLocalTombstoneOverlays,
   type Surface,
   type SyncPlan,
   type SyncState,
@@ -94,7 +97,11 @@ export async function buildPlan(
   for (const entry of inventory.scan.manifest.entries) present.add(entry.path)
   const ignoreProtects = (storePath: string): boolean =>
     ignores.some((matches) => matches(storePath)) && (!prune || present.has(storePath))
-  const local = options.localOverride ?? localManifestWithProjections(inventory)
+  const local = filterLocalTombstoneOverlays(
+    options.localOverride ?? localManifestWithProjections(inventory),
+    remote,
+    parseLocalTombstoneOverlays(state.getMeta(LOCAL_TOMBSTONE_OVERLAYS_META_KEY)),
+  )
   const plan = computeSyncPlan({
     base,
     local,

@@ -1,4 +1,5 @@
 import { agentCommand } from './agent'
+import { backupsCommand } from './backups'
 import { closeCommand } from './close'
 import type { CommandSpec } from './command'
 import { configCommand } from './config'
@@ -26,6 +27,7 @@ import { syncCommand } from './sync'
 import { terminalCommand } from './terminal'
 import { toolsCommand } from './tools'
 import { unlockCommand } from './unlock'
+import { workbenchOwnerCommand } from './workbench-owner'
 
 export const COMMANDS: Record<string, CommandSpec> = {
   config: configCommand,
@@ -48,6 +50,7 @@ export const COMMANDS: Record<string, CommandSpec> = {
   diff: diffCommand,
   log: logCommand,
   restore: restoreCommand,
+  backups: backupsCommand,
   devices: devicesCommand,
   resolve: resolveCommand,
   export: exportCommand,
@@ -55,6 +58,7 @@ export const COMMANDS: Record<string, CommandSpec> = {
   surfaces: surfacesCommand,
   login: loginCommand,
   unlock: unlockCommand,
+  'workbench-owner': workbenchOwnerCommand,
 }
 
 export const COMMAND_ORDER: readonly string[] = [
@@ -78,6 +82,7 @@ export const COMMAND_ORDER: readonly string[] = [
   'diff',
   'log',
   'restore',
+  'backups',
   'devices',
   'resolve',
   'export',

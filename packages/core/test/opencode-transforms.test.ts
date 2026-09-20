@@ -23,62 +23,17 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 describe('opencodeSchemaNormalize', () => {
-  test('upload mirrors key families and mcp shapes so both schemas read the file', () => {
-    const input = `{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": ["./plugins/local"],
-  "agents": { "reviewer": { "mode": "subagent" } },
-  "commands": { "deploy": { "template": "go" } },
-  "permissions": [{ "action": "*", "resource": "*", "effect": "allow" }],
-  "mcp": {
-    "servers": { "railway": { "type": "local", "command": ["railway", "mcp"] } }
-  },
-  "unknown_future_key": { "keep": true }
-}
-`
-    const result = opencodeSchemaNormalize(input, 'upload')
-    const value = asRecord(parseStrict(result.text))
-    expect(value.plugin).toEqual(['./plugins/local'])
-    expect(value.plugins).toEqual(['./plugins/local'])
-    expect(value.agent).toEqual({ reviewer: { mode: 'subagent' } })
-    expect(value.command).toEqual({ deploy: { template: 'go' } })
-    expect(value.permission).toEqual([{ action: '*', resource: '*', effect: 'allow' }])
-    expect(value.mcp).toEqual({
-      servers: { railway: { type: 'local', command: ['railway', 'mcp'] } },
-      railway: { type: 'local', command: ['railway', 'mcp'] },
-    })
-    expect(value.unknown_future_key).toEqual({ keep: true })
-    expect(result.notes.filter((note) => note.kind === 'mirrored').map((note) => note.key)).toEqual(
-      ['plugin', 'agent', 'command', 'permission', 'mcp.railway'],
-    )
-  })
-
-  test('upload mirrors flat mcp servers under mcp.servers for v1', () => {
-    const result = opencodeSchemaNormalize(
-      '{"plugin": ["a"], "mcp": {"local": {"type": "local"}}}\n',
-      'upload',
-    )
-    const value = asRecord(parseStrict(result.text))
-    expect(value.mcp).toEqual({ local: { type: 'local' }, servers: { local: { type: 'local' } } })
-    expect(result.notes.some((note) => note.key === 'mcp.servers')).toBe(true)
-  })
-
-  test('upload does not overwrite either spelling when both exist with different values', () => {
-    const input = '{"plugin": ["a"], "plugins": ["b"]}\n'
-    const result = opencodeSchemaNormalize(input, 'upload')
-    expect(parseStrict(result.text)).toEqual({ plugin: ['a'], plugins: ['b'] })
-    expect(result.notes).toContainEqual({
-      kind: 'conflict',
-      key: 'plugins/plugin',
-      detail: 'both spellings present with different values; kept both',
-    })
-  })
-
-  test('upload keeps comments and formatting while adding keys', () => {
-    const input = '{\n  // keep this comment\n  "plugin": ["a"],\n}\n'
-    const result = opencodeSchemaNormalize(input, 'upload')
-    expect(result.text).toContain('// keep this comment')
-    expect(result.text).toContain('"plugins"')
+  test('upload preserves native key names, MCP shape, comments, and unknown settings', () => {
+    for (const input of [
+      '{"plugins":["local"],"agents":{"review":{}},"mcp":{"servers":{"demo":{}}}}\n',
+      '{"plugin":["local"],"agent":{"review":{}},"mcp":{"demo":{}},"future":true}\n',
+      '{\n  // native config\n  "plugin": ["a"],\n}\n',
+      '{"plugin":["a"],"plugins":["b"]}\n',
+    ]) {
+      const result = opencodeSchemaNormalize(input, 'upload')
+      expect(result.text).toBe(input)
+      expect(result.notes).toEqual([])
+    }
   })
 
   test('apply leaves the file untouched and logs keys only one schema reads', () => {

@@ -431,9 +431,6 @@ export function createWorkbenchRuntime(
   const removeOwnedRoot = files.removeOwnedRoot ?? ((root: string) => files.remove(root))
   const exec = options.dependencies?.exec ?? systemExec
   const start = options.dependencies?.start ?? systemStart
-  const sleep =
-    options.dependencies?.sleep ??
-    ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
   const processIdentity =
     options.dependencies?.processIdentity ??
     (async (pid: number, powershell?: string) => {
@@ -727,15 +724,9 @@ export function createWorkbenchRuntime(
           throw new Error('Could not attach to the workbench session.')
         }
       }
-      // Keep the launcher as lifetime owner after detach and while the Windows GUI runs.
-      // A missing or reused process identity is stopped; inspection errors retain files.
-      while (true) {
-        const status = await runtime.inspect(session)
-        if (status.state === 'stopped') return
-        if (status.state === 'unknown')
-          throw new Error('Workbench process state is unknown; its files were retained.')
-        await sleep(500)
-      }
+      // Detaching from tmux and launching the Windows GUI both return control
+      // to the host shell. The controller hands lifetime ownership to a
+      // detached cleanup process before the launcher exits.
     },
     async inspect(session) {
       const owner = ownership(session)

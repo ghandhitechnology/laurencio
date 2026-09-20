@@ -46,7 +46,7 @@ function entry(overrides: Partial<ManifestEntry> = {}): ManifestEntry {
 }
 
 describe('SyncState', () => {
-  test('round-trips revisions, manifests, layouts, markers, and pending ops', () => {
+  test('round-trips revisions, manifests, layouts, and markers', () => {
     const home = tempHome()
     const state = openState(home)
     state.saveManifest(
@@ -85,11 +85,6 @@ describe('SyncState', () => {
     expect(state.getMarkers('$HOME/.claude/CLAUDE.md')).toEqual(blocks)
     state.saveMarkers('$HOME/.claude/CLAUDE.md', [])
     expect(state.getMarkers('$HOME/.claude/CLAUDE.md')).toEqual([])
-
-    const opId = state.enqueueOp({ kind: 'retry', payload: '{"a":1}', createdAt: 'now' })
-    expect(state.listPendingOps().map((op) => op.opId)).toEqual([opId])
-    state.removePendingOp(opId)
-    expect(state.listPendingOps()).toEqual([])
 
     state.setMeta('conflict_ledger', '{"version":1,"records":[]}')
     expect(state.getMeta('conflict_ledger')).toBe('{"version":1,"records":[]}')
@@ -210,25 +205,6 @@ describe('SyncState', () => {
     const holder = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { pid: number }
     expect(holder.pid).toBe(43)
     releaseLock(home, 43)
-    fs.rmSync(home, { recursive: true, force: true })
-  })
-
-  test('draining pending ops consumes the previous run retries exactly once', () => {
-    const home = tempHome()
-    const state = openState(home)
-    const first = state.enqueueOp({ kind: 'retry', payload: '{"storePath":"a"}', createdAt: 'now' })
-    const second = state.enqueueOp({
-      kind: 'retry',
-      payload: '{"storePath":"b"}',
-      createdAt: 'now',
-    })
-    state.enqueueOp({ kind: 'other', payload: '{}', createdAt: 'now' })
-
-    const drained = state.drainPendingOps('retry')
-    expect(drained.map((op) => op.opId).sort()).toEqual([first, second].sort())
-    expect(state.listPendingOps().map((op) => op.kind)).toEqual(['other'])
-    expect(state.drainPendingOps('retry')).toEqual([])
-    state.close()
     fs.rmSync(home, { recursive: true, force: true })
   })
 

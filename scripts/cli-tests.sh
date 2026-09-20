@@ -214,8 +214,8 @@ set +e
 OFFLINE_OUT="$(env -u LAURENCIO_REMOTE_DIR "${CLI[@]}" init --server http://127.0.0.1:1 --yes --home "$OFFLINE_HOME" 2>&1)"
 OFFLINE_CODE=$?
 set -e
-if [ "$OFFLINE_CODE" != "0" ]; then
-  fail "offline init exit $OFFLINE_CODE, expected 0"
+if [ "$OFFLINE_CODE" != "1" ]; then
+  fail "offline init exit $OFFLINE_CODE, expected 1"
 else
   pass
 fi

@@ -120,20 +120,24 @@ describe('interactive resolve', () => {
   })
 
   test.skipIf(process.platform === 'win32')(
-    '--editor opens the source with the configured editor',
+    '--editor applies the edited draft after a successful resolution',
     async () => {
       const scratch = makeScratch()
       try {
         await seedStore({ home: scratch.home, remoteDir: scratch.remoteDir })
         const conflict = plantConflict(scratch.home)
 
+        const editor = path.join(scratch.home, 'resolve-editor.sh')
+        fs.writeFileSync(editor, '#!/bin/sh\nprintf "resolved\\n" > "$1"\n', { mode: 0o700 })
+
         const result = await runForTest(['resolve', '--editor'], {
           home: scratch.home,
           remoteDir: scratch.remoteDir,
-          env: { EDITOR: '/usr/bin/true' },
+          env: { EDITOR: editor },
         })
 
         expect(result.exitCode).toBe(0)
+        expect(fs.readFileSync(conflict.source, 'utf8')).toBe('resolved\n')
         expect(fs.existsSync(conflict.copy)).toBe(false)
         expect(openConflicts(scratch.home)).toEqual([])
         expect(result.output).toContain('(editor)')

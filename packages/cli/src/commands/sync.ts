@@ -1,4 +1,9 @@
-import { type DevicePolicy, type FileResolution, SyncLoop } from '@laurencio/core'
+import {
+  type DevicePolicy,
+  type FileResolution,
+  isCleanSyncResult,
+  SyncLoop,
+} from '@laurencio/core'
 import { loadCliConfig } from '../config'
 import { adapterContext, type CommandContext } from '../context'
 import { syncSessionCredentials } from '../credential-sync'
@@ -21,7 +26,6 @@ export interface SyncData {
   conflicts: string[]
   blocked: string[]
   deferred: string[]
-  queue: { replayed: number; failed: number; pending: number; offline: boolean }
   plan: {
     counts: Record<FileResolution, number>
     files: { storePath: string; resolution: string; surfaceId: string }[]
@@ -74,7 +78,6 @@ function renderSync(ctx: CommandContext, data: SyncData): string {
   if (data.deferred.length > 0) {
     lines.push(`Deferred while files are busy: ${data.deferred.length}`)
   }
-  if (data.queue.pending > 0) lines.push(`Queued operations: ${data.queue.pending}`)
   if (data.error !== null) lines.push(`Error: ${data.error.message}`)
   const paused = readPause(ctx.home)
   if (paused !== null) lines.push('Note: the daemon is paused; this manual run still applied.')
@@ -111,7 +114,6 @@ export const syncCommand: CommandSpec = {
           conflicts: [],
           blocked: [],
           deferred: [],
-          queue: { replayed: 0, failed: 0, pending: state.listPendingOps().length, offline: false },
           plan: {
             counts,
             files: bundle.plan.files.map((file) => ({
@@ -144,7 +146,7 @@ export const syncCommand: CommandSpec = {
         now: ctx.now,
       })
       const result = await loop.runOnce()
-      if (result.status === 'synced' || result.status === 'idle') {
+      if (isCleanSyncResult(result)) {
         await syncSessionCredentials(ctx, session, state, ctx.flags.harness)
       }
       progress.finish(result)
@@ -158,21 +160,10 @@ export const syncCommand: CommandSpec = {
         conflicts: result.report?.conflicts.map((conflict) => conflict.path) ?? [],
         blocked: result.report?.blocked ?? [],
         deferred: result.report?.deferred ?? [],
-        queue: {
-          replayed: result.queue.replayed.length,
-          failed: result.queue.failed.length,
-          pending: result.queue.pending,
-          offline: result.queue.offline,
-        },
         plan: null,
         error: result.error,
       }
-      const exitCode =
-        data.conflicts.length > 0
-          ? 2
-          : result.status === 'synced' || result.status === 'idle'
-            ? 0
-            : 1
+      const exitCode = data.conflicts.length > 0 ? 2 : isCleanSyncResult(result) ? 0 : 1
       return ok(data, () => renderSync(ctx, data), exitCode)
     } finally {
       progress?.finish()

@@ -4,7 +4,7 @@
  */
 
 import type { Platform } from '@laurencio/core'
-import { LockHeldError, SyncLoop } from '@laurencio/core'
+import { isCleanSyncResult, LockHeldError, SyncLoop } from '@laurencio/core'
 import { adapterContext, type CommandContext } from '../context'
 import { syncSessionCredentials } from '../credential-sync'
 import {
@@ -158,7 +158,7 @@ async function runDaemon(ctx: CommandContext): Promise<DaemonData> {
         async runOnce() {
           await reapWorkbenchStartup(ctx)
           const result = await loop.runOnce()
-          if (result.status === 'synced' || result.status === 'idle') {
+          if (isCleanSyncResult(result)) {
             await syncSessionCredentials(ctx, session, state)
           }
           return result

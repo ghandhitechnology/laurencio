@@ -110,8 +110,8 @@ describe('claude surface map', () => {
       ['.claude/keybindings.json', 'sync'],
       ['.claude/hooks/session-start.sh', 'sync'],
       ['.claude/statusline.sh', 'sync'],
-      ['.claude/plugins/installed_plugins.json', 'sync'],
-      ['.claude/plugins/known_marketplaces.json', 'sync'],
+      ['.claude/plugins/installed_plugins.json', 'never'],
+      ['.claude/plugins/known_marketplaces.json', 'never'],
       ['.claude/.credentials.json', 'never'],
       ['.claude/settings.local.json', 'never'],
       ['.claude/history.jsonl', 'never'],
@@ -224,10 +224,8 @@ describe('claude surface map', () => {
     })
     expect(get('claude.memory').policy).toBe('opt-in')
     expect(get('claude.memory').transforms).toEqual([{ kind: 'claudeSlugRekey' }])
-    expect(get('claude.plugins-installed').transforms).toEqual([{ kind: 'claudePluginRecords' }])
-    expect(get('claude.plugins-known-marketplaces').transforms).toEqual([
-      { kind: 'claudePluginRecords' },
-    ])
+    expect(get('claude.plugins-installed').policy).toBe('never')
+    expect(get('claude.plugins-known-marketplaces').policy).toBe('never')
     expect(get('claude.plugins-marketplaces').policy).toBe('never')
     expect(get('claude.mcp').transforms).toEqual([{ kind: 'claudeMcpExtract' }])
     expect(get('claude.mcp').path).toBe('$HOME/.claude.json')

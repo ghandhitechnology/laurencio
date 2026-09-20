@@ -199,3 +199,35 @@ describe('codex unsupported report', () => {
     expect(CODEX_UNSUPPORTED[0]?.reason).toContain('opaque SQLite store')
   })
 })
+
+describe('Codex apply safety', () => {
+  test('replaces portable keys while preserving local machine and unknown keys', async () => {
+    const { codexTomlApply } = await import('../src/adapters/codex/transforms')
+    const local =
+      'model = "old"\nnotify = ["local"]\nfuture_setting = true\n[plugins.example]\nenabled = true\nlast_updated = 42\n'
+    const remote =
+      'notify = ["remote"]\nfuture_setting = false\n[plugins.example]\nenabled = false\nlast_updated = 0\n'
+    const result = parse(codexTomlApply(local, remote))
+    expect(result.model).toBeUndefined()
+    expect(result.notify).toEqual(['local'])
+    expect(result.future_setting).toBe(true)
+    expect(result.plugins).toEqual({ example: { enabled: false, last_updated: 42 } })
+  })
+})
+
+test('inverse projection expands portable paths before restoring untouched machine values', async () => {
+  const { applyTransforms } = await import('../src/transforms')
+  const { codexSurfaces } = await import('../src/adapters/codex/surfaces')
+  const surface = codexSurfaces(tokenEnv).find((item) => item.id === 'codex.config')
+  if (surface === undefined) throw new Error('missing config surface')
+  const result = applyTransforms({
+    surface,
+    storePath: surface.path,
+    direction: 'fromStore',
+    tokenEnv,
+    content: 'model = "new"\n',
+    localContent: 'notify = ["echo", "$HOME"]\nfuture_setting = "$HOME"\n',
+  })
+  expect(parse(result.content).notify).toEqual(['echo', '$HOME'])
+  expect(parse(result.content).future_setting).toBe('$HOME')
+})

@@ -1,8 +1,21 @@
 import fs from 'node:fs'
-import { Applier, crypto, type ManifestEntry } from '@laurencio/core'
+import {
+  Applier,
+  type ApplyWrite,
+  acquireLock,
+  applyTransforms,
+  crypto,
+  hashContent,
+  isWithinRoot,
+  type ManifestEntry,
+  parseLocalBlocks,
+  releaseLock,
+  usesMarkerBlocks,
+} from '@laurencio/core'
 import { PROTOCOL_VERSION } from '@laurencio/protocol'
 import { type BackupRoot, createBackup } from '../backup'
 import { loadCliConfig } from '../config'
+import { adapterContext } from '../context'
 import { cliError } from '../errors'
 import { fetchManifestAt, resolveRevisionId } from '../history'
 import { localPathForStorePath, selectorMatches } from '../layout'
@@ -87,7 +100,17 @@ export const restoreCommand: CommandSpec = {
         ctx,
         entry.path,
       )
-      if (localPath === null) {
+      const surface = inventory.surfaces.get(entry.surfaceId)
+      const root =
+        surface === undefined
+          ? null
+          : localPathForStorePath(inventory.surfaces, inventory.byStorePath, ctx, surface.path)
+      if (
+        localPath === null ||
+        root === null ||
+        surface?.policy === 'never' ||
+        !isWithinRoot(localPath, root)
+      ) {
         skipped.push(entry.path)
         continue
       }
@@ -95,7 +118,9 @@ export const restoreCommand: CommandSpec = {
     }
 
     const state = openState(ctx)
+    let lock: ReturnType<typeof acquireLock> | undefined
     try {
+      lock = acquireLock(ctx.home)
       const planPaths = new Set<string>()
       for (const entry of inventory.scan.entries) planPaths.add(entry.localPath)
       for (const adapter of adaptersFor(ctx, config.policy)) {
@@ -123,28 +148,59 @@ export const restoreCommand: CommandSpec = {
         now: ctx.now,
       })
 
-      const roots: BackupRoot[] = targets
-        .filter((target) => fs.existsSync(target.localPath))
-        .map((target) => ({ label: target.entry.path, path: target.localPath }))
-      const backup = roots.length === 0 ? null : createBackup(ctx.home, roots, ctx.now()).dir
-
-      const restored: { storePath: string; localPath: string }[] = []
+      // Prepare every projection before the first write. A corrupt revision or
+      // malformed native config must not leave a partially restored profile.
+      const writes: ApplyWrite[] = []
       for (const { entry, localPath } of targets) {
         if (entry.blob === undefined) continue
+        const surface = inventory.surfaces.get(entry.surfaceId)
+        if (surface === undefined) {
+          skipped.push(entry.path)
+          continue
+        }
+        const expected = applier.fingerprint(localPath)
+        const localContent = expected === null ? null : fs.readFileSync(localPath, 'utf8')
         const bytes = await session.remote.getBlob(entry.blob.id)
-        const content = crypto.openText(session.credentials.key, 'content', bytes, {
+        const projection = crypto.openText(session.credentials.key, 'content', bytes, {
           storeId: session.credentials.storeId,
           blobType: 'file',
           protocolVersion: PROTOCOL_VERSION,
         })
-        applier.write({
+        if (hashContent(projection) !== entry.hash) {
+          throw cliError(
+            'restore-integrity',
+            `Stored content does not match the revision: ${entry.path}`,
+          )
+        }
+        const content = applyTransforms({
+          surface,
+          storePath: entry.path,
+          direction: 'fromStore',
+          tokenEnv: adapterContext(ctx),
+          content: projection,
+          localContent,
+          localBlocks: usesMarkerBlocks(surface, entry.path)
+            ? localContent === null
+              ? state.getMarkers(localPath)
+              : parseLocalBlocks(localPath, localContent)
+            : [],
+        }).content
+        writes.push({
           storePath: entry.path,
           declaredPath: localPath,
           content,
           mode: entry.mode,
-          expected: applier.fingerprint(localPath),
+          expected,
         })
-        restored.push({ storePath: entry.path, localPath })
+      }
+      const roots: BackupRoot[] = writes
+        .filter((write) => fs.existsSync(write.declaredPath))
+        .map((write) => ({ label: write.storePath, path: write.declaredPath }))
+      const backup = roots.length === 0 ? null : createBackup(ctx.home, roots, ctx.now()).dir
+      const restored: { storePath: string; localPath: string }[] = []
+      for (const write of writes) {
+        applier.write(write)
+        restored.push({ storePath: write.storePath, localPath: write.declaredPath })
       }
 
       const data: RestoreData = { revision: revisionId, selector, restored, skipped, backup }
@@ -164,6 +220,7 @@ export const restoreCommand: CommandSpec = {
       return ok(data, human)
     } finally {
       state.close()
+      if (lock !== undefined) releaseLock(ctx.home, lock.pid, lock)
     }
   },
 }

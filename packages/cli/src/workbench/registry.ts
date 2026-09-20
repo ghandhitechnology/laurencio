@@ -47,6 +47,10 @@ export function workbenchTokenPath(root: string): string {
   return path.join(root, TOKEN_FILE)
 }
 
+export function workbenchOwnerPath(home: string, id: WorkbenchSessionId): string {
+  return path.join(workbenchRegistryDirectory(home), `${id}.owner`)
+}
+
 export function openWorkbenchRegistry(home: string): WorkbenchRegistry {
   const directory = workbenchRegistryDirectory(home)
   const recordPath = (id: WorkbenchSessionId): string => path.join(directory, `${id}.json`)

@@ -27,6 +27,23 @@ export interface DaemonProgram {
   args: string[]
 }
 
+export function cliProgram(
+  invocation: { execPath: string; main: string | null },
+  args: readonly string[],
+): DaemonProgram {
+  const runtime = path.win32.basename(path.basename(invocation.execPath))
+  const interpreted =
+    runtime === 'bun' ||
+    runtime === 'bun.exe' ||
+    runtime === 'node' ||
+    runtime === 'node.exe' ||
+    runtime.startsWith('bun-')
+  if (interpreted && invocation.main !== null && invocation.main !== '') {
+    return { program: invocation.execPath, args: [invocation.main, ...args] }
+  }
+  return { program: invocation.execPath, args: [...args] }
+}
+
 /**
  * The command line a service should run. When the CLI runs under bun or node,
  * the service must launch the runtime plus the entry script; a compiled binary
@@ -36,18 +53,7 @@ export function daemonProgram(invocation: {
   execPath: string
   main: string | null
 }): DaemonProgram {
-  const runtime = path.win32.basename(path.basename(invocation.execPath))
-  const interpreted =
-    runtime === 'bun' ||
-    runtime === 'bun.exe' ||
-    runtime === 'node' ||
-    runtime === 'node.exe' ||
-    runtime.startsWith('bun-')
-  const args = ['daemon', 'run']
-  if (interpreted && invocation.main !== null && invocation.main !== '') {
-    return { program: invocation.execPath, args: [invocation.main, ...args] }
-  }
-  return { program: invocation.execPath, args }
+  return cliProgram(invocation, ['daemon', 'run'])
 }
 
 export function launchAgentsDir(home: string): string {

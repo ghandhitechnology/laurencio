@@ -1,6 +1,11 @@
-import fs from 'node:fs'
 import os from 'node:os'
-import { crypto, type DevicePolicy, loginWithDeviceCode, SyncLoop } from '@laurencio/core'
+import {
+  crypto,
+  type DevicePolicy,
+  isCleanSyncResult,
+  loginWithDeviceCode,
+  SyncLoop,
+} from '@laurencio/core'
 import { type BackupRoot, createBackup } from '../backup'
 import { DEFAULT_SERVER_URL, loadCliConfig, saveCliConfig } from '../config'
 import { adapterContext, type CommandContext, remoteDirFlag } from '../context'
@@ -30,6 +35,7 @@ import { displayPath, plural } from '../ui'
 import type { CommandSpec } from './command'
 import { installBackgroundSync } from './daemon'
 import { serverReachable } from './login'
+import { restoreCommand } from './restore'
 import { collectSurfaces, type SurfaceRow, type SurfacesData } from './surfaces'
 
 export interface InitData {
@@ -52,6 +58,8 @@ export interface InitData {
     changed: number
     conflicts: string[]
     blocked: string[]
+    deferred: string[]
+    error: string | null
   } | null
   background?: {
     installed: boolean
@@ -234,6 +242,11 @@ function humanInit(ctx: CommandContext, data: InitData): string {
   if (data.sync.blocked.length > 0) {
     lines.push(`Blocked by the secret scan: ${data.sync.blocked.length}`)
   }
+  if (data.sync.deferred.length > 0)
+    lines.push(
+      `Waiting for active files: ${data.sync.deferred.length}. Run \`laurencio sync\` when editing finishes.`,
+    )
+  if (data.sync.error !== null) lines.push(data.sync.error)
   lines.push('', 'Next: `laurencio status`')
   return lines.join('\n')
 }
@@ -283,7 +296,7 @@ export const initCommand: CommandSpec = {
         enrollment: [],
         sync: null,
       }
-      return ok(data, () => humanInit(ctx, data), 0)
+      return ok(data, () => humanInit(ctx, data), 1)
     } else {
       const deviceName = ctx.flags.deviceName ?? ctx.flags.name ?? os.hostname()
       const result = await loginWithDeviceCode({
@@ -338,8 +351,11 @@ export const initCommand: CommandSpec = {
       changed: 0,
       conflicts: [],
       blocked: [],
+      deferred: [],
+      error: null,
     }
     let managedTools: NonNullable<InitData['managedTools']> | undefined
+    let cleanSync = false
     try {
       const page = await session.remote.listRevisions()
       const firstEnrollment = page.head !== null && state.getBaseRevision() === null
@@ -352,7 +368,7 @@ export const initCommand: CommandSpec = {
         ),
       )
       if (firstEnrollment) {
-        const replaceRoots: string[] = []
+        const remoteSurfaces: string[] = []
         for (const surface of inventory.surfaces.values()) {
           if (!activeIds.has(surface.id)) continue
           const report = inventory.scan.surfaces.find((item) => item.surfaceId === surface.id)
@@ -363,16 +379,14 @@ export const initCommand: CommandSpec = {
             `Enroll ${surface.id}:`,
             [
               { key: 'm', label: 'merge with remote' },
-              { key: 'r', label: 'replace this device' },
+              { key: 'r', label: 'use remote values and keep local-only files' },
               { key: 's', label: 'decide later' },
             ],
             'm',
           )
           enrollment.push({ surfaceId: surface.id, choice })
           if (choice === 's') setToggle(policy, surface, 'off')
-          if (choice === 'r' && report.role === 'owner') {
-            replaceRoots.push(report.resolvedPath)
-          }
+          if (choice === 'r') remoteSurfaces.push(surface.id)
         }
 
         // A deferred surface stays off after enrollment. Re-scan the effective surfaces so
@@ -388,7 +402,17 @@ export const initCommand: CommandSpec = {
           )
           .map((report) => ({ label: report.surfaceId, path: report.resolvedPath }))
         if (roots.length > 0) backup = createBackup(ctx.home, roots, ctx.now()).dir
-        for (const root of replaceRoots) fs.rmSync(root, { recursive: true, force: true })
+        // Restore through the guarded, harness-aware writer. Deleting a surface
+        // first loses local-only files and leaves the harness broken on failure.
+        for (const surfaceId of remoteSurfaces) {
+          const restored = await restoreCommand.run({
+            ...ctx,
+            command: 'restore',
+            positionals: [page.head as string],
+            flags: { ...ctx.flags, surface: surfaceId, yes: true },
+          })
+          if (restored.exitCode !== 0) return restored
+        }
       }
 
       await enrollMcpSecrets(ctx, session)
@@ -418,7 +442,10 @@ export const initCommand: CommandSpec = {
       syncData.changed = result.report?.changed.length ?? 0
       syncData.conflicts = result.report?.conflicts.map((conflict) => conflict.path) ?? []
       syncData.blocked = result.report?.blocked ?? []
-      if (result.status === 'synced' || result.status === 'idle') {
+      syncData.deferred = result.report?.deferred ?? []
+      syncData.error = result.error?.message ?? null
+      cleanSync = isCleanSyncResult(result)
+      if (cleanSync) {
         await syncSessionCredentials(ctx, session, state)
         if (ctx.command === 'enroll' && syncData.conflicts.length === 0) {
           managedTools = (await provisionManagedTools(ctx, session)).map((tool) => ({
@@ -432,12 +459,7 @@ export const initCommand: CommandSpec = {
       state.close()
     }
 
-    const background =
-      ctx.command === 'enroll' &&
-      (syncData.status === 'synced' || syncData.status === 'idle') &&
-      syncData.conflicts.length === 0
-        ? installBackgroundSync(ctx)
-        : null
+    const background = ctx.command === 'enroll' && cleanSync ? installBackgroundSync(ctx) : null
     const data: InitData = {
       home: ctx.home,
       server,
@@ -466,7 +488,7 @@ export const initCommand: CommandSpec = {
     const exitCode =
       syncData.conflicts.length > 0
         ? 2
-        : syncData.status === 'failed' || syncData.status === 'offline'
+        : !cleanSync || (background !== null && !background.started)
           ? 1
           : 0
     return ok(data, () => humanInit(ctx, data), exitCode)

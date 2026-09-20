@@ -1,6 +1,8 @@
 import {
+  filterLocalTombstoneOverlays,
   type LastSyncRecord,
-  listQueue,
+  LOCAL_TOMBSTONE_OVERLAYS_META_KEY,
+  parseLocalTombstoneOverlays,
   readLastSync,
   type SyncState,
   secrets,
@@ -32,7 +34,6 @@ export interface StatusData {
   server: string | null
   daemon: DaemonSection
   lastSync: LastSyncRecord | null
-  pending: { count: number; kinds: Record<string, number> }
   conflicts: { count: number; paths: string[] }
   secretOverrides: number
   drift: DriftEntry[] | null
@@ -75,7 +76,6 @@ function humanStatus(ctx: CommandContext, data: StatusData): string {
     lines.push(`Last sync: ${record.at} (${detail})`)
     if (record.error !== null) lines.push(`  error: ${record.error.message}`)
   }
-  lines.push(`Pending: ${plural(data.pending.count, 'operation')}`)
   if (data.conflicts.count > 0) {
     lines.push(`Conflicts: ${data.conflicts.count}`)
     for (const path of data.conflicts.paths) lines.push(`  ${displayPath(ctx.home, path)}`)
@@ -112,7 +112,7 @@ function humanStatus(ctx: CommandContext, data: StatusData): string {
 
 export const statusCommand: CommandSpec = {
   name: 'status',
-  summary: 'Show device, sync, queue, conflict, and drift state',
+  summary: 'Show device, sync, conflict, and drift state',
   usage: 'laurencio status [--json]',
   async run(ctx) {
     const identity = identityFor(ctx)
@@ -120,9 +120,6 @@ export const statusCommand: CommandSpec = {
     const server = ctx.flags.server ?? ctx.env.LAURENCIO_SERVER ?? config.server
     const state = openState(ctx)
     try {
-      const pending = listQueue(state)
-      const kinds: Record<string, number> = {}
-      for (const entry of pending) kinds[entry.kind] = (kinds[entry.kind] ?? 0) + 1
       const ledger = readLedger(state)
       const conflicts = ledger.records().map((record) => record.sourcePath)
       const secretOverrides = secrets.readOverrideLog(ctx.home).length
@@ -135,7 +132,6 @@ export const statusCommand: CommandSpec = {
           server,
           daemon,
           lastSync: null,
-          pending: { count: pending.length, kinds },
           conflicts: { count: conflicts.length, paths: [] },
           secretOverrides,
           drift: null,
@@ -148,24 +144,32 @@ export const statusCommand: CommandSpec = {
       const baseId = state.getBaseRevision()
       const base = baseId === null ? null : state.getManifest(baseId)
       const inventory = scanInventory(ctx, { policy: config.policy })
-      const drift = computeDrift(
+      const local = filterLocalTombstoneOverlays(
         localManifestWithProjections(inventory),
         base,
-        new Set(inventory.surfaces.keys()),
+        parseLocalTombstoneOverlays(state.getMeta(LOCAL_TOMBSTONE_OVERLAYS_META_KEY)),
       )
+      const drift = computeDrift(local, base, new Set(inventory.surfaces.keys()))
       const data: StatusData = {
         enrolled: true,
         device: { id: identity.deviceId, name: identity.name },
         server: session.baseUrl ?? server,
         daemon,
         lastSync,
-        pending: { count: pending.length, kinds },
         conflicts: { count: conflicts.length, paths: conflicts },
         secretOverrides,
         drift,
       }
       const exitCode =
-        conflicts.length > 0 ? 2 : lastSync !== null && lastSync.status === 'failed' ? 1 : 0
+        conflicts.length > 0
+          ? 2
+          : lastSync !== null &&
+              (lastSync.status === 'failed' ||
+                lastSync.status === 'offline' ||
+                lastSync.blocked.length > 0 ||
+                lastSync.deferred.length > 0)
+            ? 1
+            : 0
       return ok(data, () => humanStatus(ctx, data), exitCode)
     } finally {
       state.close()

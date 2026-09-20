@@ -208,7 +208,7 @@ function completeRuntimeExecutables(
 export async function materializeWorkbench(
   ctx: CommandContext,
   input: WorkbenchMaterializeInput,
-  passphrase: string,
+  unlock: string | crypto.KeyMaterial,
   options: WorkbenchMaterializeOptions = {},
 ): Promise<RevisionId> {
   const platform = ctx.platform
@@ -241,7 +241,8 @@ export async function materializeWorkbench(
       hint: 'Run `laurencio enroll` on a configured device first.',
     })
   }
-  const key = crypto.deriveMasterKey(passphrase, published.kdf)
+  const key = typeof unlock === 'string' ? crypto.deriveMasterKey(unlock, published.kdf) : unlock
+  const ownsKey = typeof unlock === 'string'
   const state = SyncState.open({ home: input.home })
   const env = privateEnvironment(ctx, input.home)
   const policy = defaultPolicy()
@@ -351,7 +352,7 @@ export async function materializeWorkbench(
     return revisionId
   } finally {
     state.close()
-    key.zeroize()
+    if (ownsKey) key.zeroize()
   }
 }
 

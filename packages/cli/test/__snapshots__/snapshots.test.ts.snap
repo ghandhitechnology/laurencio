@@ -17,7 +17,7 @@ Commands:
   credentials Resolve encrypted credential conflicts explicitly
   enroll     Migrate this device into the synced workbench
   init       Set up this device: sign in, select surfaces, and push
-  status     Show device, sync, queue, conflict, and drift state
+  status     Show device, sync, conflict, and drift state
   sync       Run one sync pass
   tools      Review and apply pinned curated-tool updates
   terminal   Update portable terminal keybindings and dimensions
@@ -28,6 +28,7 @@ Commands:
   diff       Compare local, remote, and base versions of a path
   log        List revision history
   restore    Restore a file, a surface, or everything from a revision
+  backups    Browse or recover local configuration backups offline
   devices    List, rename, or revoke devices
   resolve    Settle conflict copies by keeping local or remote content
   export     Write an encrypted bundle of the current revision
@@ -67,8 +68,10 @@ laurencio 0.1.1
 `;
 
 exports[`snapshots: init init offline human 1`] = `
-"exit: 0
+"exit: 1
 --- stdout
+
+--- stderr
 Laurencio init
 Server: http://127.0.0.1:1
 Sync selection: skills only
@@ -78,14 +81,14 @@ Surfaces
 Sign-in: skipped, the server is not reachable
 Policy: ~/.laurencio/config.toml
 
-Login skipped. Run \`laurencio login\` when the server is reachable.
---- stderr
-"
+Login skipped. Run \`laurencio login\` when the server is reachable."
 `;
 
 exports[`snapshots: init init offline json 1`] = `
-"exit: 0
+"exit: 1
 --- stdout
+
+--- stderr
 {
   "home": "<HOME>",
   "server": "http://127.0.0.1:1",
@@ -433,9 +436,7 @@ exports[`snapshots: init init offline json 1`] = `
   "backup": null,
   "enrollment": [],
   "sync": null
-}
---- stderr
-"
+}"
 `;
 
 exports[`snapshots: init init seeded human 1`] = `
@@ -821,7 +822,9 @@ exports[`snapshots: init init seeded json 1`] = `
     "downloaded": 0,
     "changed": 1,
     "conflicts": [],
-    "blocked": []
+    "blocked": [],
+    "deferred": [],
+    "error": null
   }
 }
 --- stderr
@@ -834,7 +837,6 @@ exports[`snapshots: status and sync status clean human 1`] = `
 Device: test-laptop (<ID>)
 Server: none configured
 Last sync: <TIME> (2 changed, 2 uploaded, 0 downloaded)
-Pending: 0 operations
 Conflicts: none
 Drift: none
 Daemon: not running
@@ -873,16 +875,7 @@ exports[`snapshots: status and sync status with drift and a conflict json 1`] = 
     "conflicts": [],
     "blocked": [],
     "deferred": [],
-    "queue": {
-      "replayed": 0,
-      "failed": 0,
-      "pending": 0
-    },
     "error": null
-  },
-  "pending": {
-    "count": 0,
-    "kinds": {}
   },
   "conflicts": {
     "count": 1,
@@ -924,12 +917,6 @@ exports[`snapshots: status and sync sync dry run json 1`] = `
   "conflicts": [],
   "blocked": [],
   "deferred": [],
-  "queue": {
-    "replayed": 0,
-    "failed": 0,
-    "pending": 0,
-    "offline": false
-  },
   "plan": {
     "counts": {
       "unchanged": 1,
@@ -982,12 +969,6 @@ exports[`snapshots: status and sync sync json 1`] = `
   "conflicts": [],
   "blocked": [],
   "deferred": [],
-  "queue": {
-    "replayed": 0,
-    "failed": 0,
-    "pending": 0,
-    "offline": false
-  },
   "plan": null,
   "error": null
 }
@@ -1181,7 +1162,7 @@ exports[`snapshots: diff, log, restore restore human and json 2`] = `
     }
   ],
   "skipped": [],
-  "backup": "<HOME>/.laurencio/backups/20260919T120000Z"
+  "backup": "<HOME>/.laurencio/backups/20260919T120000Z-0001"
 }
 --- stderr
 "
@@ -2097,7 +2078,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock unknown c
 
 --- stderr
 laurencio: unknown command: frobnicate
-Known commands: config, agent, open, sessions, close, save, credentials, enroll, init, status, sync, tools, terminal, pause, resume, rotate, daemon, diff, log, restore, devices, resolve, export, doctor, surfaces, login, unlock"
+Known commands: config, agent, open, sessions, close, save, credentials, enroll, init, status, sync, tools, terminal, pause, resume, rotate, daemon, diff, log, restore, backups, devices, resolve, export, doctor, surfaces, login, unlock"
 `;
 
 exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock unknown command human and json 2`] = `
@@ -2109,7 +2090,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock unknown c
   "error": {
     "code": "unknown-command",
     "message": "unknown command: frobnicate",
-    "hint": "Known commands: config, agent, open, sessions, close, save, credentials, enroll, init, status, sync, tools, terminal, pause, resume, rotate, daemon, diff, log, restore, devices, resolve, export, doctor, surfaces, login, unlock"
+    "hint": "Known commands: config, agent, open, sessions, close, save, credentials, enroll, init, status, sync, tools, terminal, pause, resume, rotate, daemon, diff, log, restore, backups, devices, resolve, export, doctor, surfaces, login, unlock"
   }
 }"
 `;

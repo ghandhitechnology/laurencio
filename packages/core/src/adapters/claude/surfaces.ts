@@ -146,14 +146,14 @@ export function claudeSurfaces(ctx: AdapterContext): Surface[] {
     claudeFile(
       'plugins-installed',
       `${CONFIG_ROOT}/plugins/installed_plugins.json`,
-      'plugin install records without machine paths or timestamps',
-      { format: 'json', transforms: ['claudePluginRecords'] },
+      'machine-local plugin installation records; plugin preferences sync through settings',
+      { format: 'json', policy: 'never' },
     ),
     claudeFile(
       'plugins-known-marketplaces',
       `${CONFIG_ROOT}/plugins/known_marketplaces.json`,
-      'marketplace sources without machine paths or timestamps',
-      { format: 'json', transforms: ['claudePluginRecords'] },
+      'machine-local marketplace installation records',
+      { format: 'json', policy: 'never' },
     ),
     claudeFile(
       'mcp',

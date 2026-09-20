@@ -1,14 +1,23 @@
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
+import path from 'node:path'
 import {
   Applier,
+  acquireLock,
+  applyTransforms,
   CONFLICT_LEDGER_META_KEY,
   ConflictLedger,
   type ConflictRecord,
+  isWithinRoot,
+  parseLocalBlocks,
+  releaseLock,
+  type Surface,
+  usesMarkerBlocks,
 } from '@laurencio/core'
 import { loadCliConfig } from '../config'
-import type { CommandContext } from '../context'
+import { adapterContext, type CommandContext } from '../context'
 import { cliError } from '../errors'
+import { localPathForStorePath } from '../layout'
 import { askChoice } from '../prompt'
 import { ok } from '../result'
 import { openSession, openState, scanInventory } from '../session'
@@ -43,6 +52,14 @@ function isBinary(text: string): boolean {
   return text.includes('\u0000')
 }
 
+function physicalPath(filePath: string): string | null {
+  try {
+    return fs.realpathSync(filePath)
+  } catch {
+    return null
+  }
+}
+
 export const resolveCommand: CommandSpec = {
   name: 'resolve',
   summary: 'Settle conflict copies by keeping local or remote content',
@@ -50,7 +67,9 @@ export const resolveCommand: CommandSpec = {
   async run(ctx) {
     const selector = ctx.flags.surface ?? ctx.positionals[0] ?? null
     const state = openState(ctx)
+    let lock: ReturnType<typeof acquireLock> | undefined
     try {
+      lock = acquireLock(ctx.home)
       const ledger = readLedgerFrom(state)
       const all = ledger.records()
       const selected = all.filter(
@@ -77,9 +96,55 @@ export const resolveCommand: CommandSpec = {
       const inventory = scanInventory(ctx, { policy: config.policy })
       const planPaths = new Set<string>()
       for (const entry of inventory.scan.entries) planPaths.add(entry.localPath)
-      for (const record of all) {
-        planPaths.add(record.sourcePath)
-        planPaths.add(record.path)
+      const locations = new Map<
+        ConflictRecord,
+        { sourcePath: string; copyPath: string; storePath: string; surface: Surface }
+      >()
+      for (const record of selected) {
+        const legacyPath = path.isAbsolute(record.sourcePath)
+          ? physicalPath(record.sourcePath)
+          : null
+        const scanned = inventory.scan.entries.find(
+          (entry) =>
+            entry.localPath === record.sourcePath ||
+            (legacyPath !== null && physicalPath(entry.localPath) === legacyPath),
+        )
+        const storePath = scanned?.storePath ?? record.sourcePath
+        const sourcePath = localPathForStorePath(
+          inventory.surfaces,
+          inventory.byStorePath,
+          ctx,
+          storePath,
+        )
+        const surface =
+          scanned === undefined
+            ? [...inventory.surfaces.values()].find(
+                (item) => storePath === item.path || storePath.startsWith(`${item.path}/`),
+              )
+            : inventory.surfaces.get(scanned.surfaceId)
+        const root =
+          surface === undefined
+            ? null
+            : localPathForStorePath(inventory.surfaces, inventory.byStorePath, ctx, surface.path)
+        const suffix = record.path.slice(record.sourcePath.length)
+        if (
+          sourcePath === null ||
+          surface === undefined ||
+          surface.policy === 'never' ||
+          root === null ||
+          !isWithinRoot(sourcePath, root) ||
+          !record.path.startsWith(record.sourcePath) ||
+          !/^\.conflict-[A-Za-z0-9._-]+-\d{8}T\d{6}Z$/.test(suffix)
+        ) {
+          throw cliError(
+            'unknown-conflict-path',
+            `Conflict does not belong to a local surface: ${record.sourcePath}`,
+          )
+        }
+        const copyPath = `${sourcePath}${suffix}`
+        locations.set(record, { sourcePath, copyPath, storePath, surface })
+        planPaths.add(sourcePath)
+        planPaths.add(copyPath)
       }
       const applier = new Applier({
         state,
@@ -97,7 +162,18 @@ export const resolveCommand: CommandSpec = {
           kept.push(record)
           continue
         }
-        applyChoice(ctx, applier, record, choice)
+        const location = locations.get(record)
+        if (location === undefined) continue
+        applyChoice(ctx, applier, record, choice, location)
+        // Each settled copy is durable before another prompt or editor can fail.
+        state.setMeta(
+          CONFLICT_LEDGER_META_KEY,
+          new ConflictLedger(
+            all.filter(
+              (item) => item !== record && !resolved.some((row) => row.copyPath === item.path),
+            ),
+          ).toJSON(),
+        )
         resolved.push({ sourcePath: record.sourcePath, copyPath: record.path, choice })
       }
       for (const record of all) {
@@ -129,6 +205,7 @@ export const resolveCommand: CommandSpec = {
       return ok(data, human, kept.length > 0 ? 2 : 0)
     } finally {
       state.close()
+      if (lock !== undefined) releaseLock(ctx.home, lock.pid, lock)
     }
   },
 }
@@ -166,42 +243,65 @@ function applyChoice(
   applier: Applier,
   record: ConflictRecord,
   choice: string,
+  location: { sourcePath: string; copyPath: string; storePath: string; surface: Surface },
 ): void {
-  const remote = fs.readFileSync(record.path, 'utf8')
-  if (choice === 'keep-local') {
-    fs.rmSync(record.path, { force: true })
-    return
-  }
-  if (choice === 'keep-remote') {
-    applier.write({
-      storePath: record.sourcePath,
-      declaredPath: record.sourcePath,
-      content: remote,
-      expected: applier.fingerprint(record.sourcePath),
+  const { sourcePath, copyPath, storePath, surface } = location
+  const copyFingerprint = applier.fingerprint(copyPath)
+  const removeCopy = (): void =>
+    applier.remove({
+      storePath: record.path,
+      surfaceId: surface.id,
+      declaredPath: copyPath,
+      expected: copyFingerprint,
     })
-    fs.rmSync(record.path, { force: true })
+  if (choice === 'keep-local') {
+    removeCopy()
     return
   }
+  const expected = applier.fingerprint(sourcePath)
+  const local = expected === null ? null : fs.readFileSync(sourcePath, 'utf8')
+  const remote = applyTransforms({
+    surface,
+    storePath,
+    direction: 'fromStore',
+    tokenEnv: adapterContext(ctx),
+    content: fs.readFileSync(copyPath, 'utf8'),
+    localContent: local,
+    localBlocks: usesMarkerBlocks(surface, storePath)
+      ? local === null
+        ? applier.state.getMarkers(sourcePath)
+        : parseLocalBlocks(sourcePath, local)
+      : [],
+  }).content
+  let content = remote
   if (choice === 'editor') {
-    const local = fs.existsSync(record.sourcePath) ? fs.readFileSync(record.sourcePath, 'utf8') : ''
-    if (!isBinary(local) && !isBinary(remote)) {
-      applier.write({
-        storePath: record.sourcePath,
-        declaredPath: record.sourcePath,
-        content: markerText(local, remote, record),
-        expected: applier.fingerprint(record.sourcePath),
+    if (isBinary(local ?? '') || isBinary(remote))
+      throw cliError('binary-conflict', 'Choose keep-local or keep-remote for a binary conflict')
+    const dir = fs.mkdtempSync(path.join(path.dirname(applier.state.path), 'resolve-'))
+    const draft = path.join(dir, path.basename(sourcePath))
+    try {
+      fs.writeFileSync(draft, markerText(local ?? '', remote, record), { mode: 0o600 })
+      const editor = ctx.env.EDITOR ?? ctx.env.VISUAL ?? 'vi'
+      const result = spawnSync(editor, [draft], { stdio: 'inherit' })
+      if (result.error !== undefined || result.status !== 0)
+        throw cliError('editor-failed', 'The editor did not finish successfully; conflict retained')
+      content = fs.readFileSync(draft, 'utf8')
+      if (/^(?:<<<<<<< |=======|>>>>>>> )/m.test(content))
+        throw cliError(
+          'unresolved-conflict',
+          'Remove conflict markers before saving; conflict retained',
+        )
+      applyTransforms({
+        surface,
+        storePath,
+        direction: 'toStore',
+        tokenEnv: adapterContext(ctx),
+        content,
       })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
     }
-    const editor = ctx.env.EDITOR ?? ctx.env.VISUAL ?? 'vi'
-    const result = spawnSync(editor, [record.sourcePath], { stdio: 'inherit' })
-    if (result.error !== undefined) {
-      throw cliError('editor-failed', `could not open ${editor}: ${result.error.message}`)
-    }
-    if (result.status !== 0) {
-      throw cliError('editor-failed', 'the editor did not finish successfully; conflict retained')
-    }
-    // Whatever the editor left in the file is the local side; the copy is settled.
-    fs.rmSync(record.path, { force: true })
-    return
   }
+  applier.write({ storePath, declaredPath: sourcePath, content, expected })
+  removeCopy()
 }

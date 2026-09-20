@@ -37,7 +37,7 @@ Precedence: managed policy > CLI `--settings` > project local > shared project >
 | `~/.claude/{agents,commands,skills,output-styles,themes,workflows}/` | personal assets | sync; exclude `skills/synced/` |
 | `~/.claude/keybindings.json` | key rebinds | sync |
 | `~/.claude/hooks/*.sh`, `statusline.sh` | scripts referenced by settings | sync; path-fix |
-| `~/.claude/plugins/{installed_plugins,known_marketplaces}.json` | install records with `installLocation` | transform, or let each machine install from `enabledPlugins` |
+| `~/.claude/plugins/{installed_plugins,known_marketplaces}.json` | install records with machine paths and timestamps | never sync; each machine keeps its own installation records; `enabledPlugins` preferences sync in settings |
 | `~/.claude/plugins/{cache,marketplaces,data,synced}/` | downloaded copies, account-keyed claude.ai sync | never |
 | `~/.claude/projects/<slug>/memory/` | auto memory, `MEMORY.md` index plus topics | transform (re-key slug), opt-in |
 | `~/.claude/projects/*.jsonl`, `history.jsonl`, `stats-cache.json`, `sessions/`, `shell-snapshots/`, `backups/`, `cache/`, `jobs/`, `daemon/` | transcripts and machine state | never |
@@ -150,9 +150,11 @@ Merge policy per surface kind:
 Safety rules
 
 - Atomic writes (temp file plus rename) with a compare-and-swap guard: re-read mtime and hash before replacing, retry the merge on mismatch. This is what keeps the tool from fighting Claude Code as it rewrites files mid-session.
+- Before replacing or deleting a native file, save its actual bytes and recovery metadata in a private, immutable local backup. Keep every distinct file version and the first complete enrollment snapshot. A backup failure stops the mutation. Offline recovery preserves the current version too and pauses background sync for review.
+- Retry failed syncs by rescanning the current local and remote state under the device lock. Replaying old queued commits can publish stale changes after another device advances.
 - Quiescence window: the daemon defers applying to any file a harness wrote recently, then retries.
 - Conflict copies are named `.conflict-<device>-<timestamp>` and are excluded from future syncs.
-- Enrollment is the highest-risk moment. First device pushes; later devices choose merge, replace, or manual per surface, with an automatic backup before apply.
+- Enrollment is the highest-risk moment. First device pushes; later devices choose merge, remote values, or defer per surface, with an automatic backup before apply. Remote values replace overlapping portable content through the same guarded transforms as restore. Local-only files, native machine settings, and local instruction blocks remain.
 - History is the revision graph. `restore` checks out one path, a surface, or the whole namespace at a revision.
 
 ## 5. Transforms

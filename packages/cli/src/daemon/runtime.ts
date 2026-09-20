@@ -19,7 +19,7 @@ import {
   type DaemonLockOptions,
   releaseDaemonLock,
 } from './lock'
-import { type DaemonState, writeDaemonState } from './state'
+import { type DaemonState, readDaemonState, writeDaemonState } from './state'
 import { type SurfaceWatcher, startSurfaceWatchers } from './watcher'
 
 /** What the runtime needs from a runner; `SyncLoop` satisfies it as is. */
@@ -92,16 +92,25 @@ export class DaemonRuntime {
     this.#readPaused = options.readPaused ?? ((home) => readPause(home) !== null)
     this.#lock = lock
     this.#controller = new AbortController()
+    const previous = readDaemonState(this.#state)
+    this.#lastSync = previous?.lastSync ?? null
+    this.#lastResult = previous?.lastResult ?? null
     this.state = {
       pid: lock.pid,
       startedAt,
       paused: false,
-      lastSync: null,
-      lastResult: null,
+      lastSync: this.#lastSync,
+      lastResult: this.#lastResult,
     }
     this.#scheduleAt = this.#now().getTime()
     this.#publish(false)
-    this.#done = this.#runLoop()
+    this.#done = this.#runLoop().finally(() => {
+      try {
+        this.#watcher?.close()
+      } finally {
+        releaseDaemonLock(this.#home, this.#lock.pid, this.#lock)
+      }
+    })
   }
 
   /**
@@ -163,8 +172,6 @@ export class DaemonRuntime {
     this.#controller.abort()
     this.wake()
     await this.#done
-    this.#watcher?.close()
-    releaseDaemonLock(this.#home, this.#lock.pid, this.#lock)
     this.#log('daemon stopped')
   }
 

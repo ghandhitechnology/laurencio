@@ -68,7 +68,6 @@ const idle: SyncRunResult = {
   report: null,
   error: null,
   finishedAt: '',
-  queue: { replayed: [], failed: [], pending: 0, offline: false },
 }
 
 describe('transfer progress', () => {

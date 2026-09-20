@@ -98,8 +98,17 @@ function serializeJson(value: JsonValue): string {
 /** Merge a stored MCP projection back into the local `~/.claude.json`, keeping its identity. */
 function applyMcpExtract(content: string, localContent: string | null): string {
   const remote = parseJson(content, 'claudeMcpExtract', 'fromStore')
-  const remoteServers =
-    isJsonObject(remote) && isJsonObject(remote.mcpServers) ? remote.mcpServers : {}
+  if (
+    !isJsonObject(remote) ||
+    (remote.mcpServers !== undefined && !isJsonObject(remote.mcpServers))
+  ) {
+    throw new TransformError(
+      'claudeMcpExtract',
+      'fromStore',
+      'stored MCP projection is not an object',
+    )
+  }
+  const remoteServers = isJsonObject(remote.mcpServers) ? remote.mcpServers : {}
   const local =
     localContent === null || localContent.trim() === ''
       ? {}
@@ -142,6 +151,9 @@ function transformContent(kind: TransformKind, context: TransformContext, notes:
       return codexAutomationApply(local, content)
     case 'opencodeSchemaNormalize': {
       const result = opencodeSchemaNormalize(content, direction === 'toStore' ? 'upload' : 'apply')
+      if (result.notes.some((note) => note.kind === 'invalid')) {
+        throw new TransformError(kind, direction, 'not a valid JSONC object')
+      }
       for (const note of result.notes) notes.push(`${note.kind}:${note.key}:${note.detail}`)
       return result.text
     }
@@ -153,13 +165,13 @@ function transformContent(kind: TransformKind, context: TransformContext, notes:
   }
 }
 
-/** Run every declared transform for one direction, in declaration order. */
+/** Upload composes transforms in order; apply runs their inverses in reverse order. */
 export function applyTransforms(context: TransformContext): TransformOutcome {
   const kinds = context.kinds ?? context.surface.transforms.map((spec) => spec.kind)
   const moved: MovedSecret[] = []
   const notes: string[] = []
   let content = context.content
-  for (const kind of kinds) {
+  for (const kind of context.direction === 'fromStore' ? [...kinds].reverse() : kinds) {
     if (kind === 'markerBlocks' && !usesMarkerBlocks(context.surface, context.storePath)) continue
     content = transformContent(kind, { ...context, content }, notes)
   }

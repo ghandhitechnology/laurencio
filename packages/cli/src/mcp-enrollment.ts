@@ -1,9 +1,14 @@
 import fs from 'node:fs'
 import {
+  Applier,
+  acquireLock,
   type DiscoveredMcpSecret,
   discoverMcpSecrets,
+  type FileFingerprint,
+  hashContent,
   isConflictCopyPath,
   migrateManifestToProfile,
+  releaseLock,
   supportsProfile,
   supportsVault,
   vaultRecordId,
@@ -15,7 +20,7 @@ import { adapterContext, type CommandContext } from './context'
 import { cliError } from './errors'
 import { ensureProfileV2 } from './profile-version'
 import { askYesNo } from './prompt'
-import { type CliSession, scanInventory } from './session'
+import { type CliSession, openState, scanInventory } from './session'
 import { createSystemCredentialIo } from './workbench/credentials'
 import { loadPortableProfile, savePortableProfile } from './workbench/profile'
 import { reconcileCredentialVault } from './workbench/vault'
@@ -26,7 +31,13 @@ export async function enrollMcpSecrets(ctx: CommandContext, session: CliSession)
   const policy = loadCliConfig(ctx.home).policy
   const inventory = scanInventory(ctx, { policy })
   const ignores = policy.ignore.map((pattern) => pm(pattern, { dot: true }))
-  const files: { path: string; original: string; content: string }[] = []
+  const files: {
+    path: string
+    physicalPath: string
+    original: string
+    content: string
+    expected: FileFingerprint
+  }[] = []
   const discovered = new Map<string, DiscoveredMcpSecret>()
   for (const entry of inventory.scan.entries) {
     if (
@@ -39,7 +50,9 @@ export async function enrollMcpSecrets(ctx: CommandContext, session: CliSession)
       continue
     const surface = inventory.surfaces.get(entry.surfaceId)
     if (surface === undefined) continue
-    const original = fs.readFileSync(entry.localPath, 'utf8')
+    const physicalPath = fs.realpathSync(entry.localPath)
+    const stat = fs.statSync(physicalPath)
+    const original = fs.readFileSync(physicalPath, 'utf8')
     const result = discoverMcpSecrets(surface.harness, original)
     for (const secret of result.secrets) {
       const id = vaultRecordId(secret.reference)
@@ -58,7 +71,13 @@ export async function enrollMcpSecrets(ctx: CommandContext, session: CliSession)
       if (previous === undefined || secret.value !== null) discovered.set(id, secret)
     }
     if (result.content !== original)
-      files.push({ path: entry.localPath, original, content: result.content })
+      files.push({
+        path: entry.localPath,
+        physicalPath,
+        original,
+        content: result.content,
+        expected: { mtimeMs: stat.mtimeMs, size: stat.size, hash: hashContent(original) },
+      })
   }
   if (discovered.size === 0) return
   await ensureProfileV2(session.remote)
@@ -151,15 +170,40 @@ export async function enrollMcpSecrets(ctx: CommandContext, session: CliSession)
       value.fill(0)
     }
   }
-  for (const file of files)
-    if (fs.readFileSync(file.path, 'utf8') !== file.original)
-      throw cliError('mcp-config-changed', 'MCP configuration changed during import; retry sync')
-  if (files.length > 0)
+  if (files.length === 0) return
+  const holder = acquireLock(ctx.home)
+  try {
+    for (const file of files)
+      if (
+        fs.realpathSync(file.path) !== file.physicalPath ||
+        fs.readFileSync(file.path, 'utf8') !== file.original
+      )
+        throw cliError('mcp-config-changed', 'MCP configuration changed during import; retry sync')
     createBackup(
       ctx.home,
       files.map((file, index) => ({ label: `mcp-import-${index + 1}`, path: file.path })),
       ctx.now(),
     )
-  for (const file of files)
-    await io.writeFileAtomic(file.path, new TextEncoder().encode(file.content), 0o600)
+    const state = openState(ctx)
+    try {
+      const applier = new Applier({
+        state,
+        planPaths: files.flatMap((file) => [file.path, file.physicalPath]),
+        platform: ctx.platform,
+        now: ctx.now,
+      })
+      for (const file of files)
+        applier.write({
+          storePath: file.path,
+          declaredPath: file.path,
+          content: file.content,
+          mode: 0o600,
+          expected: file.expected,
+        })
+    } finally {
+      state.close()
+    }
+  } finally {
+    releaseLock(ctx.home, holder.pid, holder)
+  }
 }

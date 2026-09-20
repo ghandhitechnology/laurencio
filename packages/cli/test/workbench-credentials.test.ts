@@ -107,7 +107,8 @@ describe('workbench credential IO', () => {
       const original = JSON.stringify({
         mcpServers: { github: { command: 'github-mcp', env: { TOKEN: secret } } },
       })
-      writeHomeFile(scratch.home, '.claude.json', original)
+      writeHomeFile(scratch.home, 'native-claude.json', original)
+      fs.symlinkSync('native-claude.json', path.join(scratch.home, '.claude.json'))
       const remote = createFileRemote({ dir: scratch.remoteDir })
       const publish = remote.putProfileHead.bind(remote)
       remote.putProfileHead = async () => {
@@ -131,8 +132,44 @@ describe('workbench credential IO', () => {
         deps: { remote: () => remote, quiescence: { windowMs: 0 } },
       })
       expect(retried.exitCode).toBe(0)
+      expect(fs.readlinkSync(path.join(scratch.home, '.claude.json'))).toBe('native-claude.json')
       expect(fs.readFileSync(path.join(scratch.home, '.claude.json'), 'utf8')).not.toContain(secret)
       expect((await remote.getVaultHead())?.generation).toBe(1)
+    } finally {
+      scratch.cleanup()
+    }
+  })
+  test('MCP import preserves a native edit made while the vault is publishing', async () => {
+    const scratch = makeScratch()
+    const keychain = new MemoryCredentialStore()
+    try {
+      await seedStore({ home: scratch.home, remoteDir: scratch.remoteDir, keychain })
+      const original = JSON.stringify({
+        mcpServers: {
+          github: {
+            command: 'github-mcp',
+            env: { TOKEN: 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij' },
+          },
+        },
+      })
+      writeHomeFile(scratch.home, '.claude.json', original)
+      const edited = `${original}\n `
+      const remote = createFileRemote({ dir: scratch.remoteDir })
+      const publish = remote.putProfileHead.bind(remote)
+      remote.putProfileHead = async (input) => {
+        const result = await publish(input)
+        writeHomeFile(scratch.home, '.claude.json', edited)
+        return result
+      }
+      const result = await runForTest(['sync', '--yes', '--json'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        keychain,
+        deps: { remote: () => remote },
+      })
+      expect(result.exitCode).toBe(1)
+      expect(result.errorOutput).toContain('changed during import')
+      expect(fs.readFileSync(path.join(scratch.home, '.claude.json'), 'utf8')).toBe(edited)
     } finally {
       scratch.cleanup()
     }

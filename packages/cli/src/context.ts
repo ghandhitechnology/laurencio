@@ -14,7 +14,7 @@ import type {
   Remote,
   ToolLockEntry,
 } from '@laurencio/core'
-import type { RevisionId, StoreId } from '@laurencio/protocol'
+import type { RevisionId, StoreId, WorkbenchSessionId } from '@laurencio/protocol'
 import type { Flags } from './args'
 import type { ExecFn } from './daemon/installer'
 import { cliError } from './errors'
@@ -53,6 +53,8 @@ export interface CliDeps {
   /** Test and embedding seams for temporary workbench lifecycle integration. */
   workbenchController?: WorkbenchController
   workbenchRuntime?: WorkbenchRuntime
+  /** Test lever for the detached process that owns a running workbench. */
+  startWorkbenchOwner?: (id: WorkbenchSessionId) => Promise<void>
   which?: (program: string) => string | null
   architecture?: string
   /** Test/embedding seam; production trusts only the catalog compiled into the client. */

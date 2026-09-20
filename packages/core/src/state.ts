@@ -1,7 +1,7 @@
 /**
  * Local sync state: revisions the device has seen, the base manifest used for
- * three-way merges, layouts, marker blocks, the pending-op queue, and the write
- * journal. SQLite at `~/.laurencio/state.db`, one file per device.
+ * three-way merges, layouts, marker blocks, and the write journal. SQLite at
+ * `~/.laurencio/state.db`, one file per device.
  *
  * The journal is the crash-safety contract: every filesystem write is preceded
  * by an intent row, and startup reconciliation adopts a write that landed or
@@ -212,18 +212,10 @@ export interface JournalRow {
   startedAt: string
 }
 
-export interface PendingOp {
-  opId: string
-  kind: string
-  payload: string
-  createdAt: string
-}
-
 export interface ReconcileReport {
   adopted: string[]
   rolledBack: string[]
   cleared: string[]
-  staleLockRemoved: LockInfo | null
 }
 
 export interface SyncStateOptions {
@@ -333,12 +325,6 @@ export class SyncState {
         path TEXT PRIMARY KEY,
         blocks TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS pending_ops (
-        op_id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      );
       CREATE TABLE IF NOT EXISTS journal (
         op_id TEXT PRIMARY KEY,
         op TEXT NOT NULL,
@@ -353,6 +339,10 @@ export class SyncState {
         value TEXT NOT NULL
       );
     `)
+    // Old clients serialized uploads and commits here. Replaying those rows can
+    // publish an obsolete head, while a fresh scan always reconstructs the
+    // current intent. Remove the retired queue during migration.
+    this.#db.exec('DROP TABLE IF EXISTS pending_ops')
     this.#migrateManifestPolicy()
   }
 
@@ -420,6 +410,17 @@ export class SyncState {
   }
 
   setBaseRevision(revisionId: RevisionId): void {
+    this.#db.run('BEGIN')
+    try {
+      this.#setBaseRevision(revisionId)
+      this.#db.run('COMMIT')
+    } catch (error) {
+      this.#db.run('ROLLBACK')
+      throw error
+    }
+  }
+
+  #setBaseRevision(revisionId: RevisionId): void {
     this.#db
       .query(
         `INSERT INTO meta (key, value) VALUES ('base_revision', ?)
@@ -481,30 +482,47 @@ export class SyncState {
   saveManifest(record: RevisionRecord, entries: ManifestEntry[]): void {
     this.#db.run('BEGIN')
     try {
-      this.putRevision(record)
-      this.#db.query('DELETE FROM base_manifest WHERE revision_id = ?').run(record.id)
-      const insert = this.#db.query(
-        `INSERT INTO base_manifest (revision_id, surface_id, path, kind, policy, hash, size, mode, blob_id, blob_size)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      for (const entry of entries) {
-        insert.run(
-          record.id,
-          entry.surfaceId,
-          entry.path,
-          entry.kind,
-          entry.policy,
-          entry.hash,
-          entry.size,
-          entry.mode,
-          entry.blob?.id ?? null,
-          entry.blob?.size ?? null,
-        )
-      }
+      this.#saveManifest(record, entries)
       this.#db.run('COMMIT')
     } catch (error) {
       this.#db.run('ROLLBACK')
       throw error
+    }
+  }
+
+  /** Saves a manifest and advances the merge base as one durable state change. */
+  saveBaseManifest(record: RevisionRecord, entries: ManifestEntry[]): void {
+    this.#db.run('BEGIN')
+    try {
+      this.#saveManifest({ ...record, role: 'base' }, entries)
+      this.#setBaseRevision(record.id)
+      this.#db.run('COMMIT')
+    } catch (error) {
+      this.#db.run('ROLLBACK')
+      throw error
+    }
+  }
+
+  #saveManifest(record: RevisionRecord, entries: ManifestEntry[]): void {
+    this.putRevision(record)
+    this.#db.query('DELETE FROM base_manifest WHERE revision_id = ?').run(record.id)
+    const insert = this.#db.query(
+      `INSERT INTO base_manifest (revision_id, surface_id, path, kind, policy, hash, size, mode, blob_id, blob_size)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    for (const entry of entries) {
+      insert.run(
+        record.id,
+        entry.surfaceId,
+        entry.path,
+        entry.kind,
+        entry.policy,
+        entry.hash,
+        entry.size,
+        entry.mode,
+        entry.blob?.id ?? null,
+        entry.blob?.size ?? null,
+      )
     }
   }
 
@@ -635,43 +653,6 @@ export class SyncState {
     this.#db.query('DELETE FROM markers WHERE path = ?').run(filePath)
   }
 
-  enqueueOp(op: { kind: string; payload: string; createdAt: string }): string {
-    const opId = `op_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
-    this.#db
-      .query('INSERT INTO pending_ops (op_id, kind, payload, created_at) VALUES (?, ?, ?, ?)')
-      .run(opId, op.kind, op.payload, op.createdAt)
-    return opId
-  }
-
-  listPendingOps(): PendingOp[] {
-    return this.#db
-      .query<{ op_id: string; kind: string; payload: string; created_at: string }, []>(
-        'SELECT op_id, kind, payload, created_at FROM pending_ops ORDER BY created_at, op_id',
-      )
-      .all()
-      .map((row) => ({
-        opId: row.op_id,
-        kind: row.kind,
-        payload: row.payload,
-        createdAt: row.created_at,
-      }))
-  }
-
-  removePendingOp(opId: string): void {
-    this.#db.query('DELETE FROM pending_ops WHERE op_id = ?').run(opId)
-  }
-
-  /**
-   * Removes queued ops, returning them. A deferred path's row is consumed by
-   * the next run: the scan rediscovers anything still outstanding, so rows
-   * must not pile up run after run.
-   */
-  drainPendingOps(kind?: string): PendingOp[] {
-    const ops = this.listPendingOps().filter((op) => kind === undefined || op.kind === kind)
-    for (const op of ops) this.removePendingOp(op.opId)
-    return ops
-  }
-
   beginOp(row: {
     opId: string
     op: JournalOp
@@ -734,17 +715,15 @@ export class SyncState {
   /**
    * Startup repair. A write whose target already holds the intended hash is
    * adopted; a leftover temp file for the same content is removed; anything
-   * else is left for the next plan to redo. A stale process lock is cleared.
+   * else is left for the next plan to redo. The caller must hold the sync lock;
+   * lock acquisition already replaces a stale holder before this method runs.
    */
-  reconcile(isAlive?: (pid: number) => boolean): ReconcileReport {
+  reconcile(): ReconcileReport {
     const report: ReconcileReport = {
       adopted: [],
       rolledBack: [],
       cleared: [],
-      staleLockRemoved: null,
     }
-    const home = path.dirname(path.dirname(this.path))
-    report.staleLockRemoved = clearStaleLock(home, isAlive)
     for (const row of this.listJournal()) {
       if (row.op === 'write') {
         const targetHash = hashFile(row.targetPath)

@@ -8,6 +8,7 @@ import { readPause } from '../pause'
 import { fail, ok } from '../result'
 import { identityFor } from '../session'
 import { displayPath, renderResult, table } from '../ui'
+import { backupsCommand } from './backups'
 import type { CommandSpec } from './command'
 import { devicesCommand } from './devices'
 import { diffCommand } from './diff'
@@ -58,6 +59,10 @@ export const CONFIG_ACTIONS: readonly ConfigActionGroup[] = [
       {
         label: 'Restore selected files',
         description: 'Restore one surface or path from a revision.',
+      },
+      {
+        label: 'Local backups',
+        description: 'Browse saved originals without connecting to the server.',
       },
     ],
   },
@@ -373,6 +378,7 @@ async function runGroup(
       else if (group.key === '2' && choice === '4') await runCommand(ctx, doctorCommand, [])
       else if (group.key === '3' && choice === '1') await runCommand(ctx, logCommand, [])
       else if (group.key === '3' && choice === '2') await restoreGuide(ctx, temporaryId)
+      else if (group.key === '3' && choice === '3') await runCommand(ctx, backupsCommand, [])
       else if (group.key === '4' && choice === '1')
         await runCommand(ctx, resolveCommand, [], { mutation: true, temporaryId })
       else if (group.key === '5' && choice === '1') await runCommand(ctx, devicesCommand, ['list'])

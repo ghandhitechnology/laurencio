@@ -53,7 +53,7 @@ describe('workbench runtime', () => {
   )
 
   test.each(['darwin', 'win32'] as const)(
-    'applies projected terminal settings and observes natural %s exit',
+    'applies projected terminal settings and returns after starting %s',
     async (platform) => {
       const paths = platform === 'win32' ? path.win32 : path.posix
       const root = platform === 'win32' ? 'C:\\Temp\\settings' : '/tmp/settings'
@@ -68,7 +68,6 @@ describe('workbench runtime', () => {
       ])
       const commands: RuntimeCommand[] = []
       let running = true
-      let observed = 0
       const runtime = createWorkbenchRuntime({
         platform,
         environment: platform === 'win32' ? { USERPROFILE: 'C:\\Users\\test' } : {},
@@ -94,10 +93,6 @@ describe('workbench runtime', () => {
               ? { exitCode: 1, stdout: '', stderr: 'no server running' }
               : { exitCode: 0, stdout: '', stderr: '' }
           },
-          sleep: async () => {
-            observed++
-            running = false
-          },
         },
       })
       const session = await runtime.launch({
@@ -117,12 +112,44 @@ describe('workbench runtime', () => {
         expect(config).toContain('wezterm.action.SplitHorizontal')
       }
       await runtime.attach(session)
-      expect(observed).toBe(1)
-      expect((await runtime.inspect(session)).state).toBe('stopped')
+      expect((await runtime.inspect(session)).state).toBe('running')
+      running = false
       await runtime.close(session)
       expect(files.size).toBe(0)
     },
   )
+
+  test('returns to the host shell when a running tmux workbench is detached', async () => {
+    const files = new Map<string, string>()
+    let waits = 0
+    const runtime = createWorkbenchRuntime({
+      platform: 'darwin',
+      dependencies: {
+        files: {
+          mkdir: () => {},
+          write: (name, value) => files.set(name, value),
+          read: (name) => files.get(name) ?? null,
+          remove: () => files.clear(),
+        },
+        exec: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        sleep: async () => {
+          waits += 1
+          throw new Error('launcher waited for a detached workbench to exit')
+        },
+      },
+    })
+    const session = await runtime.launch({
+      id: 'detached',
+      root: '/tmp/detached',
+      cwd: '/tmp',
+      executables: { tmux: '/bin/tmux' },
+    })
+
+    await runtime.attach(session)
+
+    expect(waits).toBe(0)
+    expect((await runtime.inspect(session)).state).toBe('running')
+  })
   test.each(['darwin', 'win32'] as const)(
     'passes ephemeral secrets to the %s child without persisting them',
     async (platform) => {

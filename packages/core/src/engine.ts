@@ -271,6 +271,7 @@ export interface SyncOptions {
 }
 
 export const CONFLICT_LEDGER_META_KEY = 'conflict_ledger'
+export const LOCAL_TOMBSTONE_OVERLAYS_META_KEY = 'local_tombstone_overlays'
 export const MAX_MERGE_ATTEMPTS = 3
 /** Bounded re-pull/re-merge cycles when the remote head advances mid-run. */
 export const MAX_SYNC_ATTEMPTS = 3
@@ -403,6 +404,61 @@ function loadLedger(state: SyncState): ConflictLedger {
   } catch {
     return new ConflictLedger()
   }
+}
+
+export function parseLocalTombstoneOverlays(raw: string | null): Map<string, string> {
+  if (raw === null) return new Map()
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return new Map()
+    return new Map(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, string] => typeof entry[1] === 'string',
+      ),
+    )
+  } catch {
+    return new Map()
+  }
+}
+
+/**
+ * Hides an unchanged machine-only shell while its synced counterpart remains
+ * deleted remotely. The helper is pure so read-only planning can use the same
+ * rule as the sync engine without modifying overlay state.
+ */
+export function filterLocalTombstoneOverlays(
+  local: Manifest,
+  remote: Manifest | null,
+  overlays: ReadonlyMap<string, string>,
+): Manifest {
+  if (overlays.size === 0) return local
+  const remoteEntries = entryMap(remote)
+  return {
+    ...local,
+    entries: local.entries.filter((entry) => {
+      const remembered = overlays.get(entry.path)
+      return (
+        remembered === undefined ||
+        remoteEntries.get(entry.path)?.kind !== 'tombstone' ||
+        remembered !== entry.hash
+      )
+    }),
+  }
+}
+
+function loadLocalTombstoneOverlays(state: SyncState): Map<string, string> {
+  return parseLocalTombstoneOverlays(state.getMeta(LOCAL_TOMBSTONE_OVERLAYS_META_KEY))
+}
+
+function saveLocalTombstoneOverlays(state: SyncState, overlays: ReadonlyMap<string, string>): void {
+  if (overlays.size === 0) {
+    state.removeMeta(LOCAL_TOMBSTONE_OVERLAYS_META_KEY)
+    return
+  }
+  state.setMeta(
+    LOCAL_TOMBSTONE_OVERLAYS_META_KEY,
+    JSON.stringify(Object.fromEntries([...overlays].sort(([a], [b]) => a.localeCompare(b)))),
+  )
 }
 
 function markerSurface(surface: Surface | undefined, storePath: string): boolean {
@@ -558,9 +614,28 @@ async function runSync(
   const remoteManifest = resolved.manifest
   const headUploads = resolved.uploads
 
+  // A remote tombstone can leave a machine-only shell on disk, such as Codex
+  // notify settings or a local Markdown marker block. Remember the projection
+  // hash of that shell so the next scan does not mistake it for a recreated
+  // synced file. Any user edit changes the hash and becomes an upload again.
+  const localTombstoneOverlays = loadLocalTombstoneOverlays(state)
+  const filteredLocalManifest = filterLocalTombstoneOverlays(
+    localManifest,
+    remoteManifest,
+    localTombstoneOverlays,
+  )
+  const localPaths = new Set(localManifest.entries.map((entry) => entry.path))
+  const plannedLocalPaths = new Set(filteredLocalManifest.entries.map((entry) => entry.path))
+  for (const storePath of [...localTombstoneOverlays.keys()]) {
+    if (!localPaths.has(storePath) || plannedLocalPaths.has(storePath)) {
+      localTombstoneOverlays.delete(storePath)
+    }
+  }
+  saveLocalTombstoneOverlays(state, localTombstoneOverlays)
+
   const plan = computeSyncPlan({
     base: baseManifest,
-    local: localManifest,
+    local: filteredLocalManifest,
     remote: remoteManifest,
     exclude: (storePath) => excluded(storePath) || ledger.isExcluded(storePath),
   })
@@ -650,26 +725,23 @@ async function runSync(
   const gate = new QuiescenceGate(options.quiescence ?? {})
 
   const changed: string[] = []
-  const conflicts: ConflictArtifact[] = []
+  const conflicts: ConflictArtifact[] = ledger.records().map((record) => ({
+    path: record.path,
+    content: '',
+    device: record.device,
+    createdAt: record.createdAt,
+  }))
   const blocked: string[] = []
   const deferred: string[] = []
   const tombstones = new Set<string>()
-  // Hints queued by the previous run's deferrals. The scan just rediscovered
-  // what still needs work, so the rows are consumed instead of left to pile up.
-  state.drainPendingOps('retry')
   const uploadedRefs = new Map<string, BlobRef>(headUploads)
   const uploadsInFlight = new Map<string, Promise<BlobRef>>()
   let uploaded = headUploads.size
   let downloaded = 0
 
-  const defer = (storePath: string, reason: string): void => {
+  const defer = (storePath: string): void => {
     if (deferred.includes(storePath)) return
     deferred.push(storePath)
-    state.enqueueOp({
-      kind: 'retry',
-      payload: JSON.stringify({ storePath, reason }),
-      createdAt: now().toISOString(),
-    })
   }
 
   const sealUpload = async (projection: string): Promise<BlobRef> => {
@@ -700,6 +772,18 @@ async function runSync(
     surface.transforms.map((spec) => spec.kind).filter((kind) => kind !== 'markerBlocks')
   const allKinds = (surface: Surface): TransformKind[] =>
     surface.transforms.map((spec) => spec.kind)
+
+  const keepsDeviceLocalContent = (surface: Surface): boolean =>
+    surface.transforms.some((spec) =>
+      ['markerBlocks', 'claudeMcpExtract', 'codexTomlSplit', 'codexAutomationSplit'].includes(
+        spec.kind,
+      ),
+    )
+
+  const emptyProjection = (surface: Surface): string =>
+    surface.transforms.some((spec) => spec.kind === 'claudeMcpExtract')
+      ? '{\n  "mcpServers": {}\n}\n'
+      : ''
 
   const project = (
     surface: Surface,
@@ -878,18 +962,18 @@ async function runSync(
       const remoteText = openText(key, 'content', bytes, fileContext)
       const content = fromStore(file, declaredPath, remoteText)
       if (content === null) {
-        defer(file.storePath, 'broken marker block in local file')
+        defer(file.storePath)
         continue
       }
       const before = guard(declaredPath)
       if (!unchangedSinceScan(file, declaredPath, before)) {
-        defer(file.storePath, 'local file changed since the scan')
+        defer(file.storePath)
         continue
       }
       if (before !== null) gate.prime(declaredPath, before.mtimeMs)
       const current = guard(declaredPath)
       if (current !== null && gate.observe(declaredPath, current.mtimeMs) !== 'quiescent') {
-        defer(file.storePath, 'local file recently written')
+        defer(file.storePath)
         continue
       }
       try {
@@ -903,7 +987,7 @@ async function runSync(
         changed.push(file.storePath)
         downloaded += 1
       } catch (error) {
-        if (error instanceof StaleWriteError) defer(file.storePath, 'changed while applying')
+        if (error instanceof StaleWriteError) defer(file.storePath)
         else throw error
       }
     }
@@ -938,7 +1022,7 @@ async function runSync(
       for (let attempt = 0; attempt < MAX_MERGE_ATTEMPTS && !merged; attempt += 1) {
         const current = guard(declaredPath)
         if (current !== null && gate.observe(declaredPath, current.mtimeMs) !== 'quiescent') {
-          defer(file.storePath, 'local file recently written')
+          defer(file.storePath)
           break
         }
         const localRaw = readTextOrNull(declaredPath)
@@ -948,12 +1032,12 @@ async function runSync(
         try {
           const outcome = uploadProjection(surface, file, localRaw, contentKinds(surface))
           if (outcome.blocked !== null) {
-            defer(file.storePath, 'local file blocked by secret rules')
+            defer(file.storePath)
             break
           }
           localText = outcome.content
         } catch {
-          defer(file.storePath, 'local projection failed')
+          defer(file.storePath)
           break
         }
         const result = merge(
@@ -1022,7 +1106,7 @@ async function runSync(
           if (!(error instanceof StaleWriteError)) throw error
         }
       }
-      if (!merged) defer(file.storePath, 'merge could not settle')
+      if (!merged) defer(file.storePath)
     }
     progress.completed += batch.length
     notify()
@@ -1032,25 +1116,69 @@ async function runSync(
     if (file.resolution !== 'delete-local') continue
     const declaredPath = declaredPathFor(file)
     if (declaredPath === null) continue
+    const surface = surfaces.get(file.surfaceId)
+    if (surface === undefined) continue
     const before = guard(declaredPath)
     if (before === null) continue
     if (!unchangedSinceScan(file, declaredPath, before)) {
-      defer(file.storePath, 'local file changed since the scan')
+      defer(file.storePath)
       continue
     }
     gate.prime(declaredPath, before.mtimeMs)
     const current = guard(declaredPath)
     if (current !== null && gate.observe(declaredPath, current.mtimeMs) !== 'quiescent') {
-      defer(file.storePath, 'local file recently written')
+      defer(file.storePath)
       continue
     }
-    applier.remove({
-      storePath: file.storePath,
-      surfaceId: file.surfaceId,
-      declaredPath,
-      baseRevision: null,
-    })
-    changed.push(file.storePath)
+    try {
+      if (keepsDeviceLocalContent(surface)) {
+        const content = fromStore(file, declaredPath, emptyProjection(surface))
+        if (content === null) {
+          defer(file.storePath)
+          continue
+        }
+        if (content.trim() === '') {
+          localTombstoneOverlays.delete(file.storePath)
+          saveLocalTombstoneOverlays(state, localTombstoneOverlays)
+          applier.remove({
+            storePath: file.storePath,
+            surfaceId: file.surfaceId,
+            declaredPath,
+            baseRevision: null,
+            expected: before,
+          })
+        } else if (content !== readTextOrNull(declaredPath)) {
+          const projectionHash = hashContent(
+            uploadProjection(surface, file, content, allKinds(surface)).content,
+          )
+          localTombstoneOverlays.set(file.storePath, projectionHash)
+          saveLocalTombstoneOverlays(state, localTombstoneOverlays)
+          applier.write({
+            storePath: file.storePath,
+            declaredPath,
+            content,
+            expected: before,
+            ...(file.local === null ? {} : { mode: file.local.mode }),
+          })
+        } else {
+          localTombstoneOverlays.set(file.storePath, file.local?.hash ?? hashContent(''))
+          saveLocalTombstoneOverlays(state, localTombstoneOverlays)
+        }
+        tombstones.add(file.storePath)
+      } else {
+        applier.remove({
+          storePath: file.storePath,
+          surfaceId: file.surfaceId,
+          declaredPath,
+          baseRevision: null,
+          expected: before,
+        })
+      }
+      changed.push(file.storePath)
+    } catch (error) {
+      if (error instanceof StaleWriteError) defer(file.storePath)
+      else throw error
+    }
   }
 
   const newUploads: Array<{ file: PlanFile; declaredPath: string }> = []
@@ -1095,6 +1223,7 @@ async function runSync(
   const remoteByPath = entryMap(remoteManifest)
   const newEntries: ManifestEntry[] = []
   for (const entry of finalScan.manifest.entries) {
+    if (tombstones.has(entry.path)) continue
     if (ledger.isExcluded(entry.path) || excluded(entry.path)) continue
     if (!entrySyncable(entry, surfaces.get(entry.surfaceId))) continue
     const manifestEntry: ManifestEntry = {
@@ -1190,8 +1319,7 @@ async function runSync(
     const headMeta =
       headId === null ? undefined : revisionList.revisions.find((r) => r.id === headId)
     if (remoteMatches && headMeta !== undefined) {
-      state.saveManifest(revisionRecord(headMeta, 'base'), newEntries)
-      state.setBaseRevision(headMeta.id)
+      state.saveBaseManifest(revisionRecord(headMeta, 'base'), newEntries)
       report.revisionId = headMeta.id
       return report
     }
@@ -1225,7 +1353,7 @@ async function runSync(
     if (result.reason === 'stale-parents') throw new StaleParentsError(result.heads ?? [])
     throw new Error(`remote rejected the commit; missing blobs: ${result.missing.join(', ')}`)
   }
-  state.saveManifest(
+  state.saveBaseManifest(
     {
       id: revisionId,
       deviceId,
@@ -1237,7 +1365,6 @@ async function runSync(
     },
     newEntries,
   )
-  state.setBaseRevision(revisionId)
   state.setKnownHeads(storeId, [revisionId])
   report.revisionId = revisionId
   return report
