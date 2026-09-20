@@ -109,6 +109,10 @@ Device tokens originally expired 90 days after enrollment even when the computer
 
 The first `v0.1.0` release stalled because GitHub retired the `macos-13` hosted runner label. The Intel build now uses `macos-15-intel`. A failed tag stays in the repository, and the corrected workflow publishes the next patch version instead of rewriting public tag history.
 
+### Optional package publishing should not fail binary releases
+
+The first complete binary release also tried to publish to npm without a configured token. That made the workflow red after GitHub had already published every signed binary and checksum. The beta installs from GitHub Releases, so npm publishing is excluded until the package name and registry authentication are set up as a separate release path.
+
 ### A real round trip needs content and cleanup verification
 
 A disposable skill was created on the Mac mini, uploaded, downloaded to the laptop, and verified by SHA-256. The laptop then changed the file, uploaded it, and the Mac mini downloaded the exact matching hash. The Mac mini published the deletion and the laptop removed its copy. Every transfer completed without conflicts, blocked secrets, deferred files, or queued work.
