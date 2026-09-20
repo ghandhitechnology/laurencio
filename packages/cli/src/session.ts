@@ -45,7 +45,7 @@ import {
   type RevisionId as RevisionIdType,
   type StoreId,
 } from '@laurencio/protocol'
-import { type CliConfig, effectiveAdapters, loadCliConfig } from './config'
+import { type CliConfig, DEFAULT_SERVER_URL, effectiveAdapters, loadCliConfig } from './config'
 import { adapterContext, type CommandContext, remoteDirFlag } from './context'
 import { cliError } from './errors'
 import { collectProbes } from './probes'
@@ -71,7 +71,10 @@ export function baseUrlFor(ctx: CommandContext, config: CliConfig): string | nul
   if (fromFlag !== undefined && fromFlag !== '') return fromFlag
   const fromEnv = ctx.env.LAURENCIO_SERVER
   if (fromEnv !== undefined && fromEnv !== '') return fromEnv
-  return config.server
+  if (config.server !== null) return config.server
+  // File remotes are an explicit local/test mode and must stay disconnected.
+  if (remoteDirFlag(ctx) !== null) return null
+  return DEFAULT_SERVER_URL
 }
 
 export async function openRemote(

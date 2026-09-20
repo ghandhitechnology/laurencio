@@ -110,9 +110,10 @@ export function claudeSurfaces(ctx: AdapterContext): Surface[] {
     claudeFile(
       'instructions',
       `${CONFIG_ROOT}/CLAUDE.md`,
-      'personal instructions loaded in every project',
+      'personal instructions loaded in every project; local marker blocks stay on this device',
       {
         format: 'markdown',
+        transforms: ['markerBlocks'],
       },
     ),
     claudeTree('rules', `${CONFIG_ROOT}/rules`, 'personal instruction files split by topic'),

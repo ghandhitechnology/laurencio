@@ -13,6 +13,7 @@ import {
   type Surface,
   stripLocalBlocks,
   type TokenEnv,
+  usesMarkerBlocks,
 } from '@laurencio/core'
 import type { CommandContext } from './context'
 import { cliError } from './errors'
@@ -54,8 +55,8 @@ export function surfaceIdForStorePath(
   return null
 }
 
-export function hasMarkerBlocks(surface: Surface | undefined): boolean {
-  return surface?.transforms.some((transform) => transform.kind === 'markerBlocks') === true
+export function hasMarkerBlocks(surface: Surface | undefined, filePath: string): boolean {
+  return usesMarkerBlocks(surface, filePath)
 }
 
 /** The upload projection of a local file: marker blocks leave, the rest stays. */
@@ -64,7 +65,7 @@ export function projectedContent(
   localPath: string,
   raw: string,
 ): string {
-  if (!hasMarkerBlocks(surface)) return raw
+  if (!hasMarkerBlocks(surface, localPath)) return raw
   return stripLocalBlocks(localPath, raw)
 }
 

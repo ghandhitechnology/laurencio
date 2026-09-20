@@ -224,6 +224,30 @@ describe('revoked device tokens', () => {
 })
 
 describe('device token lifetime', () => {
+  test('active devices renew a nearly expired token without changing its secret', async () => {
+    const client = createClient(server.app)
+    const device = await enrollDevice(client, { name: 'still-syncing' })
+    await server.db
+      .update(deviceTokens)
+      .set({
+        expiresAt: new Date(Date.now() + 60_000),
+        lastUsedAt: new Date(Date.now() - 120_000),
+      })
+      .where(eq(deviceTokens.tokenHash, hashToken(device.token)))
+    await client.expectStatus('/v1/me', 200, { headers: authHeaders(device.token) })
+    const [renewed] = await server.db
+      .select()
+      .from(deviceTokens)
+      .where(eq(deviceTokens.tokenHash, hashToken(device.token)))
+    expect((renewed?.expiresAt?.getTime() ?? 0) - Date.now()).toBeGreaterThan(TOKEN_TTL_MS - 60_000)
+    await client.expectStatus('/v1/me', 200, { headers: authHeaders(device.token) })
+    const [throttled] = await server.db
+      .select()
+      .from(deviceTokens)
+      .where(eq(deviceTokens.tokenHash, hashToken(device.token)))
+    expect(throttled?.expiresAt).toEqual(renewed?.expiresAt)
+  })
+
   test('mints a 90-day token and records last use', async () => {
     const client = createClient(server.app)
     const device = await enrollDevice(client, { name: 'expiring' })
@@ -253,5 +277,10 @@ describe('device token lifetime', () => {
     expect(await response.json()).toMatchObject({
       error: { code: 'unauthenticated', details: { reason: 'token_expired' } },
     })
+    const [expired] = await server.db
+      .select()
+      .from(deviceTokens)
+      .where(eq(deviceTokens.tokenHash, hashToken(device.token)))
+    expect(expired?.expiresAt?.getTime()).toBeLessThan(Date.now())
   })
 })

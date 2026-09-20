@@ -2,6 +2,7 @@ import os from 'node:os'
 import { loginWithDeviceCode, readDeviceIdentity } from '@laurencio/core'
 import { loadCliConfig, saveCliConfig } from '../config'
 import type { CommandContext } from '../context'
+import { deviceApproved, presentDeviceAuthorization } from '../device-auth'
 import { cliError } from '../errors'
 import { setStoreKey } from '../passphrase'
 import { readPassphrase } from '../prompt'
@@ -60,13 +61,9 @@ export const loginCommand: CommandSpec = {
       deviceName,
       platform: ctx.platform,
       ...(ctx.deps.fetch === undefined ? {} : { fetch: ctx.deps.fetch }),
-      onPrompt: (prompt) => {
-        ctx.io.out(`Open ${prompt.verificationUri} and enter code ${prompt.userCode}`)
-        if (prompt.verificationUriComplete !== null) {
-          ctx.io.out(`Direct link: ${prompt.verificationUriComplete}`)
-        }
-      },
+      onPrompt: (prompt) => presentDeviceAuthorization(ctx, deviceName, prompt),
     })
+    deviceApproved(ctx, result.identity.name)
 
     const passphrase = await readPassphrase(ctx)
     const remote = await openRemote(ctx, {

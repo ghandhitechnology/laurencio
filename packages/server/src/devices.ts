@@ -7,7 +7,7 @@ import {
   type StoreId,
   type UserId,
 } from '@laurencio/protocol'
-import { and, desc, eq, isNull } from 'drizzle-orm'
+import { and, desc, eq, gt, isNull, or } from 'drizzle-orm'
 import type { Principal } from './context'
 import type { Database } from './db/client'
 import { auditLog, devices, deviceTokens, stores } from './db/schema'
@@ -19,7 +19,7 @@ export type StoreRow = typeof stores.$inferSelect
 export type DeviceTokenRow = typeof deviceTokens.$inferSelect
 
 const TOKEN_PREFIX = 'lrn_'
-/** Device tokens have to be re-minted at re-enrollment; the CLI already prompts. */
+/** Active devices renew this window; devices idle for 90 days must sign in again. */
 export const TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000
 
 export function hashToken(token: string): string {
@@ -154,7 +154,7 @@ export async function authenticateDeviceToken(
   }
 }
 
-/** Cheap presence bookkeeping; written at most once a minute per token. */
+/** Presence and sliding expiry, written at most once a minute per token. */
 export async function touchDevice(
   db: Database,
   auth: DeviceAuth,
@@ -164,9 +164,18 @@ export async function touchDevice(
   if (now.getTime() - lastUsed < 60_000) return
   await db
     .update(deviceTokens)
-    .set({ lastUsedAt: now })
-    .where(and(eq(deviceTokens.id, auth.token.id), isNull(deviceTokens.revokedAt)))
-  await db.update(devices).set({ lastSeenAt: now }).where(eq(devices.id, auth.device.id))
+    .set({ lastUsedAt: now, expiresAt: new Date(now.getTime() + TOKEN_TTL_MS) })
+    .where(
+      and(
+        eq(deviceTokens.id, auth.token.id),
+        isNull(deviceTokens.revokedAt),
+        or(isNull(deviceTokens.expiresAt), gt(deviceTokens.expiresAt, now)),
+      ),
+    )
+  await db
+    .update(devices)
+    .set({ lastSeenAt: now })
+    .where(and(eq(devices.id, auth.device.id), isNull(devices.revokedAt)))
 }
 
 /** Marks the device revoked and kills its tokens in the same transaction. */

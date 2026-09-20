@@ -9,7 +9,7 @@ A deployed service that authenticates a human in a browser, enrolls devices, and
 ## Changes
 
 - `packages/server/src/index.ts`: Hono app, request ids, structured logs, error shape from `packages/protocol`, `protocolVersion` middleware rejecting mismatches with an upgrade message.
-- `packages/server/src/auth.ts`: Better Auth with the device authorization plugin and GitHub OAuth. Session for the web approval page; device tokens for the CLI, one per device, revocable.
+- `packages/server/src/auth.ts`: Better Auth with the device authorization plugin and email sign-in for invited staging accounts. Session for the web approval page; device tokens for the CLI, one per device, revocable.
 - `packages/server/src/db/schema.ts`: Drizzle tables `users`, sessions and accounts (owned by Better Auth), `devices` (name, platform, createdAt, lastSeenAt, revokedAt), `device_tokens`, `kdf_params` (store id, salt, params, setAt, immutable after first write), `audit_log`.
 - `packages/server/src/routes/{health,me,devices,kdf}.ts`: `/health`, `/v1/me`, `GET/POST/DELETE /v1/devices`, `GET/PUT /v1/stores/:id/kdf-params`.
 - `packages/server/src/web/`: a minimal approval page at `/device` (enter or confirm the user code) and a device management page at `/account/devices` (list, rename, revoke). Server-rendered, no client framework.

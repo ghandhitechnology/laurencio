@@ -7,11 +7,16 @@ import {
   conflictCopyPath,
   createFileRemote,
   crypto,
+  defaultPolicy,
   HttpRemoteError,
+  type Manifest,
   parseManifest,
   SyncState,
 } from '@laurencio/core'
-import { DeviceId, PROTOCOL_VERSION } from '@laurencio/protocol'
+import { DeviceId, PROTOCOL_VERSION, RevisionId, SurfaceId } from '@laurencio/protocol'
+import { DEFAULT_SERVER_URL, loadCliConfig, saveCliConfig } from '../src/config'
+import { computeDrift } from '../src/plan'
+import { baseUrlFor } from '../src/session'
 import {
   makeScratch,
   memoryKeychain,
@@ -27,6 +32,47 @@ import {
 const QUICK = { quiescence: { windowMs: 0 } }
 
 describe('cli parsing', () => {
+  test('does not report remote tombstones as local drift', () => {
+    const base: Manifest = {
+      revisionId: RevisionId.parse('00000000000000000000000001'),
+      deviceId: DeviceId.parse('00000000000000000000000002'),
+      createdAt: NOW,
+      entries: [
+        {
+          surfaceId: SurfaceId.parse('codex.skills'),
+          path: `\${CODEX_HOME}/skills/.system/managed/SKILL.md`,
+          kind: 'tombstone',
+          policy: 'sync',
+          hash: '0'.repeat(64),
+          size: 0,
+          mode: 0,
+        },
+      ],
+    }
+    expect(computeDrift({ ...base, entries: [] }, base)).toEqual([])
+  })
+
+  test('uses the public beta server unless the device chooses another remote', () => {
+    const scratch = makeScratch()
+    try {
+      const context = {
+        flags: { server: undefined, remoteDir: undefined },
+        env: {},
+      } as Parameters<typeof baseUrlFor>[0]
+      expect(baseUrlFor(context, { server: null, policy: defaultPolicy() })).toBe(
+        DEFAULT_SERVER_URL,
+      )
+
+      const localContext = {
+        flags: { server: undefined, remoteDir: scratch.remoteDir },
+        env: {},
+      } as Parameters<typeof baseUrlFor>[0]
+      expect(baseUrlFor(localContext, { server: null, policy: defaultPolicy() })).toBeNull()
+    } finally {
+      scratch.cleanup()
+    }
+  })
+
   test('prints version and help, and rejects unknown commands', async () => {
     const scratch = makeScratch()
     try {
@@ -240,10 +286,16 @@ describe('init and sync', () => {
       // Device A has a divergent local file and chooses replace.
       await seedStore({ home: scratch.home, remoteDir: scratch.remoteDir })
       writeHomeFile(scratch.home, '.claude/CLAUDE.md', 'local version\n')
+      const policy = defaultPolicy()
+      policy.harnesses.claude = {
+        enabled: true,
+        surfaces: { 'claude.instructions': 'on' },
+      }
+      saveCliConfig(scratch.home, { server: null, policy })
       const out = await runForTest(['init'], {
         home: scratch.home,
         remoteDir: scratch.remoteDir,
-        answers: ['n', 'r'],
+        answers: ['k', 'r'],
         deps: QUICK,
       })
       expect(out.exitCode).toBe(0)
@@ -264,7 +316,82 @@ describe('init and sync', () => {
     }
   })
 
-  test('init manual enrollment leaves the local file alone', async () => {
+  test('init backup includes only enabled owner surfaces and preserves nested links', async () => {
+    const scratch = makeScratch()
+    const other = makeScratch()
+    try {
+      await seedStore({ home: other.home, remoteDir: scratch.remoteDir, deviceName: 'other' })
+      writeHomeFile(other.home, '.claude/CLAUDE.md', 'remote version\n')
+      await runForTest(['init', '--yes'], {
+        home: other.home,
+        remoteDir: scratch.remoteDir,
+        deps: QUICK,
+      })
+
+      await seedStore({ home: scratch.home, remoteDir: scratch.remoteDir })
+      writeHomeFile(scratch.home, '.claude/CLAUDE.md', 'local version\n')
+      writeHomeFile(scratch.home, '.claude/.credentials.json', '{"token":"local"}\n')
+      writeHomeFile(scratch.home, '.claude/sessions/session.jsonl', 'private transcript\n')
+      writeHomeFile(scratch.home, '.claude/rules/disabled.md', 'disabled\n')
+      writeHomeFile(scratch.home, '.claude/projects/repo/memory/MEMORY.md', 'memory\n')
+      writeHomeFile(scratch.home, 'unrelated/private.txt', 'outside the surface\n')
+      fs.mkdirSync(path.join(scratch.home, '.claude/skills'), { recursive: true })
+      fs.symlinkSync(
+        path.join(scratch.home, 'unrelated'),
+        path.join(scratch.home, '.claude/skills/external'),
+      )
+      fs.mkdirSync(path.join(scratch.home, '.codex'), { recursive: true })
+      fs.symlinkSync(
+        path.join(scratch.home, '.claude/skills'),
+        path.join(scratch.home, '.codex/skills'),
+      )
+
+      const policy = defaultPolicy()
+      policy.harnesses.claude = {
+        enabled: true,
+        surfaces: { 'claude.rules': 'off' },
+      }
+      saveCliConfig(scratch.home, { server: null, policy })
+
+      const out = await runForTest(['init'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        answers: ['k', 'm'],
+        deps: QUICK,
+      })
+      expect(out.exitCode).toBe(0)
+
+      const backupRoot = path.join(scratch.home, '.laurencio/backups/20260919T120000Z')
+      const index = JSON.parse(
+        readHomeFile(scratch.home, '.laurencio/backups/20260919T120000Z/backup.json'),
+      ) as {
+        entries: { label: string }[]
+      }
+      const labels = index.entries.map((entry) => entry.label)
+      expect(labels).toContain('claude.instructions')
+      expect(labels).toContain('claude.skills')
+      expect(labels).not.toContain('claude.credentials')
+      expect(labels).not.toContain('claude.sessions')
+      expect(labels).not.toContain('claude.state')
+      expect(labels).not.toContain('claude.rules')
+      expect(labels).not.toContain('claude.memory')
+      expect(labels).not.toContain('codex.skills')
+
+      const skillsIndex = labels.indexOf('claude.skills')
+      expect(skillsIndex).toBeGreaterThanOrEqual(0)
+      const skillsBackup = path.join(
+        backupRoot,
+        `${String(skillsIndex + 1).padStart(2, '0')}-claude.skills`,
+        'external',
+      )
+      expect(fs.lstatSync(skillsBackup).isSymbolicLink()).toBe(true)
+    } finally {
+      scratch.cleanup()
+      other.cleanup()
+    }
+  })
+
+  test('init decide later leaves the local file alone and disables future syncs', async () => {
     const scratch = makeScratch()
     const other = makeScratch()
     try {
@@ -277,18 +404,34 @@ describe('init and sync', () => {
       })
       await seedStore({ home: scratch.home, remoteDir: scratch.remoteDir })
       writeHomeFile(scratch.home, '.claude/CLAUDE.md', 'local version\n')
+      const policy = defaultPolicy()
+      policy.harnesses.claude = {
+        enabled: true,
+        surfaces: { 'claude.instructions': 'on' },
+      }
+      saveCliConfig(scratch.home, { server: null, policy })
       const out = await runForTest(['init'], {
         home: scratch.home,
         remoteDir: scratch.remoteDir,
-        answers: ['n', 's'],
+        answers: ['k', 's'],
         deps: QUICK,
       })
       expect(out.exitCode).toBe(0)
       expect(out.output).toContain('Enrollment: claude.instructions s')
       expect(readHomeFile(scratch.home, '.claude/CLAUDE.md')).toBe('local version\n')
+      expect(
+        loadCliConfig(scratch.home).policy.harnesses.claude?.surfaces['claude.instructions'],
+      ).toBe('off')
       const remote = createFileRemote({ dir: scratch.remoteDir })
-      const page = await remote.listRevisions()
-      expect(page.revisions.length).toBe(2)
+      expect((await remote.listRevisions()).revisions.length).toBe(1)
+
+      const sync = await runForTest(['sync'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        deps: QUICK,
+      })
+      expect(sync.exitCode).toBe(0)
+      expect((await remote.listRevisions()).revisions.length).toBe(1)
     } finally {
       scratch.cleanup()
       other.cleanup()

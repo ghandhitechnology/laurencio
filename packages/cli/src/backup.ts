@@ -52,9 +52,13 @@ export function createBackup(home: string, roots: readonly BackupRoot[], now: Da
     if (exists) {
       const target = path.join(dir, suffix)
       fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 })
-      // Dereference: a backup must hold content, not links into the tree that
-      // an enrollment replace is about to overwrite.
-      fs.cpSync(root.path, target, { recursive: true, dereference: true, preserveTimestamps: true })
+      // Keep links as links. Following a link nested inside a surface could copy an
+      // unrelated tree that Laurencio neither owns nor intends to replace.
+      fs.cpSync(root.path, target, {
+        recursive: true,
+        dereference: false,
+        preserveTimestamps: true,
+      })
       copiedAny = true
     }
     entries.push({ label: root.label, path: root.path, copied: exists })

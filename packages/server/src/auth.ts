@@ -1,6 +1,7 @@
 import { newId } from '@laurencio/protocol'
 import { betterAuth } from 'better-auth'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
+import { APIError, createAuthMiddleware as authHook } from 'better-auth/api'
 import { bearer, deviceAuthorization } from 'better-auth/plugins'
 import type { Context, Next } from 'hono'
 import type { AppBindings } from './context'
@@ -13,15 +14,6 @@ import { asUserId } from './ids'
 
 export function createAuth(options: { db: Database; env: ServerEnv }) {
   const { db, env } = options
-  const github =
-    env.auth.githubClientId && env.auth.githubClientSecret
-      ? {
-          github: {
-            clientId: env.auth.githubClientId,
-            clientSecret: env.auth.githubClientSecret,
-          },
-        }
-      : null
   return betterAuth({
     appName: 'Laurencio',
     baseURL: env.publicUrl,
@@ -29,7 +21,16 @@ export function createAuth(options: { db: Database; env: ServerEnv }) {
     database: drizzleAdapter(db, { provider: 'pg', schema, usePlural: true }),
     trustedOrigins: env.trustedOrigins,
     emailAndPassword: { enabled: env.auth.allowDevSignin },
-    ...(github ? { socialProviders: github } : {}),
+    hooks: {
+      before: authHook(async (ctx) => {
+        if (env.nodeEnv !== 'staging') return
+        if (ctx.path !== '/sign-in/email' && ctx.path !== '/sign-up/email') return
+        const email = typeof ctx.body?.email === 'string' ? ctx.body.email.trim().toLowerCase() : ''
+        if (!env.auth.stagingEmailAllowlist.includes(email)) {
+          throw new APIError('FORBIDDEN', { message: 'This email does not have staging access.' })
+        }
+      }),
+    },
     // Generate ids in the same sortable format the protocol uses.
     advanced: { database: { generateId: () => newId() } },
     plugins: [

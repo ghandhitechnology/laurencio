@@ -217,6 +217,7 @@ describe('claude surface map', () => {
 
     expect(get('claude.settings').policy).toBe('sync')
     expect(get('claude.settings').transforms).toEqual([{ kind: 'pathTokenize' }])
+    expect(get('claude.instructions').transforms).toEqual([{ kind: 'markerBlocks' }])
     expect(get('claude.skills')).toMatchObject({
       kind: 'tree',
       exclude: ['synced', 'synced/**'],

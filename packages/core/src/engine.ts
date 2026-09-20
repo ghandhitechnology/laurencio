@@ -57,6 +57,7 @@ import {
   enforceUploadRules,
   localPathForMapping,
   type PathMapping,
+  usesMarkerBlocks,
 } from './transforms'
 import type { AdapterContext, HarnessAdapter, Surface, TransformKind } from './types'
 
@@ -240,6 +241,18 @@ export function computeSyncPlan(input: PlanInput): SyncPlan {
   return { files, ops }
 }
 
+export interface SyncProgress {
+  phase: 'scanning' | 'comparing' | 'downloading' | 'merging' | 'uploading' | 'saving'
+  /** Candidate files checked, including skipped or deferred work. */
+  completed: number
+  planned: number | null
+  /** Successful content blob transfers; excludes manifest traffic. */
+  uploaded: number
+  downloaded: number
+  uploadedBytes: number
+  downloadedBytes: number
+}
+
 export interface SyncOptions {
   adapters: readonly HarnessAdapter[]
   ctx: AdapterContext
@@ -254,12 +267,44 @@ export interface SyncOptions {
   now?: () => Date
   /** Deterministic revision ids for tests. */
   createRevisionId?: () => RevisionId
+  onProgress?: (progress: SyncProgress) => void
 }
 
 export const CONFLICT_LEDGER_META_KEY = 'conflict_ledger'
 export const MAX_MERGE_ATTEMPTS = 3
 /** Bounded re-pull/re-merge cycles when the remote head advances mid-run. */
 export const MAX_SYNC_ATTEMPTS = 3
+/** Keeps initial uploads moving without opening hundreds of presign requests at once. */
+export const MAX_CONCURRENT_UPLOADS = 4
+/** Download requests share the upload bound, while local writes remain serialized. */
+export const MAX_CONCURRENT_DOWNLOADS = MAX_CONCURRENT_UPLOADS
+
+async function runBounded<T>(
+  items: readonly T[],
+  limit: number,
+  work: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0
+  let stopped = false
+  const failures: Array<{ index: number; error: unknown }> = []
+  const worker = async (): Promise<void> => {
+    while (!stopped) {
+      const index = next
+      next += 1
+      const item = items[index]
+      if (item === undefined) return
+      try {
+        await work(item)
+      } catch (error) {
+        failures.push({ index, error })
+        stopped = true
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  const first = failures.sort((a, b) => a.index - b.index)[0]
+  if (first !== undefined) throw first.error
+}
 
 /** A store with several incomparable heads the engine cannot merge safely. */
 export class RemoteForkError extends Error {
@@ -360,8 +405,8 @@ function loadLedger(state: SyncState): ConflictLedger {
   }
 }
 
-function markerSurface(surface: Surface | undefined): boolean {
-  return surface?.transforms.some((transform) => transform.kind === 'markerBlocks') === true
+function markerSurface(surface: Surface | undefined, storePath: string): boolean {
+  return usesMarkerBlocks(surface, storePath)
 }
 
 function readText(filePath: string): string {
@@ -391,6 +436,23 @@ async function runSync(
   createRevisionId: () => RevisionId,
 ): Promise<SyncReport> {
   const { ctx, deviceId, storeId, key, state, remote } = options
+  const progress: SyncProgress = {
+    phase: 'scanning',
+    completed: 0,
+    planned: null,
+    uploaded: 0,
+    downloaded: 0,
+    uploadedBytes: 0,
+    downloadedBytes: 0,
+  }
+  const notify = (phase = progress.phase): void => {
+    progress.phase = phase
+    // Presentation must never interrupt a write or change the result of a sync.
+    try {
+      options.onProgress?.({ ...progress })
+    } catch {}
+  }
+  notify()
   const tokenEnv: TokenEnv = { home: ctx.home, platform: ctx.platform, env: ctx.env }
   const fileContext: BlobContext = { storeId, blobType: 'file', protocolVersion: PROTOCOL_VERSION }
   const manifestContext: BlobContext = {
@@ -405,7 +467,7 @@ async function runSync(
   }
   const policy = options.policy
   const prune = policy?.prune === true
-  const ignores = (policy?.ignore ?? []).map((pattern) => pm(pattern))
+  const ignores = (policy?.ignore ?? []).map((pattern) => pm(pattern, { dot: true }))
   /** A harness toggle or a surface toggle takes the surface out of this device's graph. */
   const surfaceDisabled = (surface: Surface): boolean => {
     const harness = policy?.harnesses?.[surface.harness]
@@ -472,6 +534,7 @@ async function runSync(
 
   const baseRevisionId = state.getBaseRevision()
   const baseManifest = baseRevisionId === null ? null : state.getManifest(baseRevisionId)
+  notify('comparing')
   const revisionList = await remote.listRevisions()
   const headIds =
     revisionList.heads.length > 0
@@ -508,6 +571,11 @@ async function runSync(
     return entry !== null && entrySyncable(entry, surface)
   })
   plan.files = active
+  progress.planned = active.filter(
+    (file) =>
+      file.resolution === 'upload' || file.resolution === 'download' || file.resolution === 'merge',
+  ).length
+  notify()
 
   // The stored layout carries link knowledge forward: a link a previous run saw
   // is recreated when the layout says it belongs there, even if it is missing now.
@@ -590,6 +658,7 @@ async function runSync(
   // what still needs work, so the rows are consumed instead of left to pile up.
   state.drainPendingOps('retry')
   const uploadedRefs = new Map<string, BlobRef>(headUploads)
+  const uploadsInFlight = new Map<string, Promise<BlobRef>>()
   let uploaded = headUploads.size
   let downloaded = 0
 
@@ -604,11 +673,26 @@ async function runSync(
   }
 
   const sealUpload = async (projection: string): Promise<BlobRef> => {
+    const hash = hashContent(projection)
+    const known = uploadedRefs.get(hash)
+    if (known !== undefined) return known
+    const pending = uploadsInFlight.get(hash)
+    if (pending !== undefined) return pending
     const sealed = sealText(key, 'content', projection, fileContext)
-    const ref = await remote.putBlob({ blobId: sealed.blobId, bytes: sealed.bytes })
-    uploadedRefs.set(hashContent(projection), ref)
-    uploaded += 1
-    return ref
+    const upload = remote.putBlob({ blobId: sealed.blobId, bytes: sealed.bytes }).then((ref) => {
+      uploadedRefs.set(hash, ref)
+      uploaded += 1
+      progress.uploaded += 1
+      progress.uploadedBytes += sealed.bytes.length
+      notify()
+      return ref
+    })
+    uploadsInFlight.set(hash, upload)
+    try {
+      return await upload
+    } finally {
+      uploadsInFlight.delete(hash)
+    }
   }
 
   /** Merge paths handle marker blocks themselves, so their projections skip that kind. */
@@ -653,7 +737,7 @@ async function runSync(
     if (content === null) return false
     let outcome: { content: string; blocked: string | null }
     try {
-      if (markerSurface(surface)) {
+      if (markerSurface(surface, file.storePath)) {
         state.saveMarkers(declaredPath, parseLocalBlocks(declaredPath, content))
       }
       outcome = uploadProjection(surface, file, content, allKinds(surface))
@@ -672,7 +756,7 @@ async function runSync(
 
   const reinsert = (file: PlanFile, declaredPath: string, remoteText: string): string | null => {
     const surface = surfaces.get(file.surfaceId)
-    if (surface === undefined || !markerSurface(surface)) return remoteText
+    if (surface === undefined || !markerSurface(surface, file.storePath)) return remoteText
     const current = readTextOrNull(declaredPath)
     try {
       if (current !== null) {
@@ -734,154 +818,214 @@ async function runSync(
     }
   }
 
-  for (const file of active) {
-    if (file.resolution !== 'download') continue
-    const declaredPath = declaredPathFor(file)
-    const remoteEntry = file.remote
-    if (declaredPath === null || !isFile(remoteEntry) || remoteEntry.blob === undefined) continue
-    const bytes = await remote.getBlob(remoteEntry.blob.id)
-    const remoteText = openText(key, 'content', bytes, fileContext)
-    const content = fromStore(file, declaredPath, remoteText)
-    if (content === null) {
-      defer(file.storePath, 'broken marker block in local file')
-      continue
+  const blobRefsFor = (file: PlanFile): BlobRef[] => {
+    const refs: BlobRef[] = []
+    if (isFile(file.remote) && file.remote.blob !== undefined) refs.push(file.remote.blob)
+    if (file.resolution === 'merge' && isFile(file.base) && file.base.blob !== undefined) {
+      refs.push(file.base.blob)
     }
-    const before = guard(declaredPath)
-    if (!unchangedSinceScan(file, declaredPath, before)) {
-      defer(file.storePath, 'local file changed since the scan')
-      continue
+    return refs
+  }
+  const transferBatches = (files: readonly PlanFile[]): PlanFile[][] => {
+    const batches: PlanFile[][] = []
+    let batch: PlanFile[] = []
+    let ids = new Set<string>()
+    for (const file of files) {
+      const nextIds = blobRefsFor(file)
+        .map((ref) => ref.id)
+        .filter((id) => !ids.has(id))
+      if (batch.length > 0 && ids.size + nextIds.length > MAX_CONCURRENT_DOWNLOADS) {
+        batches.push(batch)
+        batch = []
+        ids = new Set<string>()
+      }
+      batch.push(file)
+      for (const ref of blobRefsFor(file)) ids.add(ref.id)
     }
-    if (before !== null) gate.prime(declaredPath, before.mtimeMs)
-    const current = guard(declaredPath)
-    if (current !== null && gate.observe(declaredPath, current.mtimeMs) !== 'quiescent') {
-      defer(file.storePath, 'local file recently written')
-      continue
+    if (batch.length > 0) batches.push(batch)
+    return batches
+  }
+  const prefetchBlobs = async (files: readonly PlanFile[]): Promise<Map<string, Uint8Array>> => {
+    const refs = new Map<string, BlobRef>()
+    for (const file of files) {
+      for (const ref of blobRefsFor(file)) refs.set(ref.id, ref)
     }
-    try {
-      applier.write({
-        storePath: file.storePath,
-        declaredPath,
-        content,
-        mode: remoteEntry.mode,
-        expected: before,
-      })
-      changed.push(file.storePath)
-      downloaded += 1
-    } catch (error) {
-      if (error instanceof StaleWriteError) defer(file.storePath, 'changed while applying')
-      else throw error
-    }
+    const blobs = new Map<string, Uint8Array>()
+    await runBounded([...refs.values()], MAX_CONCURRENT_DOWNLOADS, async (ref) => {
+      const bytes = await remote.getBlob(ref.id)
+      blobs.set(ref.id, bytes)
+      progress.downloaded += 1
+      progress.downloadedBytes += bytes.length
+      notify()
+    })
+    return blobs
+  }
+  const prefetchedBlob = (blobs: ReadonlyMap<string, Uint8Array>, ref: BlobRef): Uint8Array => {
+    const bytes = blobs.get(ref.id)
+    if (bytes === undefined) throw new Error(`blob ${ref.id} was not prefetched`)
+    return bytes
   }
 
-  for (const file of active) {
-    if (file.resolution !== 'merge') continue
-    const declaredPath = declaredPathFor(file)
-    const remoteEntry = file.remote
-    const surface = surfaces.get(file.surfaceId)
-    if (declaredPath === null || !isFile(remoteEntry) || remoteEntry.blob === undefined) continue
-    if (surface === undefined) continue
-    const remoteText = openText(
-      key,
-      'content',
-      await remote.getBlob(remoteEntry.blob.id),
-      fileContext,
-    )
-    const baseText =
-      isFile(file.base) && file.base.blob !== undefined
-        ? openText(key, 'content', await remote.getBlob(file.base.blob.id), fileContext)
-        : remoteText
-
-    const before = guard(declaredPath)
-    if (before !== null) gate.prime(declaredPath, before.mtimeMs)
-    let merged = false
-    for (let attempt = 0; attempt < MAX_MERGE_ATTEMPTS && !merged; attempt += 1) {
+  const downloads = active.filter((file) => file.resolution === 'download')
+  if (downloads.length > 0) notify('downloading')
+  for (const batch of transferBatches(downloads)) {
+    const blobs = await prefetchBlobs(batch)
+    for (const file of batch) {
+      const declaredPath = declaredPathFor(file)
+      const remoteEntry = file.remote
+      if (declaredPath === null || !isFile(remoteEntry) || remoteEntry.blob === undefined) continue
+      const bytes = prefetchedBlob(blobs, remoteEntry.blob)
+      const remoteText = openText(key, 'content', bytes, fileContext)
+      const content = fromStore(file, declaredPath, remoteText)
+      if (content === null) {
+        defer(file.storePath, 'broken marker block in local file')
+        continue
+      }
+      const before = guard(declaredPath)
+      if (!unchangedSinceScan(file, declaredPath, before)) {
+        defer(file.storePath, 'local file changed since the scan')
+        continue
+      }
+      if (before !== null) gate.prime(declaredPath, before.mtimeMs)
       const current = guard(declaredPath)
       if (current !== null && gate.observe(declaredPath, current.mtimeMs) !== 'quiescent') {
         defer(file.storePath, 'local file recently written')
-        break
-      }
-      const localRaw = readTextOrNull(declaredPath)
-      if (localRaw === null) break
-      const localMtimeMs = current?.mtimeMs ?? before?.mtimeMs
-      let localText: string
-      try {
-        const outcome = uploadProjection(surface, file, localRaw, contentKinds(surface))
-        if (outcome.blocked !== null) {
-          defer(file.storePath, 'local file blocked by secret rules')
-          break
-        }
-        localText = outcome.content
-      } catch {
-        defer(file.storePath, 'local projection failed')
-        break
-      }
-      const result = merge(
-        {
-          strategy: surface.merge,
-          base: baseText,
-          local: localText,
-          remote: remoteText,
-          ...(localMtimeMs !== undefined
-            ? { localTimestamp: new Date(localMtimeMs).toISOString() }
-            : {}),
-          ...(remoteManifest !== null ? { remoteTimestamp: remoteManifest.createdAt } : {}),
-        },
-        { markerBlocks: markerSurface(surface) },
-      )
-      if (result.status === 'conflicted') {
-        const copy = createConflictArtifact({
-          sourcePath: declaredPath,
-          content: remoteText,
-          device: String(deviceId),
-          createdAt: now().toISOString(),
-        })
-        const existing = readTextOrNull(copy.path)
-        if (existing !== copy.content) {
-          applier.write({
-            storePath: file.storePath,
-            declaredPath: copy.path,
-            content: copy.content,
-          })
-        }
-        ledger.add(conflictStoreRecord(file.storePath, copy))
-        state.setMeta(CONFLICT_LEDGER_META_KEY, ledger.toJSON())
-        conflicts.push(copy)
-        if (await uploadLocalFile(file, declaredPath)) merged = true
-        break
-      }
-      if (result.status === 'unchanged') {
-        if (await uploadLocalFile(file, declaredPath)) merged = true
-        break
-      }
-      let writeContent: string
-      try {
-        writeContent = project(
-          surface,
-          file,
-          'fromStore',
-          result.content,
-          localRaw,
-          contentKinds(surface),
-        )
-      } catch {
-        break
+        continue
       }
       try {
         applier.write({
           storePath: file.storePath,
           declaredPath,
-          content: writeContent,
-          mode: file.local?.mode ?? remoteEntry.mode,
-          expected: attempt === 0 ? before : guard(declaredPath),
+          content,
+          mode: remoteEntry.mode,
+          expected: before,
         })
-        if (await uploadLocalFile(file, declaredPath)) {
-          merged = true
-        }
+        changed.push(file.storePath)
+        downloaded += 1
       } catch (error) {
-        if (!(error instanceof StaleWriteError)) throw error
+        if (error instanceof StaleWriteError) defer(file.storePath, 'changed while applying')
+        else throw error
       }
     }
-    if (!merged) defer(file.storePath, 'merge could not settle')
+    progress.completed += batch.length
+    notify()
+  }
+
+  const merges = active.filter((file) => file.resolution === 'merge')
+  if (merges.length > 0) notify('merging')
+  for (const batch of transferBatches(merges)) {
+    const blobs = await prefetchBlobs(batch)
+    for (const file of batch) {
+      const declaredPath = declaredPathFor(file)
+      const remoteEntry = file.remote
+      const surface = surfaces.get(file.surfaceId)
+      if (declaredPath === null || !isFile(remoteEntry) || remoteEntry.blob === undefined) continue
+      if (surface === undefined) continue
+      const remoteText = openText(
+        key,
+        'content',
+        prefetchedBlob(blobs, remoteEntry.blob),
+        fileContext,
+      )
+      const baseText =
+        isFile(file.base) && file.base.blob !== undefined
+          ? openText(key, 'content', prefetchedBlob(blobs, file.base.blob), fileContext)
+          : remoteText
+
+      const before = guard(declaredPath)
+      if (before !== null) gate.prime(declaredPath, before.mtimeMs)
+      let merged = false
+      for (let attempt = 0; attempt < MAX_MERGE_ATTEMPTS && !merged; attempt += 1) {
+        const current = guard(declaredPath)
+        if (current !== null && gate.observe(declaredPath, current.mtimeMs) !== 'quiescent') {
+          defer(file.storePath, 'local file recently written')
+          break
+        }
+        const localRaw = readTextOrNull(declaredPath)
+        if (localRaw === null) break
+        const localMtimeMs = current?.mtimeMs ?? before?.mtimeMs
+        let localText: string
+        try {
+          const outcome = uploadProjection(surface, file, localRaw, contentKinds(surface))
+          if (outcome.blocked !== null) {
+            defer(file.storePath, 'local file blocked by secret rules')
+            break
+          }
+          localText = outcome.content
+        } catch {
+          defer(file.storePath, 'local projection failed')
+          break
+        }
+        const result = merge(
+          {
+            strategy: surface.merge,
+            base: baseText,
+            local: localText,
+            remote: remoteText,
+            ...(localMtimeMs !== undefined
+              ? { localTimestamp: new Date(localMtimeMs).toISOString() }
+              : {}),
+            ...(remoteManifest !== null ? { remoteTimestamp: remoteManifest.createdAt } : {}),
+          },
+          { markerBlocks: markerSurface(surface, file.storePath) },
+        )
+        if (result.status === 'conflicted') {
+          const copy = createConflictArtifact({
+            sourcePath: declaredPath,
+            content: remoteText,
+            device: String(deviceId),
+            createdAt: now().toISOString(),
+          })
+          const existing = readTextOrNull(copy.path)
+          if (existing !== copy.content) {
+            applier.write({
+              storePath: file.storePath,
+              declaredPath: copy.path,
+              content: copy.content,
+            })
+          }
+          ledger.add(conflictStoreRecord(file.storePath, copy))
+          state.setMeta(CONFLICT_LEDGER_META_KEY, ledger.toJSON())
+          conflicts.push(copy)
+          if (await uploadLocalFile(file, declaredPath)) merged = true
+          break
+        }
+        if (result.status === 'unchanged') {
+          if (await uploadLocalFile(file, declaredPath)) merged = true
+          break
+        }
+        let writeContent: string
+        try {
+          writeContent = project(
+            surface,
+            file,
+            'fromStore',
+            result.content,
+            localRaw,
+            contentKinds(surface),
+          )
+        } catch {
+          break
+        }
+        try {
+          applier.write({
+            storePath: file.storePath,
+            declaredPath,
+            content: writeContent,
+            mode: file.local?.mode ?? remoteEntry.mode,
+            expected: attempt === 0 ? before : guard(declaredPath),
+          })
+          if (await uploadLocalFile(file, declaredPath)) {
+            merged = true
+          }
+        } catch (error) {
+          if (!(error instanceof StaleWriteError)) throw error
+        }
+      }
+      if (!merged) defer(file.storePath, 'merge could not settle')
+    }
+    progress.completed += batch.length
+    notify()
   }
 
   for (const file of active) {
@@ -909,6 +1053,7 @@ async function runSync(
     changed.push(file.storePath)
   }
 
+  const newUploads: Array<{ file: PlanFile; declaredPath: string }> = []
   for (const file of active) {
     if (file.resolution === 'delete-remote') {
       // A root that is missing cannot tell a deletion from an unmounted
@@ -921,9 +1066,16 @@ async function runSync(
     if (file.resolution !== 'upload') continue
     const declaredPath = declaredPathFor(file)
     if (declaredPath === null) continue
-    await uploadLocalFile(file, declaredPath)
+    newUploads.push({ file, declaredPath })
   }
+  if (newUploads.length > 0) notify('uploading')
+  await runBounded(newUploads, MAX_CONCURRENT_UPLOADS, async ({ file, declaredPath }) => {
+    await uploadLocalFile(file, declaredPath)
+    progress.completed += 1
+    notify()
+  })
 
+  notify('saving')
   const finalScan = scan({
     adapters: options.adapters,
     ctx,
@@ -1199,7 +1351,7 @@ async function resolveRemoteView(args: {
           localTimestamp: foldedManifest.createdAt,
           remoteTimestamp: manifest.createdAt,
         },
-        { markerBlocks: surface !== undefined && markerSurface(surface) },
+        { markerBlocks: surface !== undefined && markerSurface(surface, entry.path) },
       )
       if (result.status === 'unchanged') continue
       if (result.status === 'conflicted') {

@@ -3,6 +3,7 @@ import { loadCliConfig } from '../config'
 import { adapterContext, type CommandContext } from '../context'
 import { readPause } from '../pause'
 import { buildPlan, planSummary } from '../plan'
+import { createTransferProgress } from '../progress'
 import { ok } from '../result'
 import { adaptersFor, openSession, openState, scanInventory } from '../session'
 import { displayPath, plural, table } from '../ui'
@@ -88,6 +89,7 @@ export const syncCommand: CommandSpec = {
     // `--prune` is a run-level override of the device policy, never persisted.
     const runPolicy: DevicePolicy = ctx.flags.prune ? { ...policy, prune: true } : policy
     const state = openState(ctx)
+    let progress: ReturnType<typeof createTransferProgress> | undefined
     try {
       if (ctx.flags.dryRun) {
         const inventory = scanInventory(ctx, { policy: runPolicy })
@@ -121,7 +123,9 @@ export const syncCommand: CommandSpec = {
         return ok(data, () => renderSync(ctx, data))
       }
 
+      progress = createTransferProgress(ctx.io, ctx.flags.json)
       const loop = new SyncLoop({
+        onProgress: progress.update,
         adapters: adaptersFor(ctx, runPolicy),
         ctx: adapterContext(ctx),
         deviceId: session.identity.deviceId,
@@ -137,6 +141,7 @@ export const syncCommand: CommandSpec = {
         now: ctx.now,
       })
       const result = await loop.runOnce()
+      progress.finish(result)
       const data: SyncData = {
         dryRun: false,
         status: result.status,
@@ -164,6 +169,7 @@ export const syncCommand: CommandSpec = {
             : 1
       return ok(data, () => renderSync(ctx, data), exitCode)
     } finally {
+      progress?.finish()
       state.close()
     }
   },

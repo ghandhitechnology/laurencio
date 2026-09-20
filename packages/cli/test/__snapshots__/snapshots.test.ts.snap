@@ -61,6 +61,7 @@ exports[`snapshots: init init offline human 1`] = `
 --- stdout
 Laurencio init
 Server: http://127.0.0.1:1
+Sync selection: skills only
 Surfaces
   codex: 22 surfaces, 9 sync, 0 opt-in, 13 never
   Total: 22 surfaces: 9 sync, 0 opt-in, 13 never
@@ -78,6 +79,7 @@ exports[`snapshots: init init offline json 1`] = `
 {
   "home": "<HOME>",
   "server": "http://127.0.0.1:1",
+  "selection": "skills",
   "login": "skipped-offline",
   "device": null,
   "key": null,
@@ -255,7 +257,7 @@ exports[`snapshots: init init offline json 1`] = `
       "enabled": true,
       "kind": "file",
       "declaredPath": "\${CODEX_HOME}/AGENTS.md",
-      "description": "global instruction chain",
+      "description": "global instruction chain; local marker blocks stay on this device",
       "exists": false,
       "files": 0,
       "bytes": 0,
@@ -270,7 +272,7 @@ exports[`snapshots: init init offline json 1`] = `
       "enabled": true,
       "kind": "file",
       "declaredPath": "\${CODEX_HOME}/AGENTS.override.md",
-      "description": "global instructions override",
+      "description": "global instructions override; local marker blocks stay on this device",
       "exists": false,
       "files": 0,
       "bytes": 0,
@@ -431,6 +433,7 @@ exports[`snapshots: init init seeded human 1`] = `
 --- stdout
 Laurencio init
 Server: none
+Sync selection: current device choices
 Surfaces
   codex: 22 surfaces, 9 sync, 0 opt-in, 13 never
   Total: 22 surfaces: 9 sync, 0 opt-in, 13 never
@@ -452,6 +455,7 @@ exports[`snapshots: init init seeded json 1`] = `
 {
   "home": "<HOME>",
   "server": null,
+  "selection": "existing",
   "login": "already-enrolled",
   "device": {
     "id": "<ID>",
@@ -635,7 +639,7 @@ exports[`snapshots: init init seeded json 1`] = `
       "enabled": true,
       "kind": "file",
       "declaredPath": "\${CODEX_HOME}/AGENTS.md",
-      "description": "global instruction chain",
+      "description": "global instruction chain; local marker blocks stay on this device",
       "exists": true,
       "files": 1,
       "bytes": 14,
@@ -650,7 +654,7 @@ exports[`snapshots: init init seeded json 1`] = `
       "enabled": true,
       "kind": "file",
       "declaredPath": "\${CODEX_HOME}/AGENTS.override.md",
-      "description": "global instructions override",
+      "description": "global instructions override; local marker blocks stay on this device",
       "exists": false,
       "files": 0,
       "bytes": 0,
@@ -1880,7 +1884,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock surfaces 
       "enabled": true,
       "kind": "file",
       "declaredPath": "\${CODEX_HOME}/AGENTS.md",
-      "description": "global instruction chain",
+      "description": "global instruction chain; local marker blocks stay on this device",
       "exists": false,
       "files": 0,
       "bytes": 0,
@@ -1895,7 +1899,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock surfaces 
       "enabled": true,
       "kind": "file",
       "declaredPath": "\${CODEX_HOME}/AGENTS.override.md",
-      "description": "global instructions override",
+      "description": "global instructions override; local marker blocks stay on this device",
       "exists": false,
       "files": 0,
       "bytes": 0,

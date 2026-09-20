@@ -21,9 +21,8 @@ export interface DatabaseConfig {
 }
 
 export interface AuthConfig {
-  githubClientId: string | null
-  githubClientSecret: string | null
   allowDevSignin: boolean
+  stagingEmailAllowlist: string[]
   /** Time string accepted by Better Auth, for example "5s". */
   devicePollInterval: TimeString
   deviceClientId: string
@@ -129,11 +128,12 @@ export function loadEnv(source: EnvSource = process.env): ServerEnv {
   if (allowDevSignin && isProduction) {
     throw new EnvError('ALLOW_DEV_SIGNIN must not be set in production')
   }
-
-  const githubClientId = source.GITHUB_CLIENT_ID ?? null
-  const githubClientSecret = source.GITHUB_CLIENT_SECRET ?? null
-  if (isProduction && (!githubClientId || !githubClientSecret)) {
-    throw new EnvError('GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are required in production')
+  const stagingEmailAllowlist = (source.STAGING_EMAIL_ALLOWLIST ?? '')
+    .split(',')
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean)
+  if (nodeEnv === 'staging' && allowDevSignin && stagingEmailAllowlist.length === 0) {
+    throw new EnvError('STAGING_EMAIL_ALLOWLIST is required for staging email sign-in')
   }
 
   const databaseUrl = source.DATABASE_URL ?? null
@@ -162,9 +162,8 @@ export function loadEnv(source: EnvSource = process.env): ServerEnv {
       pgliteDir: source.PGLITE_DATA_DIR ?? (isProduction ? null : '.data/pglite'),
     },
     auth: {
-      githubClientId,
-      githubClientSecret,
       allowDevSignin,
+      stagingEmailAllowlist,
       devicePollInterval: timeString(source, 'DEVICE_POLL_INTERVAL', '5s'),
       deviceClientId: source.DEVICE_CLIENT_ID ?? 'laurencio-cli',
     },

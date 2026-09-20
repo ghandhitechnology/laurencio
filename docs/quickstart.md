@@ -4,24 +4,29 @@ Back-link: [README](../README.md).
 
 ## Install
 
+Install the latest standalone binary:
+
 ```
-bun add -g laurencio
+curl -fsSL https://raw.githubusercontent.com/ghandhitechnology/laurencio/main/scripts/install.sh | sh
 laurencio --version
 ```
 
-The package runs on bun 1.3 or newer. On machines without bun, use the standalone binary for your platform instead.
+The installer detects macOS or Linux and the CPU architecture, verifies the release checksum, keeps the previous binary as `~/.local/bin/laurencio.previous`, and installs to `~/.local/bin`. Set `LAURENCIO_VERSION` to install a specific release or `LAURENCIO_INSTALL_DIR` to choose another directory.
 
-## Build a binary
+Add `~/.local/bin` to `PATH` if your shell does not already include it.
+
+## Build from source
 
 The same source compiles to one file with `bun build --compile`:
 
 ```
 bun install
 bun build --compile --outfile laurencio packages/cli/src/index.ts
+codesign --force --sign - --identifier com.ghandhitechnology.laurencio laurencio # macOS only
 ./laurencio --version
 ```
 
-Add `--target=bun-darwin-arm64`, `bun-darwin-x64`, `bun-linux-x64`, or `bun-linux-arm64` to cross-compile. `laurencio daemon install` records the path of the program that ran it, so run the binary you want the service to use when installing.
+Add `--target=bun-darwin-arm64`, `bun-darwin-x64`, `bun-linux-x64`, or `bun-linux-arm64` to cross-compile. The macOS signing step repairs the linker signature before the binary is copied or backed up. `laurencio daemon install` records the path of the program that ran it, so run the binary you want the service to use when installing.
 
 ## Enroll this device
 
@@ -29,7 +34,17 @@ Add `--target=bun-darwin-arm64`, `bun-darwin-x64`, `bun-linux-x64`, or `bun-linu
 laurencio init
 ```
 
-`init` detects the harnesses you have installed, shows every configuration surface it found with its policy, asks for a passphrase (this derives your encryption key, and a lost passphrase means lost data), signs you in through the browser, and pushes your first revision. Choose which surfaces to enable; memory sync is opt-in.
+`init` detects the harnesses you have installed, guides the sync selection, asks for the store passphrase, signs you in through the browser, and pushes the first revision. Memory stays off unless explicitly selected. The passphrase derives the encryption key; every linked computer needs the same one.
+
+For the public beta, `init` connects to the staging service automatically. It first offers:
+
+- Skills only, the recommended default.
+- Portable config, with global instruction files kept local.
+- A surface-by-surface selection.
+
+The browser opens a prefilled approval page showing the computer name. Sign in with an invited email, approve the device, then return to the terminal. The CLI exchanges the short-lived code for a device token and stores it in macOS Keychain. The recovery passphrase unlocks the encrypted store and must be the same on every computer.
+
+To add another computer, run `laurencio init` there, use the same email and recovery passphrase, and choose how to handle any surface that already has local and remote files. Manage names and revoke access with `laurencio devices` or the browser device page.
 
 ## Daily use
 
@@ -66,7 +81,9 @@ The daemon watches the enabled surfaces, syncs on an interval, backs off on fail
 
 ## Per-device overrides
 
-Values that must differ per machine (model choice, provider region, MCP commands that only exist on one host) live in `~/.laurencio/config.toml` and in `devices/<id>.toml` in the store. Machine-specific sections inside markdown files can be wrapped in `<!-- laurencio:local -->` blocks; they are stripped before upload and re-inserted on each device.
+`~/.laurencio/config.toml` is local to each device. It controls harness and surface toggles, ignore patterns, pruning, and daemon cadence.
+
+Machine-specific sections in Claude's `CLAUDE.md`, Codex's `AGENTS.md` and `AGENTS.override.md`, and OpenCode's `AGENTS.md` can be wrapped in `<!-- laurencio:local -->` blocks. Laurencio strips their contents before upload and restores each device's own contents when applying remote edits. Settings such as models and MCP definitions remain shared when their containing surface is enabled, so disable that surface on devices that need different values.
 
 ## Uninstall
 

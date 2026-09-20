@@ -173,7 +173,8 @@ export function opencodeSurfaces(_ctx: AdapterContext): Surface[] {
       id: 'source',
       path: OPENCODE_SOURCE_ROOT,
       description:
-        'User-built single source that config-dir AGENTS.md, agents, and skills symlink into. Syncs the content once; links stay links.',
+        'User-built single source that config-dir AGENTS.md, agents, and skills symlink into. Markdown local marker blocks stay on this device; links stay links.',
+      transforms: [{ kind: 'markerBlocks' }],
     }),
     file({
       id: 'service',

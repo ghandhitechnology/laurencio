@@ -190,7 +190,7 @@ describe('sync credentials', () => {
     const store = memoryStore()
     const prompts: string[] = []
     const sleeps: number[] = []
-    const fetchImpl = mockFetch({
+    const routedFetch = mockFetch({
       'POST /api/auth/device/code': { body: codeResponse },
       'POST /api/auth/device/token': [
         { status: 400, body: { error: 'authorization_pending' } },
@@ -221,6 +221,16 @@ describe('sync credentials', () => {
         },
       },
     })
+    const requests: { url: string; body: unknown }[] = []
+    const fetchImpl = (async (input, init) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      requests.push({
+        url,
+        body: typeof init?.body === 'string' ? JSON.parse(init.body) : null,
+      })
+      return routedFetch(input, init)
+    }) as typeof fetch
     const result = await loginWithDeviceCode({
       baseUrl,
       home,
@@ -240,6 +250,14 @@ describe('sync credentials', () => {
     expect(result.identity.deviceId).toBe(deviceId)
     expect(result.backend).toBe('keychain')
     expect(sleeps).toEqual([0, 5000])
+    expect(requests[0]).toEqual({
+      url: `${baseUrl}/api/auth/device/code`,
+      body: {
+        client_id: 'laurencio-cli',
+        device_name: 'test-laptop',
+        platform: 'darwin',
+      },
+    })
 
     const credentials = await Promise.resolve(
       (async () => {

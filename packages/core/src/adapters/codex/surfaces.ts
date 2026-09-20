@@ -19,7 +19,9 @@ const sid = SurfaceId.parse
 const CODEX_HOME = `\${CODEX_HOME}`
 const AGENTS_SKILLS = '$HOME/.agents/skills'
 
-const SKILL_EXCLUDES = ['**/node_modules/**']
+// Codex installs and refreshes built-in skills under `.system`; they belong to
+// the local Codex release and must never be copied to another machine.
+const SKILL_EXCLUDES = ['.system', '.system/**', '**/node_modules/**']
 
 /**
  * Bulk machine state that has no dedicated surface. The `codex.home` tree excludes these
@@ -138,13 +140,15 @@ export function codexSurfaces(ctx: AdapterContext): Surface[] {
       id: 'codex.instructions',
       path: `${CODEX_HOME}/AGENTS.md`,
       format: 'markdown',
-      description: 'global instruction chain',
+      transforms: [{ kind: 'markerBlocks' }],
+      description: 'global instruction chain; local marker blocks stay on this device',
     }),
     codexFile({
       id: 'codex.instructions-override',
       path: `${CODEX_HOME}/AGENTS.override.md`,
       format: 'markdown',
-      description: 'global instructions override',
+      transforms: [{ kind: 'markerBlocks' }],
+      description: 'global instructions override; local marker blocks stay on this device',
     }),
     codexFile({
       id: 'codex.hooks',

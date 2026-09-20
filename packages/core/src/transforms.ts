@@ -74,6 +74,13 @@ export interface TransformOutcome {
   notes: string[]
 }
 
+/** Marker blocks apply to Markdown files only, including Markdown inside mixed trees. */
+export function usesMarkerBlocks(surface: Surface | undefined, storePath: string): boolean {
+  if (surface?.transforms.some((spec) => spec.kind === 'markerBlocks') !== true) return false
+  if (surface.format === 'markdown') return true
+  return /\.(?:md|markdown)$/i.test(path.posix.basename(storePath))
+}
+
 function parseJson(text: string, kind: TransformKind, direction: TransformDirection): JsonValue {
   try {
     return JSON.parse(text) as JsonValue
@@ -152,6 +159,7 @@ export function applyTransforms(context: TransformContext): TransformOutcome {
   const notes: string[] = []
   let content = context.content
   for (const kind of kinds) {
+    if (kind === 'markerBlocks' && !usesMarkerBlocks(context.surface, context.storePath)) continue
     content = transformContent(kind, { ...context, content }, notes)
   }
   return { content, moved, notes }

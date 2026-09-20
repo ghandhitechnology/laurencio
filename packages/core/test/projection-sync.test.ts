@@ -12,6 +12,7 @@ import path from 'node:path'
 import { DeviceId, PROTOCOL_VERSION, RevisionId, StoreId, SurfaceId } from '@laurencio/protocol'
 import { claudeAdapter, claudeSlug, claudeSurfaces } from '../src/adapters/claude'
 import { codexAdapter } from '../src/adapters/codex'
+import { opencodeAdapter } from '../src/adapters/opencode'
 import { openText } from '../src/crypto/aead'
 import { deriveMasterKey, type KdfParams, kdfParamsToWire } from '../src/crypto/kdf'
 import { type SyncOptions, sync } from '../src/engine'
@@ -140,8 +141,13 @@ function surfaceById(surfaces: readonly Surface[], id: string): Surface {
 }
 
 const CLAUDE_JSON = '$HOME/.claude.json'
+const CLAUDE_INSTRUCTIONS = `\${CLAUDE_CONFIG_DIR}/CLAUDE.md`
 const CODEX_CONFIG = `\${CODEX_HOME}/config.toml`
+const CODEX_INSTRUCTIONS = `\${CODEX_HOME}/AGENTS.md`
+const CODEX_INSTRUCTIONS_OVERRIDE = `\${CODEX_HOME}/AGENTS.override.md`
 const CODEX_WORK_PROFILE = `\${CODEX_HOME}/work.config.toml`
+const OPENCODE_SOURCE_INSTRUCTIONS = '$HOME/.agents-opencode/agents.md'
+const OPENCODE_SOURCE_TEXT = '$HOME/.agents-opencode/device.txt'
 
 function claudeGlobalConfig(home: FakeHome, mcpCommand = 'npx'): string {
   return JSON.stringify(
@@ -318,6 +324,131 @@ describe('projection pipeline over real adapters', () => {
     expect((await engine.headManifest()).revisionId).toBe(head)
 
     home.cleanup()
+    engine.cleanup()
+  })
+
+  test('global instruction marker blocks stay local across Claude and Codex', async () => {
+    const engine = createEngine([claudeAdapter, codexAdapter])
+    const instruction = (shared: string, local: string): string =>
+      [
+        '# Global instructions',
+        shared,
+        '<!-- laurencio:local -->',
+        local,
+        '<!-- /laurencio:local -->',
+        '',
+      ].join('\n')
+    const files = [
+      { relative: '.claude/CLAUDE.md', storePath: CLAUDE_INSTRUCTIONS },
+      { relative: '.codex/AGENTS.md', storePath: CODEX_INSTRUCTIONS },
+      { relative: '.codex/AGENTS.override.md', storePath: CODEX_INSTRUCTIONS_OVERRIDE },
+    ] as const
+    const entriesFor = (local: string): FakeEntry[] => [
+      { kind: 'dir', path: '.claude' },
+      { kind: 'dir', path: '.codex' },
+      ...files.map(
+        ({ relative }): FakeEntry => ({
+          kind: 'file',
+          path: relative,
+          content: instruction('shared v1', local),
+        }),
+      ),
+    ]
+    const a = buildFakeHome({ entries: entriesFor('mini-only') })
+    const b = buildFakeHome({ entries: entriesFor('laptop-only') })
+
+    await engine.run(a, deviceA)
+    await engine.run(b, deviceB)
+    for (const { storePath } of files) {
+      const stored = must(await engine.blobFor(storePath), `${storePath} blob`)
+      expect(stored).toContain('shared v1')
+      expect(stored).not.toContain('mini-only')
+      expect(stored).not.toContain('laptop-only')
+    }
+
+    for (const { relative } of files) {
+      a.write(relative, instruction('shared v2', 'mini-only'))
+    }
+    await engine.run(a, deviceA)
+    await engine.run(b, deviceB)
+
+    for (const { relative, storePath } of files) {
+      expect(a.read(relative)).toContain('mini-only')
+      expect(a.read(relative)).not.toContain('laptop-only')
+      expect(b.read(relative)).toContain('shared v2')
+      expect(b.read(relative)).toContain('laptop-only')
+      expect(b.read(relative)).not.toContain('mini-only')
+      const stored = must(await engine.blobFor(storePath), `${storePath} updated blob`)
+      expect(stored).toContain('shared v2')
+      expect(stored).not.toContain('mini-only')
+      expect(stored).not.toContain('laptop-only')
+    }
+
+    a.cleanup()
+    b.cleanup()
+    engine.cleanup()
+  })
+
+  test('OpenCode source ownership preserves instruction markers without rewriting text files', async () => {
+    const engine = createEngine([opencodeAdapter])
+    const instruction = (shared: string, local: string): string =>
+      [
+        '# OpenCode instructions',
+        shared,
+        '<!-- laurencio:local -->',
+        local,
+        '<!-- /laurencio:local -->',
+        '',
+      ].join('\n')
+    const sourceText = [
+      'plain text',
+      '<!-- laurencio:local -->',
+      'this remains shared because the file is not Markdown',
+      '<!-- /laurencio:local -->',
+      '',
+    ].join('\n')
+    const entriesFor = (local: string): FakeEntry[] => [
+      {
+        kind: 'file',
+        path: '.agents-opencode/agents.md',
+        content: instruction('shared v1', local),
+      },
+      { kind: 'file', path: '.agents-opencode/device.txt', content: sourceText },
+      {
+        kind: 'file',
+        path: '.config/opencode/AGENTS.md',
+        link: '$HOME/.agents-opencode/agents.md',
+      },
+    ]
+    const a = buildFakeHome({ entries: entriesFor('mini-only') })
+    const b = buildFakeHome({ entries: entriesFor('laptop-only') })
+
+    await engine.run(a, deviceA)
+    const owned = (await engine.headManifest()).entries.find(
+      (entry) => entry.path === OPENCODE_SOURCE_INSTRUCTIONS,
+    )
+    expect(owned?.surfaceId).toBe(SurfaceId.parse('opencode.source'))
+    const firstStored = must(
+      await engine.blobFor(OPENCODE_SOURCE_INSTRUCTIONS),
+      'OpenCode source instructions blob',
+    )
+    expect(firstStored).toContain('shared v1')
+    expect(firstStored).not.toContain('mini-only')
+    expect(await engine.blobFor(OPENCODE_SOURCE_TEXT)).toBe(sourceText)
+
+    await engine.run(b, deviceB)
+    a.write('.agents-opencode/agents.md', instruction('shared v2', 'mini-only'))
+    await engine.run(a, deviceA)
+    await engine.run(b, deviceB)
+
+    expect(b.read('.agents-opencode/agents.md')).toContain('shared v2')
+    expect(b.read('.agents-opencode/agents.md')).toContain('laptop-only')
+    expect(b.read('.agents-opencode/agents.md')).not.toContain('mini-only')
+    expect(fs.lstatSync(b.path('.config/opencode/AGENTS.md')).isSymbolicLink()).toBe(true)
+    expect(await engine.blobFor(OPENCODE_SOURCE_TEXT)).toBe(sourceText)
+
+    a.cleanup()
+    b.cleanup()
     engine.cleanup()
   })
 

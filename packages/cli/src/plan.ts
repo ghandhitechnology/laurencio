@@ -46,7 +46,7 @@ export function localManifestWithProjections(inventory: LocalInventory): Manifes
   for (const entry of inventory.scan.manifest.entries) {
     const surface = inventory.surfaces.get(entry.surfaceId)
     if (surface === undefined) continue
-    if (!hasMarkerBlocks(surface)) {
+    if (!hasMarkerBlocks(surface, entry.path)) {
       entries.push(entry)
       continue
     }
@@ -140,8 +140,10 @@ export function computeDrift(local: Manifest, base: Manifest | null): DriftEntry
     }
     if (previous.hash !== entry.hash) drift.push({ storePath, status: 'changed' })
   }
-  for (const storePath of baseByPath.keys()) {
-    if (!localByPath.has(storePath)) drift.push({ storePath, status: 'deleted' })
+  for (const [storePath, previous] of baseByPath) {
+    if (previous.kind !== 'tombstone' && !localByPath.has(storePath)) {
+      drift.push({ storePath, status: 'deleted' })
+    }
   }
   return drift.sort((a, b) => a.storePath.localeCompare(b.storePath))
 }

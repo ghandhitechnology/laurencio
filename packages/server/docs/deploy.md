@@ -17,16 +17,19 @@ bucket. Blobs are opaque ciphertext; the server never parses config.
 ## Environments
 
 A **staging** environment sets `NODE_ENV=staging`, which binds all interfaces,
-allows the development sign-in fallback, and permits a single instance to run
-without the GitHub OAuth app. Use it to smoke-test a deployment:
+allows email sign-in for addresses in `STAGING_EMAIL_ALLOWLIST`, and permits a
+single instance to run. Set `ALLOW_DEV_SIGNIN=true` and a comma-separated list of
+invited emails. Startup fails if staging email access has no allowlist.
+Use it to smoke-test a deployment:
 
 ```
 bun scripts/smoke-live.ts --base-url https://<service>.up.railway.app
 ```
 
 A **production** environment sets `NODE_ENV=production` and refuses the
-development sign-in path, so it needs the GitHub OAuth app from section 3
-before anyone can sign in.
+development sign-in path. Production email verification is not implemented yet,
+so new browser sign-ins and device enrollments require the staging environment
+for this beta. Existing device tokens remain usable in production.
 
 ## 2. Variables
 
@@ -34,25 +37,37 @@ Copy `.env.example` into the service variables and set:
 
 | Variable | Value |
 |---|---|
-| `NODE_ENV` | `production` |
+| `NODE_ENV` | `staging` for the onboarding beta |
 | `BETTER_AUTH_SECRET` | `openssl rand -base64 32` |
 | `BETTER_AUTH_URL` | the public service URL, for example `https://laurencio.up.railway.app` |
-| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | from the GitHub OAuth app |
+| `ALLOW_DEV_SIGNIN` | `true` in staging only |
+| `STAGING_EMAIL_ALLOWLIST` | comma-separated invited email addresses |
 | `STORAGE_DRIVER` | `s3` (implied when `BUCKET`/`S3_BUCKET` is set) |
 
 `ALLOW_DEV_SIGNIN` must not be set in production; startup fails if it is.
 `DATABASE_URL` comes from the Postgres plugin. The filesystem storage driver is
 refused in production.
 
-## 3. GitHub OAuth app
+## 3. Email sign-in and device approval
 
-Create an OAuth app with callback URL:
+The CLI opens `${BETTER_AUTH_URL}/device?user_code=...`. An existing browser
+session continues directly to approval; a signed-out browser enters an email
+first and returns to that same code. The approval page shows the account email
+so a second computer joins the intended account.
 
-```
-${BETTER_AUTH_URL}/api/auth/callback/github
-```
+Staging access does not verify email ownership. The allowlist limits test
+accounts; anyone who knows an invited email can sign in as that account.
+Both the browser form and direct email auth endpoints enforce the allowlist.
+Use this only for the private beta, not public account security.
 
-Sign-in is required to approve device codes and to open `/account/devices`.
+`/account/devices` lists active and revoked computers, connection times, and
+device IDs. Rename devices there, or review a confirmation before revoking
+access. Sign out to switch accounts. Revocation stops future syncing and leaves
+existing local files in place.
+
+Device tokens have a sliding 90-day expiry. Successful authenticated requests
+refresh expiry and last-seen time at most once per minute. An expired or revoked
+token is never renewed; sign in again on a computer idle for over 90 days.
 
 ## 4. Migrations
 

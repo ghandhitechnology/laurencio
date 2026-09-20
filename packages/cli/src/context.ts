@@ -39,6 +39,8 @@ export interface CliDeps {
   sleep?: (ms: number) => Promise<void>
   /** Test lever: record service installer commands instead of running them. */
   exec?: ExecFn
+  /** Test lever: record browser launches instead of opening the desktop browser. */
+  openUrl?: (url: string) => Promise<boolean>
 }
 
 export interface CommandContext {

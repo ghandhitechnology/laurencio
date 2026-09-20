@@ -470,7 +470,11 @@ export async function loginWithDeviceCode(options: DeviceLoginOptions): Promise<
   const codeResponse = await fetchImpl(new URL('/api/auth/device/code', base).toString(), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ client_id: clientId }),
+    body: JSON.stringify({
+      client_id: clientId,
+      device_name: options.deviceName,
+      platform: options.platform,
+    }),
   })
   if (!codeResponse.ok) {
     const message = await codeResponse.text()
