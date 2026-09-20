@@ -3,7 +3,7 @@
 exports[`snapshots: help and version global help human 1`] = `
 "exit: 0
 --- stdout
-laurencio 0.1.0
+laurencio 0.1.1
 
 Usage: laurencio <command> [options]
 
@@ -51,7 +51,7 @@ Restore a file, a surface, or everything from a revision
 exports[`snapshots: help and version version human 1`] = `
 "exit: 0
 --- stdout
-laurencio 0.1.0
+laurencio 0.1.1
 --- stderr
 "
 `;
@@ -1295,7 +1295,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock export hu
 exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock doctor human and json 1`] = `
 "exit: 0
 --- stdout
-Version: 0.1.0  Protocol: v1  Platform: darwin
+Version: 0.1.1  Protocol: v1  Platform: darwin
 Home: ~
 Server: none configured
 Device: test-laptop (<ID>)
@@ -1336,7 +1336,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock doctor hu
 "exit: 0
 --- stdout
 {
-  "version": "0.1.0",
+  "version": "0.1.1",
   "protocolVersion": 1,
   "platform": "darwin",
   "home": "<HOME>",
