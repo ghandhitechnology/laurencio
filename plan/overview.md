@@ -30,7 +30,7 @@ Explicitly excluded
 - Toolchain on this machine: bun 1.3.14, node 26.7, git 2.50, railway CLI, gh 2.100, psql. Package manager and test runner: bun. Orientation: macOS primary, Linux remote second, Windows best effort.
 - Crypto must run under both bun and node (npm-installed CLI): audited pure-TS primitives (`@noble/hashes` Argon2id, `@noble/ciphers` XChaCha20-Poly1305) with a native fast path when available. No native modules in the CLI path.
 - Keychain access via `@napi-rs/keyring`, with a documented file fallback for headless Linux.
-- Server: Hono + Drizzle + Postgres, deployed on Railway; blobs in a Railway storage bucket with presigned URLs. Better Auth device authorization flow plus GitHub OAuth.
+- Server: Hono + Drizzle + Postgres, deployed on Railway; blobs in a Railway storage bucket with presigned URLs. Better Auth device authorization flow with email sign-in for invited staging accounts.
 - Protocol version negotiation from day one: `protocolVersion` on every request, server rejects on mismatch with a clear upgrade message.
 - Adapters are data plus small pure transforms. No harness-specific logic inside the engine.
 - Every path we write must be one we declared. Nothing writes outside declared surfaces; the scanner and applier share the declaration.

@@ -13,6 +13,7 @@ import {
   deviceDonePage,
   deviceEnterPage,
   devicesPage,
+  revokeDevicePage,
   signInPage,
 } from './pages'
 
@@ -71,7 +72,7 @@ export function createWebRoutes(deps: WebDeps): Hono<AppBindings> {
 
   app.get('/sign-in', async (c) => {
     const user = await sessionUser(deps, c.req.raw.headers)
-    if (user) return c.redirect('/account/devices')
+    if (user) return c.redirect(safeNext(c.req.query('next')))
     return c.html(
       signInPage({
         next: safeNext(c.req.query('next')),
@@ -80,29 +81,22 @@ export function createWebRoutes(deps: WebDeps): Hono<AppBindings> {
     )
   })
 
-  app.post('/sign-in/github', async (c) => {
-    const body = await c.req.parseBody()
-    const next = safeNext(typeof body.next === 'string' ? body.next : null)
-    const response = await forwardAuth(deps, c.req.raw.headers, 'POST', '/sign-in/social', {
-      provider: 'github',
-      callbackURL: next,
-    })
-    if (!response.ok) return c.html(signInPageWithError(deps, next), 400)
-    const payload = (await response.json()) as { url?: string }
-    if (!payload.url) return c.html(signInPageWithError(deps, next), 502)
-    // Better Auth sets its OAuth state cookie on this response; dropping it makes the
-    // callback fail with a state mismatch, so the redirect carries the cookies forward.
-    const headers = new Headers({ location: payload.url })
-    for (const cookie of response.headers.getSetCookie()) headers.append('set-cookie', cookie)
-    return new Response(null, { status: 302, headers })
-  })
-
   app.post('/sign-in/dev', async (c) => {
     if (!deps.env.auth.allowDevSignin) return c.notFound()
     const body = await c.req.parseBody()
-    const email = typeof body.email === 'string' ? body.email.trim() : ''
+    const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : ''
     const next = safeNext(typeof body.next === 'string' ? body.next : null)
     if (!email) return c.html(signInPageWithError(deps, next), 400)
+    if (deps.env.nodeEnv === 'staging' && !deps.env.auth.stagingEmailAllowlist.includes(email)) {
+      return c.html(
+        signInPage({
+          next,
+          allowDevSignin: true,
+          error: 'This email does not have staging access. Ask the server owner to add it.',
+        }),
+        403,
+      )
+    }
     const create = await forwardAuth(deps, c.req.raw.headers, 'POST', '/sign-up/email', {
       email,
       password: DEV_PASSWORD,
@@ -125,11 +119,25 @@ export function createWebRoutes(deps: WebDeps): Hono<AppBindings> {
   app.get('/device', async (c) => {
     const user = await sessionUser(deps, c.req.raw.headers)
     const userCode = c.req.query('user_code') ?? ''
+    const deviceName = (c.req.query('device_name') ?? '').slice(0, 80)
+    const platform = (c.req.query('platform') ?? '').slice(0, 40)
     if (!user) {
-      const target = userCode ? `/device?user_code=${encodeURIComponent(userCode)}` : '/device'
+      const params = new URLSearchParams()
+      if (userCode) params.set('user_code', userCode)
+      if (deviceName) params.set('device_name', deviceName)
+      if (platform) params.set('platform', platform)
+      const target = params.size ? `/device?${params}` : '/device'
       return c.redirect(`/sign-in?next=${encodeURIComponent(target)}`)
     }
-    return c.html(deviceEnterPage({ userCode }))
+    if (userCode) {
+      enforceRateLimit(deps.rateLimiter, `device-approval:${clientAddress(c)}`)
+      const page = await approvalPage(deps, c.req.raw.headers, userCode, user, {
+        deviceName,
+        platform,
+      })
+      return c.html(page.html, page.ok ? 200 : 400)
+    }
+    return c.html(deviceEnterPage({ userCode, user }))
   })
 
   app.post('/device', async (c) => {
@@ -143,35 +151,8 @@ export function createWebRoutes(deps: WebDeps): Hono<AppBindings> {
     if (!userCode)
       return c.html(deviceEnterPage({ error: 'Enter the code from your terminal.' }), 400)
 
-    const response = await forwardAuth(
-      deps,
-      c.req.raw.headers,
-      'GET',
-      `/device?user_code=${encodeURIComponent(userCode)}`,
-      null,
-    )
-    if (!response.ok) {
-      const message = await authErrorMessage(response)
-      return c.html(deviceEnterPage({ userCode, error: message }), 400)
-    }
-    const payload = (await response.json()) as {
-      user_code?: string
-      client_id?: string
-      scope?: string
-      status?: string
-    }
-    const code = payload.user_code ?? userCode
-    if (payload.status === 'approved')
-      return c.html(deviceDonePage({ approved: true, userCode: code }))
-    if (payload.status === 'denied')
-      return c.html(deviceDonePage({ approved: false, userCode: code }))
-    return c.html(
-      deviceConfirmPage({
-        userCode: code,
-        clientId: payload.client_id ?? null,
-        scope: payload.scope ?? null,
-      }),
-    )
+    const page = await approvalPage(deps, c.req.raw.headers, userCode, user)
+    return c.html(page.html, page.ok ? 200 : 400)
   })
 
   app.post('/device/decision', async (c) => {
@@ -179,7 +160,11 @@ export function createWebRoutes(deps: WebDeps): Hono<AppBindings> {
     const body = await c.req.parseBody()
     const userCode = typeof body.user_code === 'string' ? body.user_code.trim() : ''
     const decision = body.decision === 'deny' ? 'deny' : 'approve'
-    if (!user) return c.redirect('/sign-in?next=%2Fdevice', 303)
+    if (!user)
+      return c.redirect(
+        `/sign-in?next=${encodeURIComponent(`/device?user_code=${encodeURIComponent(userCode)}`)}`,
+        303,
+      )
     if (!userCode) return c.html(deviceEnterPage({ error: 'Missing device code.' }), 400)
     const response = await forwardAuth(
       deps,
@@ -192,7 +177,7 @@ export function createWebRoutes(deps: WebDeps): Hono<AppBindings> {
       const message = await authErrorMessage(response)
       return c.html(deviceEnterPage({ userCode, error: message }), 400)
     }
-    return c.html(deviceDonePage({ approved: decision === 'approve', userCode }))
+    return c.html(deviceDonePage({ approved: decision === 'approve', userCode, user }))
   })
 
   app.get('/account/devices', async (c) => {
@@ -222,7 +207,8 @@ export function createWebRoutes(deps: WebDeps): Hono<AppBindings> {
     const deviceId = DeviceId.safeParse(c.req.param('id'))
     const body = await c.req.parseBody()
     const name = typeof body.name === 'string' ? body.name.trim() : ''
-    if (!deviceId.success || !name) return c.redirect('/account/devices?flash=Invalid+rename', 303)
+    if (!deviceId.success || !name || name.length > 80)
+      return c.redirect('/account/devices?flash=Invalid+rename', 303)
     try {
       await renameDevice(deps.db, { userId: asUserId(user.id), deviceId: deviceId.data, name })
       return c.redirect('/account/devices?flash=Device+renamed', 303)
@@ -231,11 +217,29 @@ export function createWebRoutes(deps: WebDeps): Hono<AppBindings> {
     }
   })
 
+  app.get('/account/devices/:id/revoke', async (c) => {
+    const user = await sessionUser(deps, c.req.raw.headers)
+    if (!user) return c.redirect('/sign-in?next=%2Faccount%2Fdevices')
+    const device = (await listDevices(deps.db, asUserId(user.id))).find(
+      (item) => item.id === c.req.param('id'),
+    )
+    if (!device) return c.redirect('/account/devices?flash=Unknown+device')
+    return c.html(
+      revokeDevicePage({
+        user,
+        device: { ...device, lastSeenAt: device.lastSeenAt ?? null, revokedAt: null },
+      }),
+    )
+  })
+
   app.post('/account/devices/:id/revoke', async (c) => {
     const user = await sessionUser(deps, c.req.raw.headers)
     if (!user) return c.redirect('/sign-in?next=%2Faccount%2Fdevices')
     const deviceId = DeviceId.safeParse(c.req.param('id'))
     if (!deviceId.success) return c.redirect('/account/devices?flash=Invalid+device', 303)
+    const body = await c.req.parseBody()
+    if (body.confirm !== deviceId.data)
+      return c.redirect(`/account/devices/${deviceId.data}/revoke`, 303)
     try {
       await revokeDevice(deps.db, {
         userId: asUserId(user.id),
@@ -252,6 +256,50 @@ export function createWebRoutes(deps: WebDeps): Hono<AppBindings> {
 }
 
 export const DEV_PASSWORD = 'laurencio-dev-password'
+
+async function approvalPage(
+  deps: WebDeps,
+  headers: Headers,
+  userCode: string,
+  user: SessionUser,
+  display: { deviceName: string; platform: string } = { deviceName: '', platform: '' },
+): Promise<{ html: string; ok: boolean }> {
+  const response = await forwardAuth(
+    deps,
+    headers,
+    'GET',
+    `/device?user_code=${encodeURIComponent(userCode)}`,
+    null,
+  )
+  if (!response.ok)
+    return {
+      ok: false,
+      html: deviceEnterPage({ userCode, user, error: await authErrorMessage(response) }),
+    }
+  const payload = (await response.json()) as {
+    user_code?: string
+    client_id?: string
+    scope?: string
+    status?: string
+  }
+  const code = payload.user_code ?? userCode
+  if (payload.status === 'approved' || payload.status === 'denied') {
+    return {
+      ok: true,
+      html: deviceDonePage({ approved: payload.status === 'approved', userCode: code, user }),
+    }
+  }
+  return {
+    ok: true,
+    html: deviceConfirmPage({
+      ...display,
+      userCode: code,
+      user,
+      clientId: payload.client_id ?? null,
+      scope: payload.scope ?? null,
+    }),
+  }
+}
 
 async function sessionUser(deps: WebDeps, headers: Headers): Promise<SessionUser | null> {
   const session = await getSession(deps.auth, headers)
@@ -349,6 +397,8 @@ export function safeNext(value: string | null | undefined): string {
   }
   if (!decoded.startsWith('/') || decoded.startsWith('//')) return FALLBACK_NEXT
   if (decoded.includes('\\')) return FALLBACK_NEXT
-  if (/\s|\p{Cc}/u.test(decoded)) return FALLBACK_NEXT
-  return decoded
+  if (/\p{Cc}/u.test(decoded) || /\s/u.test(decoded.split(/[?#]/)[0] ?? '')) return FALLBACK_NEXT
+  // Validate decoded input, but keep query escaping for names such as "Mac mini".
+  // Returning the decoded string would corrupt nested return URLs and device names.
+  return value
 }

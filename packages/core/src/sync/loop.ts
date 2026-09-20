@@ -9,7 +9,13 @@ import type { DeviceId, RevisionId, StoreId } from '@laurencio/protocol'
 import type { ApplyHooks } from '../apply'
 import { EnvelopeError } from '../crypto/aead'
 import type { KeyMaterial } from '../crypto/kdf'
-import { RemoteForkError, RemoteRollbackError, type SyncOptions, sync } from '../engine'
+import {
+  RemoteForkError,
+  RemoteRollbackError,
+  type SyncOptions,
+  type SyncProgress,
+  sync,
+} from '../engine'
 import type { DevicePolicy, SyncReport } from '../model'
 import { defaultPolicy } from '../model'
 import type { QuiescenceOptions } from '../quiescence'
@@ -74,6 +80,7 @@ export interface SyncLoopOptions {
   hooks?: ApplyHooks
   now?: () => Date
   createRevisionId?: () => RevisionId
+  onProgress?: (progress: SyncProgress) => void
 }
 
 function reasonFor(error: unknown): string {
@@ -228,6 +235,7 @@ export class SyncLoop {
         state,
         remote: this.options.remote,
         policy: this.policy,
+        ...(this.options.onProgress === undefined ? {} : { onProgress: this.options.onProgress }),
         ...(this.options.quiescence !== undefined ? { quiescence: this.options.quiescence } : {}),
         ...(this.options.hooks !== undefined ? { hooks: this.options.hooks } : {}),
         ...(this.options.now !== undefined ? { now: this.options.now } : {}),

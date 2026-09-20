@@ -8,6 +8,8 @@ import { open, sealText } from '../src/crypto/aead'
 import { deriveMasterKey, type KdfParams, kdfParamsToWire } from '../src/crypto/kdf'
 import {
   CONFLICT_LEDGER_META_KEY,
+  MAX_CONCURRENT_DOWNLOADS,
+  MAX_CONCURRENT_UPLOADS,
   RemoteRollbackError,
   type SyncOptions,
   sync,
@@ -82,6 +84,7 @@ function policyWith(surfaces: Record<string, 'on' | 'off'>, harnessEnabled = tru
 }
 
 interface RunOptions {
+  onProgress?: SyncOptions['onProgress']
   hooks?: SyncOptions['hooks']
   now?: () => Date
   remote?: Remote
@@ -132,6 +135,7 @@ function harness(surfaceList: Surface[] = surfaces()): Harness {
           createRevisionId: () => ids.revision(),
           ...(options.hooks !== undefined ? { hooks: options.hooks } : {}),
           ...(options.policy !== undefined ? { policy: options.policy } : {}),
+          ...(options.onProgress !== undefined ? { onProgress: options.onProgress } : {}),
         })
       } finally {
         state.close()
@@ -178,6 +182,51 @@ const baseEntries: FakeHomeOptions['entries'] = [
 ]
 
 describe('engine sync', () => {
+  test('progress counts deduplicated transfers and completes candidate work on both devices', async () => {
+    const h = harness()
+    const a = engineHome([
+      { kind: 'file', path: '.agents/skills/one/SKILL.md', content: '# repeated skill\n' },
+      { kind: 'file', path: '.agents/skills/two/SKILL.md', content: '# repeated skill\n' },
+    ])
+    const b = engineHome([{ kind: 'dir', path: '.agents/skills' }])
+    const events: import('../src/engine').SyncProgress[] = []
+    try {
+      const uploaded = await h.run(a, deviceA, { onProgress: (event) => events.push(event) })
+      expect(uploaded.uploaded).toBe(1)
+      expect(events[0]?.phase).toBe('scanning')
+      expect(events.at(-1)).toMatchObject({
+        phase: 'saving',
+        completed: 2,
+        planned: 2,
+        uploaded: 1,
+      })
+      expect(events.at(-1)?.uploadedBytes).toBeGreaterThan(0)
+      events.length = 0
+      const downloaded = await h.run(b, deviceB, { onProgress: (event) => events.push(event) })
+      expect(downloaded.downloaded).toBe(2)
+      expect(events.at(-1)).toMatchObject({
+        phase: 'saving',
+        completed: 2,
+        planned: 2,
+        downloaded: 1,
+      })
+      expect(events.at(-1)?.downloadedBytes).toBeGreaterThan(0)
+      // Observers are presentation only; a failing display cannot cancel a sync.
+      expect(
+        (
+          await h.run(a, deviceA, {
+            onProgress() {
+              throw new Error('display failed')
+            },
+          })
+        ).changed,
+      ).toEqual([])
+    } finally {
+      a.cleanup()
+      b.cleanup()
+    }
+  })
+
   test('two homes converge through a file remote and a second run writes nothing', async () => {
     const h = harness()
     const a = engineHome([
@@ -213,6 +262,231 @@ describe('engine sync', () => {
     expect((await h.remote.listRevisions()).head).toBe(before.revision)
     expect(fs.statSync(a.path('.claude/CLAUDE.md')).mtimeMs).toBe(before.claude)
     expect(fs.statSync(a.path('.agents/skills/from-a/SKILL.md')).mtimeMs).toBe(before.skill)
+    a.cleanup()
+    b.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('uploads independent new files with bounded concurrency', async () => {
+    const h = harness()
+    const skills = Array.from({ length: MAX_CONCURRENT_UPLOADS * 3 }, (_, index) => ({
+      kind: 'file' as const,
+      path: `.claude/skills/skill-${String(index).padStart(2, '0')}.md`,
+      content: `# skill ${index}\n`,
+    }))
+    const a = engineHome([...baseEntries, { kind: 'dir', path: '.claude/skills' }, ...skills])
+    let active = 0
+    let peak = 0
+    const delayed: Remote = {
+      ...h.remote,
+      async putBlob(upload) {
+        active += 1
+        peak = Math.max(peak, active)
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          return await h.remote.putBlob(upload)
+        } finally {
+          active -= 1
+        }
+      },
+    }
+
+    const report = await h.run(a, deviceA, { remote: delayed })
+
+    expect(peak).toBe(MAX_CONCURRENT_UPLOADS)
+    expect(active).toBe(0)
+    expect(report.uploaded).toBe(
+      baseEntries.filter((entry) => entry.kind === 'file').length + skills.length,
+    )
+    const manifest = await h.headManifest()
+    expect(manifest.entries.map((entry) => entry.path)).toEqual(
+      manifest.entries.map((entry) => entry.path).sort(),
+    )
+    a.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('uploads identical file contents once within a sync run', async () => {
+    const h = harness()
+    const a = engineHome([
+      ...baseEntries,
+      { kind: 'dir', path: '.claude/skills' },
+      { kind: 'file', path: '.claude/skills/one.md', content: '# same skill\n' },
+      { kind: 'file', path: '.claude/skills/two.md', content: '# same skill\n' },
+    ])
+
+    const report = await h.run(a, deviceA)
+    const manifest = await h.headManifest()
+    const skillBlobs = manifest.entries
+      .filter((entry) => entry.path.startsWith('$HOME/.claude/skills/'))
+      .map((entry) => entry.blob?.id)
+
+    expect(report.uploaded).toBe(3)
+    expect(new Set(skillBlobs).size).toBe(1)
+    a.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('waits for concurrent uploads to settle before returning the first upload error', async () => {
+    const h = harness()
+    const skills = Array.from({ length: MAX_CONCURRENT_UPLOADS * 2 }, (_, index) => ({
+      kind: 'file' as const,
+      path: `.claude/skills/failure-${String(index).padStart(2, '0')}.md`,
+      content: `# failure ${index}\n`,
+    }))
+    const a = engineHome([...baseEntries, { kind: 'dir', path: '.claude/skills' }, ...skills])
+    const failure = new Error('storage rejected this blob')
+    let calls = 0
+    let active = 0
+    const failing: Remote = {
+      ...h.remote,
+      async putBlob(upload) {
+        calls += 1
+        const call = calls
+        active += 1
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          if (call === 2) throw failure
+          return await h.remote.putBlob(upload)
+        } finally {
+          active -= 1
+        }
+      },
+    }
+
+    let caught: unknown
+    try {
+      await h.run(a, deviceA, { remote: failing })
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBe(failure)
+    expect(active).toBe(0)
+    expect(await h.revisionCount()).toBe(0)
+    a.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('prefetches remote blobs concurrently and applies files after the batch settles', async () => {
+    const h = harness()
+    const skills = Array.from({ length: MAX_CONCURRENT_DOWNLOADS * 3 }, (_, index) => ({
+      kind: 'file' as const,
+      path: `.claude/skills/download-${String(index).padStart(2, '0')}.md`,
+      content: `# download ${index}\n`,
+    }))
+    const a = engineHome([...baseEntries, { kind: 'dir', path: '.claude/skills' }, ...skills])
+    const b = engineHome([...baseEntries, { kind: 'dir', path: '.claude/skills' }])
+    await h.run(a, deviceA)
+    let active = 0
+    let peak = 0
+    let writesDuringDownload = 0
+    const delayed: Remote = {
+      ...h.remote,
+      async getBlob(blobId) {
+        active += 1
+        peak = Math.max(peak, active)
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          return await h.remote.getBlob(blobId)
+        } finally {
+          active -= 1
+        }
+      },
+    }
+
+    const report = await h.run(b, deviceB, {
+      remote: delayed,
+      hooks: {
+        beforeRename: () => {
+          if (active > 0) writesDuringDownload += 1
+        },
+      },
+    })
+
+    expect(peak).toBe(MAX_CONCURRENT_DOWNLOADS)
+    expect(active).toBe(0)
+    expect(writesDuringDownload).toBe(0)
+    expect(report.downloaded).toBe(skills.length)
+    a.cleanup()
+    b.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('downloads one copy of a blob shared by files in the same batch', async () => {
+    const h = harness()
+    const a = engineHome([
+      ...baseEntries,
+      { kind: 'dir', path: '.claude/skills' },
+      { kind: 'file', path: '.claude/skills/one.md', content: '# shared download\n' },
+      { kind: 'file', path: '.claude/skills/two.md', content: '# shared download\n' },
+    ])
+    const b = engineHome([...baseEntries, { kind: 'dir', path: '.claude/skills' }])
+    await h.run(a, deviceA)
+    let downloads = 0
+    const counting: Remote = {
+      ...h.remote,
+      async getBlob(blobId) {
+        downloads += 1
+        return h.remote.getBlob(blobId)
+      },
+    }
+
+    const report = await h.run(b, deviceB, { remote: counting })
+
+    expect(downloads).toBe(1)
+    expect(report.downloaded).toBe(2)
+    expect(b.read('.claude/skills/one.md')).toBe('# shared download\n')
+    expect(b.read('.claude/skills/two.md')).toBe('# shared download\n')
+    a.cleanup()
+    b.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('does not apply a download batch when one prefetch fails', async () => {
+    const h = harness()
+    const skills = Array.from({ length: MAX_CONCURRENT_DOWNLOADS }, (_, index) => ({
+      kind: 'file' as const,
+      path: `.claude/skills/rejected-${String(index).padStart(2, '0')}.md`,
+      content: `# rejected ${index}\n`,
+    }))
+    const a = engineHome([...baseEntries, { kind: 'dir', path: '.claude/skills' }, ...skills])
+    const b = engineHome([...baseEntries, { kind: 'dir', path: '.claude/skills' }])
+    await h.run(a, deviceA)
+    const failure = new Error('storage rejected this download')
+    let calls = 0
+    let active = 0
+    let writes = 0
+    const failing: Remote = {
+      ...h.remote,
+      async getBlob(blobId) {
+        calls += 1
+        const call = calls
+        active += 1
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          if (call === 2) throw failure
+          return await h.remote.getBlob(blobId)
+        } finally {
+          active -= 1
+        }
+      },
+    }
+
+    let caught: unknown
+    try {
+      await h.run(b, deviceB, {
+        remote: failing,
+        hooks: { beforeRename: () => (writes += 1) },
+      })
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBe(failure)
+    expect(active).toBe(0)
+    expect(writes).toBe(0)
+    for (const skill of skills) expect(fs.existsSync(b.path(skill.path))).toBe(false)
     a.cleanup()
     b.cleanup()
     fs.rmSync(h.remoteDir, { recursive: true, force: true })
@@ -463,6 +737,30 @@ describe('engine sync', () => {
     expect(fs.existsSync(b.path('.agents/skills/from-a/SKILL.md'))).toBe(false)
     a.cleanup()
     b.cleanup()
+    fs.rmSync(h.remoteDir, { recursive: true, force: true })
+  })
+
+  test('ignore globs protect dotfiles', async () => {
+    const h = harness()
+    const entries: FakeHomeOptions['entries'] = [
+      ...baseEntries,
+      { kind: 'dir', path: '.agents/skills/.system' },
+      { kind: 'file', path: '.agents/skills/.system/.marker', content: 'one\n' },
+    ]
+    const a = engineHome(entries)
+    await h.run(a, deviceA)
+    const revisions = await h.revisionCount()
+
+    a.write('.agents/skills/.system/.marker', 'two\n')
+    const policy = {
+      ...policyWith({}),
+      ignore: ['$HOME/.agents/skills/.system/**'],
+    }
+    const ignored = await h.run(a, deviceA, { policy })
+    expect(ignored.changed).toEqual([])
+    expect(await h.revisionCount()).toBe(revisions)
+
+    a.cleanup()
     fs.rmSync(h.remoteDir, { recursive: true, force: true })
   })
 

@@ -2,10 +2,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { crypto, type DevicePolicy, loginWithDeviceCode, SyncLoop } from '@laurencio/core'
 import { type BackupRoot, createBackup } from '../backup'
-import { loadCliConfig, saveCliConfig } from '../config'
+import { DEFAULT_SERVER_URL, loadCliConfig, saveCliConfig } from '../config'
 import { adapterContext, type CommandContext, remoteDirFlag } from '../context'
+import { deviceApproved, presentDeviceAuthorization } from '../device-auth'
 import { setStoreKey } from '../passphrase'
-import { askChoice, askLine, askYesNo, interactive, readPassphrase } from '../prompt'
+import { createTransferProgress } from '../progress'
+import { askChoice, askYesNo, readPassphrase } from '../prompt'
 import { ok } from '../result'
 import {
   adaptersFor,
@@ -20,6 +22,7 @@ import {
   scanInventory,
   withProbes,
 } from '../session'
+import { chooseSetupScope, type SetupScope } from '../setup-scope'
 import { displayPath, plural } from '../ui'
 import type { CommandSpec } from './command'
 import { serverReachable } from './login'
@@ -28,6 +31,7 @@ import { collectSurfaces, type SurfaceRow, type SurfacesData } from './surfaces'
 export interface InitData {
   home: string
   server: string | null
+  selection: SetupScope
   login: 'signed-in' | 'already-enrolled' | 'skipped-offline'
   device: { id: string; name: string } | null
   key: { backend: string; cached: boolean } | null
@@ -54,7 +58,11 @@ function surfaceToggle(policy: DevicePolicy, surface: SurfaceRow): 'on' | 'off' 
   return surface.policy === 'opt-in' ? 'off' : 'on'
 }
 
-function setToggle(policy: DevicePolicy, surface: SurfaceRow, toggle: 'on' | 'off'): void {
+function setToggle(
+  policy: DevicePolicy,
+  surface: Pick<SurfaceRow, 'id' | 'harness'>,
+  toggle: 'on' | 'off',
+): void {
   const id = surface.harness as 'claude' | 'codex' | 'opencode'
   const existing = policy.harnesses[id] ?? { enabled: true, surfaces: {} }
   existing.surfaces[surface.id] = toggle
@@ -151,6 +159,13 @@ function harnessInventory(surfaces: readonly SurfaceRow[]): string[] {
 
 function humanInit(ctx: CommandContext, data: InitData): string {
   const lines: string[] = ['Laurencio init', `Server: ${data.server ?? 'none'}`]
+  const selections: Record<SetupScope, string> = {
+    existing: 'current device choices',
+    skills: 'skills only',
+    portable: 'portable config; instructions stay local',
+    custom: 'custom surfaces',
+  }
+  lines.push(`Sync selection: ${selections[data.selection]}`)
   lines.push('Surfaces')
   lines.push(...harnessInventory(data.surfaces))
   lines.push(`  Total: ${inventorySummary(data.surfaces)}`)
@@ -205,24 +220,31 @@ export const initCommand: CommandSpec = {
     ctx = withProbes(ctx)
     const config = loadCliConfig(ctx.home)
     const surfacesData: SurfacesData = await collectSurfaces(ctx)
-
-    let server = ctx.flags.server ?? ctx.env.LAURENCIO_SERVER ?? config.server
-    if ((server === null || server === '') && interactive(ctx) && remoteDirFlag(ctx) === null) {
-      server = (await askLine(ctx, 'Server URL:', '')).trim()
-      if (server === '') server = null
-    }
-
     let identity = identityFor(ctx)
+    const selection = await chooseSetupScope(
+      ctx,
+      config.policy,
+      surfacesData.surfaces,
+      identity !== null,
+    )
+
+    const server =
+      ctx.flags.server ??
+      ctx.env.LAURENCIO_SERVER ??
+      config.server ??
+      (remoteDirFlag(ctx) === null ? DEFAULT_SERVER_URL : null)
+
     let loginStatus: InitData['login']
     let token: string | null = null
     if (identity !== null) {
       loginStatus = 'already-enrolled'
     } else if (server === null || server === '' || !(await serverReachable(ctx, server))) {
-      const optIn = await applyOptIn(ctx, config.policy, surfacesData.surfaces, false)
+      const optIn = await applyOptIn(ctx, selection.policy, surfacesData.surfaces, false)
       const policyPath = saveCliConfig(ctx.home, { server, policy: optIn.policy })
       const data: InitData = {
         home: ctx.home,
         server,
+        selection: selection.scope,
         login: 'skipped-offline',
         device: null,
         key: null,
@@ -242,12 +264,9 @@ export const initCommand: CommandSpec = {
         deviceName,
         platform: ctx.platform,
         ...(ctx.deps.fetch === undefined ? {} : { fetch: ctx.deps.fetch }),
-        onPrompt: (prompt) => {
-          const line = `Open ${prompt.verificationUri} and enter code ${prompt.userCode}`
-          if (ctx.flags.json) ctx.io.err(line)
-          else ctx.io.out(line)
-        },
+        onPrompt: (prompt) => presentDeviceAuthorization(ctx, deviceName, prompt),
       })
+      deviceApproved(ctx, result.identity.name)
       identity = result.identity
       token = result.token
       loginStatus = 'signed-in'
@@ -274,12 +293,13 @@ export const initCommand: CommandSpec = {
       keyInfo = { backend: setup.backend, cached: true }
     }
 
-    const optIn = await applyOptIn(ctx, config.policy, surfacesData.surfaces, interactive(ctx))
+    const optIn = await applyOptIn(ctx, selection.policy, surfacesData.surfaces, false)
     const policy = optIn.policy
     const policyPath = saveCliConfig(ctx.home, { server, policy })
 
     const session = await openSession(ctx)
     const state = openState(ctx)
+    let progress: ReturnType<typeof createTransferProgress> | undefined
     let backup: string | null = null
     const enrollment: InitData['enrollment'] = []
     const syncData: NonNullable<InitData['sync']> = {
@@ -303,10 +323,7 @@ export const initCommand: CommandSpec = {
         ),
       )
       if (firstEnrollment) {
-        const roots: BackupRoot[] = inventory.scan.surfaces
-          .filter((report) => report.exists && activeIds.has(report.surfaceId))
-          .map((report) => ({ label: report.surfaceId, path: report.resolvedPath }))
-        if (roots.length > 0) backup = createBackup(ctx.home, roots, ctx.now()).dir
+        const replaceRoots: string[] = []
         for (const surface of inventory.surfaces.values()) {
           if (!activeIds.has(surface.id)) continue
           const report = inventory.scan.surfaces.find((item) => item.surfaceId === surface.id)
@@ -323,13 +340,31 @@ export const initCommand: CommandSpec = {
             'm',
           )
           enrollment.push({ surfaceId: surface.id, choice })
+          if (choice === 's') setToggle(policy, surface, 'off')
           if (choice === 'r' && report.role === 'owner') {
-            fs.rmSync(report.resolvedPath, { recursive: true, force: true })
+            replaceRoots.push(report.resolvedPath)
           }
         }
+
+        // A deferred surface stays off after enrollment. Re-scan the effective surfaces so
+        // link ownership reflects the policy that this enrollment run will use.
+        saveCliConfig(ctx.home, { server, policy })
+        const activeInventory = scanInventory(ctx, { policy })
+        const roots: BackupRoot[] = activeInventory.scan.surfaces
+          .filter(
+            (report) =>
+              report.exists &&
+              report.role === 'owner' &&
+              (report.policy === 'sync' || report.policy === 'opt-in'),
+          )
+          .map((report) => ({ label: report.surfaceId, path: report.resolvedPath }))
+        if (roots.length > 0) backup = createBackup(ctx.home, roots, ctx.now()).dir
+        for (const root of replaceRoots) fs.rmSync(root, { recursive: true, force: true })
       }
 
+      progress = createTransferProgress(ctx.io, ctx.flags.json)
       const loop = new SyncLoop({
+        onProgress: progress.update,
         adapters: adaptersFor(ctx, optIn.policy),
         ctx: adapterContext(ctx),
         deviceId: identity.deviceId,
@@ -345,6 +380,7 @@ export const initCommand: CommandSpec = {
         now: ctx.now,
       })
       const result = await loop.runOnce()
+      progress.finish(result)
       syncData.status = result.status
       syncData.revisionId = result.report?.revisionId ?? null
       syncData.uploaded = result.report?.uploaded ?? 0
@@ -353,12 +389,14 @@ export const initCommand: CommandSpec = {
       syncData.conflicts = result.report?.conflicts.map((conflict) => conflict.path) ?? []
       syncData.blocked = result.report?.blocked ?? []
     } finally {
+      progress?.finish()
       state.close()
     }
 
     const data: InitData = {
       home: ctx.home,
       server,
+      selection: selection.scope,
       login: loginStatus,
       device: { id: identity.deviceId, name: identity.name },
       key: keyInfo,

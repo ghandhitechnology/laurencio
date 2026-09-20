@@ -19,6 +19,8 @@ import { parse, stringify, type TomlTable } from 'smol-toml'
 import { cliError } from './errors'
 
 export const CONFIG_FILE_NAME = 'config.toml'
+/** Public beta service used when a device has no explicit server configuration. */
+export const DEFAULT_SERVER_URL = 'https://laurencio-server-production.up.railway.app'
 
 export interface CliConfig {
   server: string | null

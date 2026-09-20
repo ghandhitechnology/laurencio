@@ -5,8 +5,6 @@ const productionBase = {
   NODE_ENV: 'production',
   BETTER_AUTH_SECRET: 'prod-secret',
   DATABASE_URL: 'postgres://db/laurencio',
-  GITHUB_CLIENT_ID: 'client-id',
-  GITHUB_CLIENT_SECRET: 'client-secret',
   S3_BUCKET: 'laurencio',
   ACCESS_KEY_ID: 'key-id',
   SECRET_ACCESS_KEY: 'key-secret',
@@ -62,10 +60,24 @@ describe('development defaults', () => {
   })
 
   test('staging binds for a container and keeps development affordances', () => {
-    const env = loadEnv({ ...productionBase, NODE_ENV: 'staging', ALLOW_DEV_SIGNIN: 'true' })
+    const env = loadEnv({
+      ...productionBase,
+      NODE_ENV: 'staging',
+      ALLOW_DEV_SIGNIN: 'true',
+      STAGING_EMAIL_ALLOWLIST: ' Andy@Example.com , other@example.com ',
+    })
     expect(env.nodeEnv).toBe('staging')
     expect(env.host).toBe('0.0.0.0')
     expect(env.auth.allowDevSignin).toBe(true)
+    expect(env.auth.stagingEmailAllowlist).toEqual(['andy@example.com', 'other@example.com'])
+  })
+
+  test('staging email access requires an explicit allowlist', () => {
+    expect(() => loadEnv({ NODE_ENV: 'staging' })).toThrow(/STAGING_EMAIL_ALLOWLIST/)
+    expect(() => loadEnv({ NODE_ENV: 'staging', STAGING_EMAIL_ALLOWLIST: ' , ' })).toThrow(
+      /STAGING_EMAIL_ALLOWLIST/,
+    )
+    expect(loadEnv({ NODE_ENV: 'staging', ALLOW_DEV_SIGNIN: '0' }).auth.allowDevSignin).toBe(false)
   })
 
   test('development stays on loopback and an explicit host wins', () => {

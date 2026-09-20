@@ -61,6 +61,9 @@ describe('opencode surfaces', () => {
       `${OPENCODE_CONFIG_ROOT}/opencode.json`,
     )
     expect(byId.get(sid('opencode.plugins'))?.kind).toBe('tree')
+    expect(byId.get(sid('opencode.source'))?.transforms.map((transform) => transform.kind)).toEqual(
+      ['markerBlocks'],
+    )
     home.cleanup()
   })
 

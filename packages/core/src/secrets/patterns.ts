@@ -1,3 +1,5 @@
+import { visit } from 'jsonc-parser'
+
 /**
  * Key-shape rules for the pre-upload secret scanner.
  *
@@ -140,6 +142,10 @@ const ALLOWLIST_PATTERNS: RegExp[] = [
   /^[0-9a-f]{40}$/i,
   /^[0-9a-f]{64}$/i,
   /^[0-9a-f]{128}$/i,
+  /^sha1:[0-9a-f]{40}$/i,
+  /^sha256:[0-9a-f]{64}$/i,
+  /^sha512:[0-9a-f]{128}$/i,
+  /^[0-9a-f]{64}(?:,[0-9a-f]{64})+$/i,
   /^sha(?:256|384|512)-[A-Za-z0-9+/=]{20,}$/,
   // UUIDs.
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
@@ -165,6 +171,8 @@ const ALLOWLIST_PATTERNS: RegExp[] = [
   /^(?:~\/|\$HOME|\$\{[A-Z_]+\}|\/|[A-Za-z]:\\|\\\\)[^\s]*$/,
   // Relative paths: at least two segments, no base64 alphabet markers.
   /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+){1,}$/,
+  // iCalendar recurrence values stored in Codex automation definitions.
+  /^(?:DTSTART(?:;TZID=[A-Za-z0-9/_+-]+)?:\d{8}T\d{6}Z?(?:\\n|\r?\n))?RRULE:[A-Z]+=[A-Z0-9,+-]+(?:;[A-Z]+=[A-Z0-9,+-]+)*$/,
 ]
 
 const URL_PATTERN = /^(?:https?|file|git\+https?|ssh|s3|gs):\/\/\S+$/
@@ -260,11 +268,23 @@ export function structuredValues(
   content: string,
   format: StructuredFormat,
 ): { value: string; line: number }[] {
-  const pattern =
-    format === 'toml'
-      ? /^[ \t]*[A-Za-z0-9_.-]+[ \t]*=[ \t]*(["'])((?:\\.|(?!\1)[^\\])*)\1/gm
-      : /(["'])((?:\\.|(?!\1)[^\\])*)\1/g
   const values: { value: string; line: number }[] = []
+  if (format !== 'toml') {
+    visit(
+      content,
+      {
+        onLiteralValue(value, _offset, _length, startLine) {
+          if (typeof value === 'string' && value.length > 0) {
+            values.push({ value, line: startLine + 1 })
+          }
+        },
+      },
+      { allowTrailingComma: true, disallowComments: false },
+    )
+    return values
+  }
+
+  const pattern = /^[ \t]*[A-Za-z0-9_.-]+[ \t]*=[ \t]*(["'])((?:\\.|(?!\1)[^\\])*)\1/gm
   for (const match of content.matchAll(pattern)) {
     const value = match[2]
     if (value === undefined || value.length === 0) continue

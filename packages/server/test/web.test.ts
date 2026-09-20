@@ -24,12 +24,14 @@ describe('sign-in page', () => {
     expect(response.headers.get('location')).toBe('/sign-in')
   })
 
-  test('renders the GitHub button and the development form', async () => {
+  test('renders email staging access as the only sign-in choice', async () => {
     const client = createClient(server.app)
     const response = await client.expectStatus('/sign-in', 200)
     const html = await response.text()
-    expect(html).toContain('Continue with GitHub')
-    expect(html).toContain('action="/sign-in/github"')
+    expect(html).toContain('Continue with email')
+    expect(html).toContain('Email addresses are not verified')
+    expect(html).not.toContain('GitHub')
+    expect(html).not.toContain('dev@localhost')
     expect(html).toContain('action="/sign-in/dev"')
   })
 
@@ -39,7 +41,7 @@ describe('sign-in page', () => {
     const devices = await client.expectStatus('/account/devices', 200)
     expect(await devices.text()).toContain('web-signin')
   })
-  test('the GitHub sign-in route reports a failure when no app is configured', async () => {
+  test('the removed social sign-in route is unavailable', async () => {
     const bare = await createTestServer()
     try {
       const client = createClient(bare.app)
@@ -48,8 +50,7 @@ describe('sign-in page', () => {
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ next: '/account/devices' }).toString(),
       })
-      expect(response.status).toBe(400)
-      expect(await response.text()).toContain('Continue with GitHub')
+      expect(response.status).toBe(404)
     } finally {
       await bare.close()
     }
@@ -57,6 +58,47 @@ describe('sign-in page', () => {
 })
 
 describe('device approval page', () => {
+  test('a prefilled link goes straight to confirmation under the signed-in account', async () => {
+    const client = createClient(server.app)
+    const code = await client.json<{ user_code: string }>('/api/auth/device/code', {
+      method: 'POST',
+      body: JSON.stringify({ client_id: TEST_CLIENT_ID }),
+    })
+    const target = `/device?user_code=${code.user_code}`
+    const signedOut = await client.request(target)
+    expect(signedOut.headers.get('location')).toBe(`/sign-in?next=${encodeURIComponent(target)}`)
+    await signInDev(client, 'direct-approval@example.com')
+    const alreadySignedIn = await client.request(`/sign-in?next=${encodeURIComponent(target)}`)
+    expect(alreadySignedIn.headers.get('location')).toBe(target)
+    const confirm = await client.expectStatus(target, 200)
+    const html = await confirm.text()
+    expect(html).toContain('Confirm device')
+    expect(html).toContain('direct-approval@example.com')
+    expect(html).toContain('action="/device/decision"')
+    expect(html).not.toContain('Enter the code shown')
+  })
+
+  test('device display details survive sign-in and are escaped on confirmation', async () => {
+    const client = createClient(server.app)
+    const code = await client.json<{ user_code: string }>('/api/auth/device/code', {
+      method: 'POST',
+      body: JSON.stringify({ client_id: TEST_CLIENT_ID }),
+    })
+    const query = new URLSearchParams({
+      user_code: code.user_code,
+      device_name: '<script>Mini</script>',
+      platform: 'darwin',
+    })
+    const target = `/device?${query}`
+    const redirect = await client.request(target)
+    expect(redirect.headers.get('location')).toBe(`/sign-in?next=${encodeURIComponent(target)}`)
+    await signInDev(client, 'device-context@example.com')
+    const html = await (await client.expectStatus(target, 200)).text()
+    expect(html).toContain('&lt;script&gt;Mini&lt;/script&gt;')
+    expect(html).not.toContain('<script>')
+    expect(html).toContain('darwin')
+  })
+
   test('the whole page flow approves a device code', async () => {
     const client = createClient(server.app)
     const code = await client.json<{ device_code: string; user_code: string }>(
@@ -192,6 +234,9 @@ describe('device management page', () => {
     const page = await client.expectStatus('/account/devices', 200)
     const html = await page.text()
     expect(html).toContain('browser-listed')
+    expect(html).toContain('1 active device')
+    expect(html).toContain('Add another device')
+    expect(html).toContain('web-devices@example.com')
     expect(html).toContain(`/account/devices/${enrolled.device.id}/revoke`)
 
     const renamed = await client.request(`/account/devices/${enrolled.device.id}/rename`, {
@@ -203,14 +248,28 @@ describe('device management page', () => {
     const afterRename = await client.expectStatus('/account/devices', 200)
     expect(await afterRename.text()).toContain('renamed-in-browser')
 
-    const revoked = await client.request(`/account/devices/${enrolled.device.id}/revoke`, {
+    const unconfirmed = await client.request(`/account/devices/${enrolled.device.id}/revoke`, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: '',
     })
+    expect(unconfirmed.headers.get('location')).toBe(
+      `/account/devices/${enrolled.device.id}/revoke`,
+    )
+    await client.expectStatus('/v1/me', 200, { headers: authHeaders(enrolled.token) })
+    const confirmation = await client.expectStatus(
+      `/account/devices/${enrolled.device.id}/revoke`,
+      200,
+    )
+    expect(await confirmation.text()).toContain('Your other devices keep syncing')
+    const revoked = await client.request(`/account/devices/${enrolled.device.id}/revoke`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ confirm: enrolled.device.id }).toString(),
+    })
     expect(revoked.status).toBe(303)
     const afterRevoke = await client.expectStatus('/account/devices', 200)
-    expect(await afterRevoke.text()).toContain('revoked')
+    expect(await afterRevoke.text()).toContain('Revoked')
 
     // The device token died with the device.
     const dead = await client.request('/v1/me', {
@@ -241,6 +300,40 @@ describe('device management page', () => {
 })
 
 describe('development sign-in safety', () => {
+  test('staging allows normalized invited emails and rejects others through both entry points', async () => {
+    const staging = await createTestServer({
+      NODE_ENV: 'staging',
+      STAGING_EMAIL_ALLOWLIST: 'Invited@Example.com',
+    })
+    try {
+      const client = createClient(staging.app)
+      const denied = await client.request('/sign-in/dev', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ email: 'other@example.com' }).toString(),
+      })
+      expect(denied.status).toBe(403)
+      expect(await denied.text()).toContain('does not have staging access')
+      for (const endpoint of ['/sign-up/email', '/sign-in/email']) {
+        const direct = await client.request(`/api/auth${endpoint}`, {
+          method: 'POST',
+          body: JSON.stringify({
+            email: 'other@example.com',
+            password: DEV_PASSWORD,
+            name: 'Other',
+          }),
+        })
+        expect(direct.status).toBe(403)
+      }
+      await signInDev(client, ' Invited@Example.com ')
+      expect(await (await client.expectStatus('/account/devices', 200)).text()).toContain(
+        'invited@example.com',
+      )
+    } finally {
+      await staging.close()
+    }
+  })
+
   test('is refused when the environment disallows it, and the password never changes', async () => {
     const strict = await createTestServer({ ALLOW_DEV_SIGNIN: '0' })
     try {
@@ -252,7 +345,10 @@ describe('development sign-in safety', () => {
       })
       expect(response.status).toBe(404)
       const page = await client.expectStatus('/sign-in', 200)
-      expect(await page.text()).not.toContain('Development sign-in')
+      const html = await page.text()
+      expect(html).toContain('Email sign-in is not available')
+      expect(html).not.toContain('action="/sign-in/dev"')
+      expect(html).not.toContain('GitHub')
     } finally {
       await strict.close()
     }
@@ -277,6 +373,9 @@ describe('web hardening', () => {
   test('safeNext only keeps same-origin relative paths', () => {
     expect(safeNext('/account/devices')).toBe('/account/devices')
     expect(safeNext('/account/devices?flash=ok')).toBe('/account/devices?flash=ok')
+    expect(safeNext('/device?user_code=ABC&device_name=Mac%20mini')).toBe(
+      '/device?user_code=ABC&device_name=Mac%20mini',
+    )
     expect(safeNext('https://evil.example/steal')).toBe('/account/devices')
     expect(safeNext('//evil.example/steal')).toBe('/account/devices')
     expect(safeNext('/\\evil.example')).toBe('/account/devices')

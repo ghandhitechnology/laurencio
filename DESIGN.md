@@ -232,7 +232,7 @@ Server endpoints stay thin: device auth, device registry, KDF parameters, blob p
 ## 10. Resolved decisions
 
 1. Transport: hosted service with auth and sync. Bring-your-own git remote is a later export path, not the primary.
-2. Client stack: TypeScript monorepo, bun workspaces, Hono on Railway, Postgres with Drizzle, Railway storage bucket (S3-compatible), Better Auth device flow with GitHub OAuth.
+2. Client stack: TypeScript monorepo, bun workspaces, Hono on Railway, Postgres with Drizzle, Railway storage bucket (S3-compatible), Better Auth device flow with email sign-in for invited staging accounts.
 3. Placement: respect each device's layout, resolve symlinks to targets, keep a per-device materialization map. No canonical source tree.
 4. Conflicts: auto-merge, conflict copies, `laurencio resolve`, quiescence and compare-and-swap around live harness writers.
 5. Trust: end-to-end encryption from launch, passphrase-derived key, no server escrow, no recovery code.

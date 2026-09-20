@@ -110,6 +110,55 @@ describe('entropy heuristic', () => {
     expect(scanText('notes.md', value)).toEqual([])
     expect(scanText('opencode/opencode.json', `{"key":"${value}"}`)).toHaveLength(1)
   })
+
+  test('JSON and JSONC property names are not treated as values', () => {
+    const packagePath = 'node_modules/@msgpackr-extract/msgpackr-extract-darwin-arm64'
+    const configId = 'cursor-grok-4.6-high-fast'
+    expect(
+      scanText(
+        'opencode/package-lock.json',
+        JSON.stringify({ packages: { [packagePath]: { version: '3.0.4' } } }),
+      ),
+    ).toEqual([])
+    expect(
+      scanText(
+        'opencode/opencode.jsonc',
+        `{
+          // Model identifiers are object keys, not credential values.
+          "models": { "${configId}": { "name": "Grok 4.6" }, },
+        }`,
+      ),
+    ).toEqual([])
+  })
+
+  test('JSON string values still receive entropy checks', () => {
+    const value = 'Qw9Er2Ty5Ui8Op1As4Df7Gh3Jk6Lz0Xc2Vb5Nm9Qw4E'
+    expect(
+      scanText(
+        'opencode/opencode.jsonc',
+        `{
+          // Comments and trailing commas are valid in this config.
+          "apiKey": "${value}",
+        }`,
+      ).map((finding) => finding.rule),
+    ).toEqual(['entropy-string'])
+  })
+
+  test('automation recurrence rules and public hash lists pass', () => {
+    const hashA = '6d25a30a8e6145352d0a785fabf826e1490c5a30518524d737ac23334fff3121'
+    const hashB = 'ac5078ff779ba21df9f662222a432e7ba7266eda06d9018d690435af976f48ee'
+    expect(
+      scanText(
+        'codex/automation.toml',
+        [
+          'rrule = "RRULE:FREQ=WEEKLY;BYHOUR=3;BYMINUTE=0;BYDAY=SU,MO,TU,WE,TH,FR,SA"',
+          'once = "DTSTART;TZID=Asia/Seoul:20260815T065000\\nRRULE:FREQ=DAILY;COUNT=1"',
+          `trusted_hashes = "${hashA},${hashB}"`,
+          `trusted_hash = "sha256:${hashA}"`,
+        ].join('\n'),
+      ),
+    ).toEqual([])
+  })
 })
 
 describe('override log', () => {

@@ -18,5 +18,7 @@ if (import.meta.main) {
   const result = await runCli(process.argv.slice(2), { io: createIo() })
   if (result.output !== '') process.stdout.write(result.output)
   if (result.errorOutput !== '') process.stderr.write(result.errorOutput)
-  process.exit(result.exitCode)
+  // Let stdout and stderr drain before exiting. `process.exit()` can truncate a
+  // large JSON plan when the CLI is piped over SSH or into another command.
+  process.exitCode = result.exitCode
 }

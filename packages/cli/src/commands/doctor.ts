@@ -144,7 +144,9 @@ function secretScan(inventory: LocalInventory): DoctorData['secrets'] {
     } catch {
       continue
     }
-    const content = hasMarkerBlocks(surface) ? projectedContent(surface, entry.localPath, raw) : raw
+    const content = hasMarkerBlocks(surface, entry.localPath)
+      ? projectedContent(surface, entry.localPath, raw)
+      : raw
     bytes += Buffer.byteLength(content)
     hits.push({ path: entry.storePath, content })
   }

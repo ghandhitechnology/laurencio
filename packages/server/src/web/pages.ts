@@ -67,6 +67,19 @@ const styles = `
   th { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
   td.actions { text-align: right; white-space: nowrap; }
   .revoked { color: var(--muted); text-decoration: line-through; }
+  .device { border: 1px solid var(--line); border-radius: 12px; padding: 1.1rem; margin: 0 0 1rem; }
+  .device h2 { margin: 0; font-size: 1.05rem; }
+  .device-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+  .status { font-size: 0.8rem; color: var(--muted); }
+  .status.active { color: #287550; }
+  .device p { margin: 0.4rem 0; }
+  .device details { margin-top: 0.8rem; }
+  summary { cursor: pointer; }
+  .device form { margin: 0.8rem 0 0; }
+  .device-id { font-size: 0.72rem; overflow-wrap: anywhere; letter-spacing: 0; }
+  .account-email { overflow-wrap: anywhere; }
+  a { color: var(--accent); text-underline-offset: 0.2em; }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
 `
 
 export function layout(options: LayoutOptions): string {
@@ -97,31 +110,32 @@ export function signInPage(options: {
   error?: string
 }): string {
   const next = escapeHtml(options.next)
-  const dev = options.allowDevSignin
-    ? `<h2>Development sign-in</h2>
+  const form = options.allowDevSignin
+    ? `<div class="notice">Staging access. Email addresses are not verified on this server.</div>
 <form method="post" action="/sign-in/dev">
   <input type="hidden" name="next" value="${next}">
   <label for="email">Email</label>
-  <input id="email" type="email" name="email" value="dev@localhost" required>
-  <div class="row"><button type="submit">Sign in without GitHub</button></div>
+  <input id="email" type="email" name="email" autocomplete="email" placeholder="you@example.com" autofocus required>
+  <div class="row"><button class="primary" type="submit">Continue with email</button></div>
 </form>`
-    : ''
+    : '<div class="notice">Email sign-in is not available on this server yet. Contact the server owner.</div>'
   return layout({
     title: 'Sign in',
     body: `<h1>Sign in</h1>
-<p class="lede">Sign in to approve a device or manage enrolled devices.</p>
+<p class="lede">Use the same email on every computer to keep your devices together.</p>
 ${options.error ? `<div class="notice error">${escapeHtml(options.error)}</div>` : ''}
-<form method="post" action="/sign-in/github">
-  <input type="hidden" name="next" value="${next}">
-  <div class="row"><button class="primary" type="submit">Continue with GitHub</button></div>
-</form>
-${dev}`,
+${form}`,
   })
 }
 
-export function deviceEnterPage(options: { userCode?: string; error?: string }): string {
+export function deviceEnterPage(options: {
+  userCode?: string
+  error?: string
+  user?: PageUser
+}): string {
   return layout({
     title: 'Approve a device',
+    user: options.user ?? null,
     body: `<h1>Approve a device</h1>
 <p class="lede">Enter the code shown in your terminal.</p>
 ${options.error ? `<div class="notice error">${escapeHtml(options.error)}</div>` : ''}
@@ -137,6 +151,9 @@ export function deviceConfirmPage(options: {
   userCode: string
   clientId: string | null
   scope: string | null
+  user?: PageUser
+  deviceName?: string
+  platform?: string
 }): string {
   const details = [
     options.clientId ? `<p class="muted">Client: ${escapeHtml(options.clientId)}</p>` : '',
@@ -144,9 +161,12 @@ export function deviceConfirmPage(options: {
   ].join('')
   return layout({
     title: 'Confirm device',
+    user: options.user ?? null,
     body: `<h1>Confirm device</h1>
+${options.deviceName ? `<p>Connect <strong>${escapeHtml(options.deviceName.slice(0, 80))}</strong>${options.platform ? ` (${escapeHtml(options.platform.slice(0, 40))})` : ''}.</p>` : ''}
 <p>Authorize a device that has this code:</p>
 <p class="code">${escapeHtml(options.userCode)}</p>
+${options.user ? `<p class="account-email">Linking to <strong>${escapeHtml(options.user.email)}</strong>.</p>` : ''}
 ${details}
 <p class="muted">Approve only if you started this on a device you control.</p>
 <form method="post" action="/device/decision">
@@ -159,9 +179,14 @@ ${details}
   })
 }
 
-export function deviceDonePage(options: { approved: boolean; userCode: string }): string {
+export function deviceDonePage(options: {
+  approved: boolean
+  userCode: string
+  user?: PageUser
+}): string {
   return layout({
     title: options.approved ? 'Device approved' : 'Device denied',
+    user: options.user ?? null,
     body: `<h1>${options.approved ? 'Device approved' : 'Device denied'}</h1>
 <p>${
       options.approved
@@ -186,45 +211,57 @@ export function devicesPage(options: {
   devices: DeviceListItem[]
   flash?: string
 }): string {
-  const rows = options.devices
+  const active = options.devices.filter((device) => !device.revokedAt)
+  const revoked = options.devices.filter((device) => device.revokedAt)
+  const cards = [...active, ...revoked]
     .map(
-      (device) => `<tr>
-  <td>
-    <div class="${device.revokedAt ? 'revoked' : ''}">${escapeHtml(device.name)}</div>
-    <div class="muted">${escapeHtml(device.platform)} · added ${escapeHtml(device.createdAt.slice(0, 10))}${
-      device.lastSeenAt ? ` · last seen ${escapeHtml(device.lastSeenAt.slice(0, 10))}` : ''
-    }</div>
+      (device) => `<article class="device">
+    <div class="device-head"><h2>${escapeHtml(device.name)}</h2><span class="status ${device.revokedAt ? '' : 'active'}">${device.revokedAt ? 'Revoked' : 'Active'}</span></div>
+    <p class="muted">${escapeHtml(device.platform === 'darwin' ? 'macOS' : device.platform)} · Added ${timestamp(device.createdAt)}</p>
+    <p class="muted">${device.revokedAt ? `Access revoked ${timestamp(device.revokedAt)}` : device.lastSeenAt ? `Last connected ${timestamp(device.lastSeenAt)}` : 'Waiting for its first connection'}</p>
+    <code class="muted device-id">${escapeHtml(device.id)}</code>
     ${
       device.revokedAt
-        ? '<div class="muted">revoked</div>'
-        : `<form method="post" action="/account/devices/${escapeHtml(device.id)}/rename" class="rename">
-    <input type="text" name="name" value="${escapeHtml(device.name)}" maxlength="80" aria-label="Device name">
+        ? ''
+        : `<details><summary>Rename device</summary><form method="post" action="/account/devices/${escapeHtml(device.id)}/rename" class="rename">
+    <label for="name-${escapeHtml(device.id)}">Device name</label>
+    <input id="name-${escapeHtml(device.id)}" type="text" name="name" value="${escapeHtml(device.name)}" maxlength="80" required>
     <button type="submit">Rename</button>
-  </form>`
+  </form></details>
+  <p><a href="/account/devices/${escapeHtml(device.id)}/revoke">Revoke access</a></p>`
     }
-  </td>
-  <td class="actions">${
-    device.revokedAt
-      ? ''
-      : `<form method="post" action="/account/devices/${escapeHtml(device.id)}/revoke">
-    <button class="danger" type="submit">Revoke</button>
-  </form>`
-  }</td>
-</tr>`,
+</article>`,
     )
     .join('')
   return layout({
     title: 'Devices',
     user: options.user,
     body: `<h1>Devices</h1>
-<p class="lede">Devices enrolled on this account. Revoking a device invalidates its token immediately.</p>
+<p class="account-email">${escapeHtml(options.user.email)}</p>
+<p class="lede">${active.length} active ${active.length === 1 ? 'device' : 'devices'}. Devices stay signed in while they sync. After 90 days without connecting, sign in again.</p>
 ${options.flash ? `<div class="notice">${escapeHtml(options.flash)}</div>` : ''}
-<table>
-<thead><tr><th>Device</th><th></th></tr></thead>
-<tbody>${rows || '<tr><td class="muted">No devices yet. Run <code>laurencio init</code> to enroll one.</td><td></td></tr>'}</tbody>
-</table>
+<div class="notice"><strong>Add another device</strong><br>Run <code>laurencio init</code> on that computer, then sign in with ${escapeHtml(options.user.email)}. Have your recovery passphrase ready to unlock your files.</div>
+${cards || '<p class="muted">Your devices will appear here after setup.</p>'}
 <form method="post" action="/sign-out">
   <div class="row"><button type="submit">Sign out</button></div>
+</form>`,
+  })
+}
+
+function timestamp(value: string): string {
+  return `<time datetime="${escapeHtml(value)}">${escapeHtml(value.replace('T', ' ').slice(0, 16))} UTC</time>`
+}
+
+export function revokeDevicePage(options: { user: PageUser; device: DeviceListItem }): string {
+  return layout({
+    title: 'Revoke device access',
+    user: options.user,
+    body: `<h1>Revoke ${escapeHtml(options.device.name)}?</h1>
+<p>This computer will stop syncing immediately. Its local files stay on the computer. Your other devices keep syncing.</p>
+<p class="muted">To reconnect it later, run <code>laurencio init</code> there and sign in again.</p>
+<form method="post" action="/account/devices/${escapeHtml(options.device.id)}/revoke">
+  <input type="hidden" name="confirm" value="${escapeHtml(options.device.id)}">
+  <div class="row"><button class="danger" type="submit">Revoke access</button><a href="/account/devices">Keep device connected</a></div>
 </form>`,
   })
 }

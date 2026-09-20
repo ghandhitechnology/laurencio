@@ -99,6 +99,19 @@ describe('codex surfaces', () => {
     home.cleanup()
   })
 
+  test('keeps Codex-managed system skills local', () => {
+    const home = buildCodexHome()
+    home.write('.codex/skills/.system/openai-docs/SKILL.md', '# managed by Codex\n')
+    home.write('.agents/skills/.system/shared/SKILL.md', '# managed by an agent runtime\n')
+
+    const result = scanCodex(home.ctx)
+    for (const suffix of ['/.codex/skills/.system', '/.agents/skills/.system']) {
+      expect(classesFor(result.entries, suffix), suffix).toContain('excluded')
+    }
+    expect(result.manifest.entries.some((entry) => entry.path.includes('/.system/'))).toBe(false)
+    home.cleanup()
+  })
+
   test('syncs named profile files while machine state in the same tree stays never', () => {
     const home = buildCodexHome()
     const result = scanCodex(home.ctx)
@@ -185,6 +198,14 @@ describe('codex surfaces', () => {
     expect(byPath.get(`\${CODEX_HOME}/auth.json`)?.policy).toBe('never')
     expect(byPath.get(`\${CODEX_HOME}/sessions`)?.policy).toBe('never')
     expect(byPath.get(`\${CODEX_HOME}/rules/default.rules`)?.policy).toBe('sync')
+    expect(
+      byPath.get(`\${CODEX_HOME}/AGENTS.md`)?.transforms.map((transform) => transform.kind),
+    ).toEqual(['markerBlocks'])
+    expect(
+      byPath
+        .get(`\${CODEX_HOME}/AGENTS.override.md`)
+        ?.transforms.map((transform) => transform.kind),
+    ).toEqual(['markerBlocks'])
     const agentSkills = byPath.get('$HOME/.agents/skills')
     expect(agentSkills?.kind).toBe('tree')
     if (agentSkills?.kind === 'tree') expect(agentSkills.shared).toBe(true)

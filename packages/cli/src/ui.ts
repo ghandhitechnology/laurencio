@@ -8,6 +8,13 @@ import * as readline from 'node:readline/promises'
 import type { CommandResult } from './result'
 
 export interface CliIo {
+  /** Optional live terminal channel. Omitted by non-interactive integrations. */
+  terminal?: {
+    color?: boolean
+    write(text: string): void
+    columns(): number
+    onInterrupt(cleanup: () => void): () => void
+  }
   out(text: string): void
   err(text: string): void
   readLine(prompt: string): Promise<string>
@@ -71,6 +78,27 @@ export function createIo(): CliIo {
     })
   }
   return {
+    ...(process.stderr.isTTY && process.env.TERM !== 'dumb'
+      ? {
+          terminal: {
+            color: process.env.NO_COLOR === undefined && process.env.FORCE_COLOR !== '0',
+            write: (text: string) => {
+              process.stderr.write(text)
+            },
+            columns: () => process.stderr.columns || 80,
+            onInterrupt: (cleanup: () => void) => {
+              const stop = (): void => {
+                cleanup()
+                process.exit(130)
+              }
+              process.once('SIGINT', stop)
+              return () => {
+                process.off('SIGINT', stop)
+              }
+            },
+          },
+        }
+      : {}),
     out: (text) => write(process.stdout, text),
     err: (text) => write(process.stderr, text),
     readLine,
