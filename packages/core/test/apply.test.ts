@@ -346,6 +346,75 @@ describe('Applier', () => {
     fs.rmSync(home, { recursive: true, force: true })
   })
 
+  test('a tombstone under a nested link removes the link, not the shared content', () => {
+    const home = buildFakeHome({
+      entries: [{ kind: 'file', path: 'skills/real/SKILL.md', content: '# real\n' }],
+    })
+    home.symlink('skills/alias', 'real')
+    const declared = home.path('skills/alias/SKILL.md')
+    const link = home.path('skills/alias')
+    const base = {
+      id: revisionId,
+      deviceId,
+      parents: [],
+      createdAt: '2026-01-01T00:00:00.000Z',
+      manifest: { id: BlobId.parse('a'.repeat(64)), size: 1 },
+      digest: [],
+      role: 'base' as const,
+    }
+    const { state, applier } = makeApplier({
+      home: home.home,
+      planPaths: [declared, link, home.path('skills/real/SKILL.md')],
+      roots: [home.path('skills')],
+    })
+    state.saveManifest(base, [
+      {
+        surfaceId,
+        path: '$HOME/skills/alias/SKILL.md',
+        kind: 'file',
+        policy: 'sync',
+        hash: hashContent('# real\n'),
+        size: 6,
+        mode: 0o644,
+      },
+    ])
+
+    applier.remove({
+      storePath: '$HOME/skills/alias/SKILL.md',
+      surfaceId,
+      declaredPath: declared,
+      baseRevision: revisionId,
+    })
+
+    expect(fs.readFileSync(home.path('skills/real/SKILL.md'), 'utf8')).toBe('# real\n')
+    expect(fs.existsSync(link)).toBe(false)
+    expect(
+      state.getManifest(revisionId)?.entries.find((entry) => entry.kind === 'tombstone')?.path,
+    ).toBe('$HOME/skills/alias/SKILL.md')
+    state.close()
+    home.cleanup()
+  })
+
+  test('a tombstone under a link the plan did not declare is refused', () => {
+    const home = buildFakeHome({
+      entries: [{ kind: 'file', path: 'skills/real/SKILL.md', content: '# real\n' }],
+    })
+    home.symlink('skills/alias', 'real')
+    const declared = home.path('skills/alias/SKILL.md')
+    const { state, applier } = makeApplier({
+      home: home.home,
+      planPaths: [declared, home.path('skills/real/SKILL.md')],
+      roots: [home.path('skills')],
+    })
+    expect(() => applier.remove({ storePath: 's', surfaceId, declaredPath: declared })).toThrow(
+      NotInPlanError,
+    )
+    expect(fs.readFileSync(home.path('skills/real/SKILL.md'), 'utf8')).toBe('# real\n')
+    expect(fs.lstatSync(home.path('skills/alias')).isSymbolicLink()).toBe(true)
+    state.close()
+    home.cleanup()
+  })
+
   test('a crash between intent and rename is rolled back on reconciliation', () => {
     const home = tempDir()
     const target = path.join(home, 'settings.json')

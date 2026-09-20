@@ -406,6 +406,32 @@ export class Applier {
   }
 
   /**
+   * The deepest path component between the declared path and a surface root
+   * that is a symlink, or null. A tombstone under such a link removes the link
+   * so the shared content behind it survives. The root itself is never
+   * returned: a symlinked root is a whole-surface reference.
+   */
+  #nestedLink(declaredPath: string): string | null {
+    let current = path.dirname(path.resolve(declaredPath))
+    while (
+      this.#roots.some(
+        (root) =>
+          isWithinRoot(current, root) && resolvePhysicalPath(current) !== resolvePhysicalPath(root),
+      )
+    ) {
+      try {
+        if (fs.lstatSync(current).isSymbolicLink()) return current
+      } catch {
+        return null
+      }
+      const parent = path.dirname(current)
+      if (parent === current) return null
+      current = parent
+    }
+    return null
+  }
+
+  /**
    * Removes one planned path and records a tombstone so the deletion travels.
    * Directories are only removed when empty.
    */
@@ -413,6 +439,24 @@ export class Applier {
     const target = this.resolve(op.declaredPath)
     this.#assertWithinRoots(target.declaredPath)
     const tombstoned = op.baseRevision !== undefined && op.baseRevision !== null
+    const link = this.#nestedLink(target.declaredPath)
+    if (link !== null) {
+      if (!this.isAllowed(link)) throw new NotInPlanError(link)
+      const opId = `delete_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}_0`
+      this.state.beginOp({
+        opId,
+        op: 'delete',
+        targetPath: link,
+        startedAt: this.#now().toISOString(),
+      })
+      fs.unlinkSync(link)
+      this.state.markApplied(opId, '')
+      this.state.finishOp(opId)
+      if (tombstoned && op.baseRevision !== undefined && op.baseRevision !== null) {
+        this.state.recordTombstone(op.baseRevision, op.surfaceId, op.storePath)
+      }
+      return
+    }
     for (const [index, writePath] of target.writePaths.entries()) {
       if (!this.isAllowed(writePath)) throw new NotInPlanError(writePath)
       let stat: fs.Stats

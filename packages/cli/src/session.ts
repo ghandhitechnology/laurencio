@@ -5,9 +5,11 @@
  * keychain.
  */
 
+import path from 'node:path'
 import {
   builtinAdapters,
   CredentialsError,
+  createCachedRemote,
   createFileRemote,
   createHttpRemote,
   crypto,
@@ -98,13 +100,16 @@ export async function openRemote(
       hint: 'Run `laurencio enroll --server <url>` or set LAURENCIO_SERVER.',
     })
   }
-  return createHttpRemote({
-    baseUrl: input.baseUrl,
-    storeId: input.storeId,
-    token: input.token,
-    ...(ctx.deps.fetch === undefined ? {} : { fetch: ctx.deps.fetch }),
-    retry: { attempts: 2 },
-  })
+  return createCachedRemote(
+    createHttpRemote({
+      baseUrl: input.baseUrl,
+      storeId: input.storeId,
+      token: input.token,
+      ...(ctx.deps.fetch === undefined ? {} : { fetch: ctx.deps.fetch }),
+      retry: { attempts: 2 },
+    }),
+    path.join(ctx.home, '.laurencio', 'cache', 'blobs'),
+  )
 }
 
 export async function openSession(ctx: CommandContext): Promise<CliSession> {

@@ -47,6 +47,15 @@
       "hash": "efb83f2a277e9f49b38efd505f5cbb93885e721b6bd16b788937c9396174c006",
       "size": 6,
       "mode": 420
+    },
+    {
+      "surfaceId": "claude.skills",
+      "path": "$HOME/.claude/skills/shared/SKILL.md",
+      "kind": "file",
+      "policy": "sync",
+      "hash": "cc542b6fb4c917cc65a684a21320e007fe307f184770866172c6f245c7d50729",
+      "size": 9,
+      "mode": 420
     }
   ]
 }

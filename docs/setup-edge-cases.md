@@ -117,6 +117,10 @@ The first complete binary release also tried to publish to npm without a configu
 
 A disposable skill was created on the Mac mini, uploaded, downloaded to the laptop, and verified by SHA-256. The laptop then changed the file, uploaded it, and the Mac mini downloaded the exact matching hash. The Mac mini published the deletion and the laptop removed its copy. Every transfer completed without conflicts, blocked secrets, deferred files, or queued work.
 
+### Symlinked skills did not reach other devices
+
+Links inside a synced tree were recorded as device layout only, so their content never entered the store: a fresh temporary home and a second Mac lacked 12 of 27 Codex skills, and a skill linked from outside every surface never synced at all. The content behind a link now syncs under the declared path. A deletion arriving under a link removes the link, never the shared content, and stale excluded store paths such as `.system` are skipped by the plan.
+
 ## Setup flow improvements
 
 1. Inspect both devices before initialization: tool versions, config roots, enabled surfaces, file counts, symlinks, and secret-scan results.

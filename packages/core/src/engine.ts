@@ -98,7 +98,7 @@ export interface PlanInput {
   local: Manifest
   remote: Manifest | null
   /** Store paths the plan must not touch, for example conflict copies and ignores. */
-  exclude?: (storePath: string) => boolean
+  exclude?: (storePath: string, surfaceId?: SurfaceId) => boolean
 }
 
 const OP_ORDER: PlanOpKind[] = ['read', 'download', 'merge', 'write', 'delete', 'upload', 'link']
@@ -152,12 +152,12 @@ export function computeSyncPlan(input: PlanInput): SyncPlan {
 
   const files: PlanFile[] = []
   for (const storePath of [...paths].sort()) {
-    if (input.exclude?.(storePath) === true) continue
     const base = baseByPath.get(storePath) ?? null
     const local = localByPath.get(storePath) ?? null
     const remote = remoteByPath.get(storePath) ?? null
     const surfaceId = local?.surfaceId ?? remote?.surfaceId ?? base?.surfaceId
     if (surfaceId === undefined) continue
+    if (input.exclude?.(storePath, surfaceId) === true) continue
     files.push({
       storePath,
       surfaceId,
@@ -276,8 +276,8 @@ export const MAX_MERGE_ATTEMPTS = 3
 export const MAX_SYNC_ATTEMPTS = 3
 /** Keeps initial uploads moving without opening hundreds of presign requests at once. */
 export const MAX_CONCURRENT_UPLOADS = 4
-/** Download requests share the upload bound, while local writes remain serialized. */
-export const MAX_CONCURRENT_DOWNLOADS = MAX_CONCURRENT_UPLOADS
+/** Blob fetches run wider than uploads; local writes remain serialized. */
+export const MAX_CONCURRENT_DOWNLOADS = 16
 
 async function runBounded<T>(
   items: readonly T[],
@@ -505,13 +505,34 @@ async function runSync(
   for (const entry of scanResult.manifest.entries) presentLocally.add(entry.path)
   const ignoreProtects = (storePath: string): boolean =>
     ignores.some((matches) => matches(storePath)) && (!prune || presentLocally.has(storePath))
-  const excluded = (storePath: string): boolean =>
-    isConflictCopyPath(storePath) || ignoreProtects(storePath)
+  /** Tree `exclude` globs, built once per surface, applied to remote entries too. */
+  const surfaceExcludes = new Map<SurfaceId, ((candidate: string) => boolean)[]>()
+  const surfaceExcluded = (surfaceId: SurfaceId, storePath: string): boolean => {
+    const surface = surfaces.get(surfaceId)
+    if (surface === undefined || surface.kind !== 'tree' || surface.exclude.length === 0) {
+      return false
+    }
+    // Exclude globs are authored against local paths; a re-keyed store path cannot match them.
+    if (surface.transforms.some((spec) => spec.kind === 'claudeSlugRekey')) return false
+    const root = surface.path.replace(/[/\\]+$/, '')
+    if (!storePath.startsWith(`${root}/`)) return false
+    let matchers = surfaceExcludes.get(surfaceId)
+    if (matchers === undefined) {
+      matchers = surface.exclude.map((pattern) => pm(pattern, { dot: true }))
+      surfaceExcludes.set(surfaceId, matchers)
+    }
+    const relative = storePath.slice(root.length + 1)
+    return matchers.some((matches) => matches(relative))
+  }
+  const excluded = (storePath: string, surfaceId?: SurfaceId): boolean =>
+    isConflictCopyPath(storePath) ||
+    ignoreProtects(storePath) ||
+    (surfaceId !== undefined && surfaceExcluded(surfaceId, storePath))
 
   const localEntries: ManifestEntry[] = []
   for (const entry of scanResult.manifest.entries) {
     if (!entrySyncable(entry, surfaces.get(entry.surfaceId))) continue
-    if (ledger.isExcluded(entry.path) || excluded(entry.path)) continue
+    if (ledger.isExcluded(entry.path) || excluded(entry.path, entry.surfaceId)) continue
     localEntries.push(entry)
   }
   const localManifest: Manifest = { ...scanResult.manifest, entries: localEntries }
@@ -562,7 +583,8 @@ async function runSync(
     base: baseManifest,
     local: localManifest,
     remote: remoteManifest,
-    exclude: (storePath) => excluded(storePath) || ledger.isExcluded(storePath),
+    exclude: (storePath, surfaceId) =>
+      excluded(storePath, surfaceId) || ledger.isExcluded(storePath),
   })
   const active = plan.files.filter((file) => {
     const surface = surfaces.get(file.surfaceId)
@@ -882,6 +904,8 @@ async function runSync(
         continue
       }
       const before = guard(declaredPath)
+      // Two declared paths can share one physical file; the first write already landed.
+      if (before !== null && before.hash === hashContent(content)) continue
       if (!unchangedSinceScan(file, declaredPath, before)) {
         defer(file.storePath, 'local file changed since the scan')
         continue
@@ -1095,7 +1119,7 @@ async function runSync(
   const remoteByPath = entryMap(remoteManifest)
   const newEntries: ManifestEntry[] = []
   for (const entry of finalScan.manifest.entries) {
-    if (ledger.isExcluded(entry.path) || excluded(entry.path)) continue
+    if (ledger.isExcluded(entry.path) || excluded(entry.path, entry.surfaceId)) continue
     if (!entrySyncable(entry, surfaces.get(entry.surfaceId))) continue
     const manifestEntry: ManifestEntry = {
       surfaceId: entry.surfaceId,

@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DeviceId, RevisionId, SurfaceId } from '@laurencio/protocol'
+import { hashContent } from '../src/apply'
 import { type ScannedEntry, type ScanResult, scan } from '../src/scan'
 import type { Surface } from '../src/types'
 import { file, keyedFile, testAdapter, tree } from './helpers/adapter-fixtures'
@@ -83,6 +84,7 @@ describe('scan manifest', () => {
       '$HOME/.agents/skills/shared/SKILL.md',
       '$HOME/.claude/skills/commit/SKILL.md',
       '$HOME/.claude/skills/local-notes.md',
+      '$HOME/.claude/skills/shared/SKILL.md',
     ])
     const credentials = entryFor(result, home.path('.claude/.credentials.json'))
     expect(credentials.classification).toBe('never')
@@ -99,7 +101,7 @@ describe('scan manifest', () => {
     ).toBe(false)
 
     const skills = result.surfaces.find((surface) => surface.surfaceId === sid('claude.skills'))
-    expect(skills?.files).toBe(2)
+    expect(skills?.files).toBe(3)
     expect(skills?.excluded).toBe(1)
     expect(skills?.links).toBe(1)
     home.cleanup()
@@ -120,6 +122,76 @@ describe('scan manifest', () => {
       mode: 'symlink',
       linkTarget: home.path('.agents/skills/shared'),
     })
+    home.cleanup()
+  })
+
+  test('a link to a directory outside every surface records its content at the declared path', () => {
+    const home = buildFakeHome({
+      entries: [
+        { kind: 'dir', path: '.claude/skills' },
+        { kind: 'file', path: 'external/skill/SKILL.md', content: '# external\n' },
+      ],
+    })
+    home.symlink('.claude/skills/ext', '$HOME/external/skill')
+    const result = scanHome(home, [tree({ id: 'claude.skills', path: '$HOME/.claude/skills' })])
+
+    const entry = result.manifest.entries.find(
+      (item) => item.path === '$HOME/.claude/skills/ext/SKILL.md',
+    )
+    expect(entry?.surfaceId).toBe(sid('claude.skills'))
+    expect(entry?.hash).toBe(hashContent('# external\n'))
+    expect(entryFor(result, home.path('.claude/skills/ext')).classification).toBe('link')
+    home.cleanup()
+  })
+
+  test('a link that points at its own ancestor is recorded but never walked', () => {
+    const home = buildFakeHome({
+      entries: [{ kind: 'file', path: '.claude/skills/real/SKILL.md', content: '# real\n' }],
+    })
+    home.symlink('.claude/skills/loop', '$HOME/.claude/skills')
+    const result = scanHome(home, [tree({ id: 'claude.skills', path: '$HOME/.claude/skills' })])
+
+    expect(entryFor(result, home.path('.claude/skills/loop')).classification).toBe('link')
+    expect(result.manifest.entries.map((entry) => entry.path)).toEqual([
+      '$HOME/.claude/skills/real/SKILL.md',
+    ])
+    home.cleanup()
+  })
+
+  test('a link to a file records one file entry', () => {
+    const home = buildFakeHome({
+      entries: [
+        { kind: 'dir', path: '.claude/skills' },
+        { kind: 'file', path: 'other/doc.md', content: '# doc\n' },
+      ],
+    })
+    home.symlink('.claude/skills/doc.md', '$HOME/other/doc.md')
+    const result = scanHome(home, [tree({ id: 'claude.skills', path: '$HOME/.claude/skills' })])
+
+    expect(result.manifest.entries.map((entry) => entry.path)).toEqual([
+      '$HOME/.claude/skills/doc.md',
+    ])
+    home.cleanup()
+  })
+
+  test('a link whose declared path is excluded is recorded but not descended', () => {
+    const home = buildFakeHome({
+      entries: [
+        { kind: 'dir', path: '.claude/skills' },
+        { kind: 'file', path: 'external/secret/SKILL.md', content: '# secret\n' },
+      ],
+    })
+    home.symlink('.claude/skills/.system', '$HOME/external/secret')
+    const result = scanHome(home, [
+      tree({
+        id: 'claude.skills',
+        path: '$HOME/.claude/skills',
+        exclude: ['.system', '.system/**'],
+      }),
+    ])
+
+    expect(entryFor(result, home.path('.claude/skills/.system')).classification).toBe('link')
+    expect(result.manifest.entries).toEqual([])
     home.cleanup()
   })
 
