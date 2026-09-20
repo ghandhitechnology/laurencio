@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { SyncProgress, SyncRunResult } from '@laurencio/core'
-import { createTransferProgress } from '../src/progress'
+import { createTransferProgress, createWorkbenchProgress } from '../src/progress'
 import type { CliIo } from '../src/ui'
 
 function fixture() {
@@ -130,5 +130,58 @@ describe('transfer progress', () => {
     f.tick(100)
     expect(f.writes.at(-1)?.replace('\r\u001b[2K', '').length).toBeLessThan(24)
     progress.finish()
+  })
+})
+
+describe('temporary workbench progress', () => {
+  test('shows blue phases, exact sync progress, and a final ready line', () => {
+    const f = fixture()
+    if (f.io.terminal !== undefined) f.io.terminal.color = true
+    const progress = createWorkbenchProgress(f.io, false, f.timing)
+
+    progress.phase('preparing')
+    expect(f.writes.at(-1)).toContain('\u001b[94m')
+    expect(f.writes.at(-1)).toContain('2/6  Creating private workspace')
+    expect(f.writes.at(-1)).toContain('━━──────────')
+
+    progress.sync({ ...upload, phase: 'downloading', completed: 10, planned: 20 })
+    expect(f.writes.at(-1)).toContain(
+      '3/6  Loading config and skills  Bringing files here 10/20  ↑ 0  ↓ 0',
+    )
+    expect(f.writes.at(-1)).toContain('━━━━━───────')
+    f.tick(1_000)
+    progress.phase('launching')
+    progress.succeed()
+
+    expect(f.writes.at(-1)).toContain('6/6  Temporary workbench ready  1s')
+    expect(f.active()).toBe(false)
+  })
+
+  test('pauses for prompts and cleans up on errors or interrupt', () => {
+    for (const interrupted of [false, true]) {
+      const f = fixture()
+      const progress = createWorkbenchProgress(f.io, false, f.timing)
+      progress.phase('authorizing')
+      progress.pause()
+      expect(f.writes.at(-1)).toBe('\r\u001b[2K')
+      progress.phase('preparing')
+      if (interrupted) f.interrupt()
+      else progress.finish()
+      expect(f.writes.at(-1)).toBe('\r\u001b[2K')
+      expect(f.active()).toBe(false)
+    }
+  })
+
+  test('JSON and non-TTY setup never writes or registers cleanup', () => {
+    for (const json of [false, true]) {
+      const f = fixture()
+      if (!json) delete f.io.terminal
+      const progress = createWorkbenchProgress(f.io, json, f.timing)
+      progress.phase('preparing')
+      progress.sync({ ...upload, completed: 5 })
+      progress.succeed()
+      expect(f.writes).toEqual([])
+      expect(f.active()).toBe(false)
+    }
   })
 })

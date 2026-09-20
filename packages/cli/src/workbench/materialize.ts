@@ -12,6 +12,7 @@ import {
   type RemoteRevisionList,
   resolveToolLock,
   SyncLoop,
+  type SyncProgress,
   SyncState,
   shippedToolLock,
   supportsProfile,
@@ -34,6 +35,8 @@ import { materializeCredentialVault } from './vault'
 
 export interface WorkbenchMaterializeOptions {
   cacheTools?: boolean
+  onPhase?: (phase: 'syncing' | 'credentials' | 'tools') => void
+  onSyncProgress?: (progress: SyncProgress) => void
 }
 
 function pinnedRevisionList(
@@ -212,6 +215,7 @@ export async function materializeWorkbench(
   if (platform !== 'darwin' && platform !== 'win32') {
     throw cliError('unsupported-platform', 'temporary workbenches support macOS and Windows')
   }
+  options.onPhase?.('syncing')
   const client = createWorkbenchClient({
     baseUrl: input.server,
     bearer: input.token,
@@ -261,6 +265,7 @@ export async function materializeWorkbench(
       state,
       remote: pinnedRemote,
       policy,
+      ...(options.onSyncProgress === undefined ? {} : { onProgress: options.onSyncProgress }),
       ...(ctx.deps.quiescence === undefined ? {} : { quiescence: ctx.deps.quiescence }),
       ...(ctx.deps.createRevisionId === undefined
         ? {}
@@ -299,6 +304,7 @@ export async function materializeWorkbench(
         )
       }
     }
+    options.onPhase?.('credentials')
     if (supportsVault(pinnedRemote)) {
       await materializeCredentialVault({
         remote: pinnedRemote,
@@ -315,6 +321,7 @@ export async function materializeWorkbench(
       }
     }
     let installed: { name: string; directory: string }[] = []
+    options.onPhase?.('tools')
     tools = resolveToolLock(tools, ctx.deps.curatedTools ?? shippedToolLock())
     if (tools.length > 0) {
       const target = options.cacheTools

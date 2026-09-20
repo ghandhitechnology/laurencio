@@ -35,6 +35,7 @@ export interface WorkbenchOpenInput {
   cwd: string
   executables: WorkbenchLaunch['executables']
   materialize(input: WorkbenchMaterializeInput): Promise<RevisionId | null>
+  onPhase?(phase: 'preparing' | 'launching' | 'ready'): void
 }
 
 export interface WorkbenchOpenResult {
@@ -86,6 +87,7 @@ export class WorkbenchController {
     let runtimeSession: RuntimeSession | null = null
     let registered = false
     try {
+      input.onPhase?.('preparing')
       fs.mkdirSync(home, { recursive: true, mode: 0o700 })
       fs.writeFileSync(paths.join(root, 'launch-owner.json'), JSON.stringify(pending), {
         mode: 0o600,
@@ -101,6 +103,7 @@ export class WorkbenchController {
         executables: input.executables,
       })
       pending.phase = 'launching'
+      input.onPhase?.('launching')
       fs.writeFileSync(paths.join(root, 'launch-owner.json'), JSON.stringify(pending), {
         mode: 0o600,
       })
@@ -120,6 +123,7 @@ export class WorkbenchController {
       }
       this.#registry.save(record, created.token)
       registered = true
+      input.onPhase?.('ready')
       await this.#runtime.attach(runtimeSession)
       const state = await this.#runtime.inspect(runtimeSession)
       if (state.state !== 'stopped') return { record, disposition: 'running' }

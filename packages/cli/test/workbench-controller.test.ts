@@ -197,6 +197,7 @@ describe('workbench controller', () => {
       platform: 'darwin',
       cwd: '/project',
       executables: { tmux: '/bin/tmux' },
+      onPhase: (phase) => h.events.push(phase),
       materialize: async (input) => {
         materialized = input
         h.events.push('materialized')
@@ -210,7 +211,15 @@ describe('workbench controller', () => {
       home: path.join('/tmp/lwb-test', 'home'),
     })
     expect(result.disposition).toBe('running')
-    expect(h.events).toEqual(['materialized', 'launched', 'saved', 'attached'])
+    expect(h.events).toEqual([
+      'preparing',
+      'materialized',
+      'launching',
+      'launched',
+      'saved',
+      'ready',
+      'attached',
+    ])
     expect(h.records.size).toBe(1)
   })
 
