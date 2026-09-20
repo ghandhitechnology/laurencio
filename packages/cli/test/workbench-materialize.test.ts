@@ -354,7 +354,7 @@ describe('temporary workbench materialization', () => {
             },
           },
           PASSPHRASE,
-          { cacheTools: true },
+          { persistentCache: true },
         )
       }
 
@@ -365,6 +365,91 @@ describe('temporary workbench materialization', () => {
           'utf8',
         ),
       ).toBe('cached-ripgrep')
+    } finally {
+      source.cleanup()
+      host.cleanup()
+    }
+  })
+
+  test('skips a pinned tool the host already provides', async () => {
+    const source = makeScratch()
+    const host = makeScratch()
+    try {
+      await seedStore({ home: source.home, remoteDir: source.remoteDir })
+      writeHomeFile(source.home, '.codex/config.toml', 'model = "portable"\n')
+      expect(
+        (
+          await runForTest(['init', '--yes'], {
+            home: source.home,
+            remoteDir: source.remoteDir,
+          })
+        ).exitCode,
+      ).toBe(0)
+      const selectedTools = [
+        {
+          name: 'tmux',
+          platform: 'darwin' as const,
+          arch: 'arm64',
+          version: '3.5.0',
+          url: 'https://tools.test/tmux',
+          sha256: '0'.repeat(64),
+        },
+      ]
+      let toolDownloads = 0
+      const ctx = createContext('open', null, [], parseCliArgs(['open', '--yes']).flags, {
+        home: host.home,
+        cwd: host.home,
+        platform: 'darwin',
+        env: { HOME: host.home },
+        probes: {},
+        quiescence: { windowMs: 0 },
+        remote: () => createFileRemote({ dir: source.remoteDir }),
+        architecture: 'arm64',
+        curatedTools: selectedTools,
+        fetch: (async (input: string | URL | Request) => {
+          if (String(input) === 'https://tools.test/tmux') {
+            toolDownloads += 1
+            return new Response('tmux')
+          }
+          return Response.json({
+            protocolVersion: 1,
+            userId: '00000000000000000000000009',
+            storeId: STORE_ID,
+            devices: [],
+            kdf: null,
+            quotas: { blobs: 0, bytes: 0, maxBytes: 100_000 },
+          })
+        }) as typeof fetch,
+      })
+      const privateHome = path.join(host.home, 'runtime', 'home')
+      fs.mkdirSync(privateHome, { recursive: true })
+      const executables: WorkbenchMaterializeInput['executables'] = {
+        tmux: '/usr/bin/tmux',
+        shell: '/bin/zsh',
+      }
+      await materializeWorkbench(
+        ctx,
+        {
+          server: 'https://laurencio.test',
+          token: 'lrn_temporary-token',
+          root: path.dirname(privateHome),
+          home: privateHome,
+          environment: {},
+          executables,
+          remote: {
+            id: WorkbenchSessionId.parse('00000000000000000000000007'),
+            deviceId: DeviceId.parse('00000000000000000000000008'),
+            name: 'temporary',
+            platform: 'darwin',
+            createdAt: '2026-09-20T00:00:00.000Z',
+            expiresAt: '2026-09-21T00:00:00.000Z',
+          },
+        },
+        PASSPHRASE,
+      )
+      expect(toolDownloads).toBe(0)
+      expect(executables.tmux).toBe('/usr/bin/tmux')
+      expect(fs.existsSync(path.join(path.dirname(privateHome), 'tools'))).toBe(false)
     } finally {
       source.cleanup()
       host.cleanup()

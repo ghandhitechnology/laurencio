@@ -30,6 +30,7 @@ export interface Flags {
   remoteDir: string | undefined
   deviceName: string | undefined
   resume: boolean
+  cacheTools: boolean
 }
 
 export interface ParsedArgs {
@@ -64,6 +65,7 @@ const OPTIONS = {
   'remote-dir': { type: 'string' },
   'device-name': { type: 'string' },
   resume: { type: 'boolean' },
+  'cache-tools': { type: 'boolean' },
 } as const
 
 function booleanFlag(values: Record<string, unknown>, key: string): boolean {
@@ -110,6 +112,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
     remoteDir: typeof values['remote-dir'] === 'string' ? values['remote-dir'] : undefined,
     deviceName: typeof values['device-name'] === 'string' ? values['device-name'] : undefined,
     resume: booleanFlag(values, 'resume'),
+    cacheTools: booleanFlag(values, 'cache-tools'),
   }
   const args = parsed.positionals.slice(1)
   const command = parsed.positionals[0] ?? null

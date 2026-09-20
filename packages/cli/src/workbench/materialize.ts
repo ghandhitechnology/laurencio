@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {
   builtinAdapters,
+  createCachedRemote,
   createHttpRemote,
   crypto,
   DEFAULT_VAULT_REFERENCES,
@@ -29,12 +30,13 @@ import { createSystemToolDependencies, toolArchitecture } from '../tools/system'
 import { createWorkbenchClient } from './client'
 import type { WorkbenchMaterializeInput } from './controller'
 import { createSystemCredentialIo } from './credentials'
-import { loadPortableProfile } from './profile'
+import { loadPortableProfile, type StoredPortableProfile } from './profile'
 import { routeWorkbenchEnvironment } from './runtime'
 import { materializeCredentialVault } from './vault'
 
 export interface WorkbenchMaterializeOptions {
-  cacheTools?: boolean
+  /** Keep verified public tools and downloaded blobs under `~/.laurencio` after the session. */
+  persistentCache?: boolean
   onPhase?: (phase: 'syncing' | 'credentials' | 'tools') => void
   onSyncProgress?: (progress: SyncProgress) => void
 }
@@ -116,7 +118,7 @@ export async function captureWorkbenchSnapshot(
   remote: Remote,
   storeId: StoreId,
   key: crypto.KeyMaterial,
-): Promise<{ remote: Remote; revisionId: RevisionId }> {
+): Promise<{ remote: Remote; revisionId: RevisionId; profile: StoredPortableProfile | null }> {
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const revisions = await remote.listRevisions()
     if (revisions.head === null) {
@@ -127,9 +129,9 @@ export async function captureWorkbenchSnapshot(
     const profileHead = supportsProfile(remote) ? await remote.getProfileHead() : null
     const vaultHead = supportsVault(remote) ? await remote.getVaultHead() : null
     const pinned = createPinnedRemote(remote, revisions, profileHead, vaultHead)
-    if (supportsProfile(pinned)) {
-      await loadPortableProfile({ remote: pinned, storeId, key })
-    }
+    const profile = supportsProfile(pinned)
+      ? await loadPortableProfile({ remote: pinned, storeId, key })
+      : null
     const afterVault = supportsVault(remote) ? await remote.getVaultHead() : null
     const afterProfile = supportsProfile(remote) ? await remote.getProfileHead() : null
     const afterRevisions = await remote.listRevisions()
@@ -138,7 +140,7 @@ export async function captureWorkbenchSnapshot(
       JSON.stringify(profileHead) === JSON.stringify(afterProfile) &&
       JSON.stringify(vaultHead) === JSON.stringify(afterVault)
     ) {
-      return { remote: pinned, revisionId: revisions.head }
+      return { remote: pinned, revisionId: revisions.head, profile }
     }
   }
   throw cliError('profile-changing', 'the workbench profile is being updated; retry the launch')
@@ -208,7 +210,7 @@ function completeRuntimeExecutables(
 export async function materializeWorkbench(
   ctx: CommandContext,
   input: WorkbenchMaterializeInput,
-  passphrase: string,
+  unlock: string | crypto.KeyMaterial,
   options: WorkbenchMaterializeOptions = {},
 ): Promise<RevisionId> {
   const platform = ctx.platform
@@ -222,7 +224,7 @@ export async function materializeWorkbench(
     ...(ctx.deps.fetch === undefined ? {} : { fetch: ctx.deps.fetch }),
   })
   const account = await client.account()
-  const remote =
+  let remote =
     ctx.deps.remote?.({
       storeId: account.storeId,
       token: input.token,
@@ -235,22 +237,30 @@ export async function materializeWorkbench(
       ...(ctx.deps.fetch === undefined ? {} : { fetch: ctx.deps.fetch }),
       retry: { attempts: 2 },
     })
-  const published = await remote.getKdfParams()
-  if (published === null) {
-    throw cliError('no-kdf', 'this store has no passphrase parameters', {
-      hint: 'Run `laurencio enroll` on a configured device first.',
-    })
+  if (options.persistentCache === true && ctx.deps.remote === undefined) {
+    remote = createCachedRemote(remote, path.join(ctx.home, '.laurencio', 'cache', 'blobs'))
   }
-  const key = crypto.deriveMasterKey(passphrase, published.kdf)
+  let key: crypto.KeyMaterial
+  if (typeof unlock === 'string') {
+    const published = await remote.getKdfParams()
+    if (published === null) {
+      throw cliError('no-kdf', 'this store has no passphrase parameters', {
+        hint: 'Run `laurencio enroll` on a configured device first.',
+      })
+    }
+    key = crypto.deriveMasterKey(unlock, published.kdf)
+  } else {
+    key = unlock
+  }
   const state = SyncState.open({ home: input.home })
   const env = privateEnvironment(ctx, input.home)
   const policy = defaultPolicy()
   try {
-    const { remote: pinnedRemote, revisionId } = await captureWorkbenchSnapshot(
-      remote,
-      account.storeId,
-      key,
-    )
+    const {
+      remote: pinnedRemote,
+      revisionId,
+      profile,
+    } = await captureWorkbenchSnapshot(remote, account.storeId, key)
     const loop = new SyncLoop({
       adapters: effectiveAdapters(builtinAdapters, policy),
       ctx: {
@@ -287,22 +297,15 @@ export async function materializeWorkbench(
     }
     let references: readonly VaultReference[] = DEFAULT_VAULT_REFERENCES
     let tools: readonly ToolLockEntry[] = []
-    if (supportsProfile(pinnedRemote)) {
-      const stored = await loadPortableProfile({
-        remote: pinnedRemote,
-        storeId: account.storeId,
-        key,
-      })
-      if (stored !== null) {
-        references = stored.profile.vault
-        tools = stored.profile.tools
-        const projected = projectProfile(stored.profile, platform)
-        fs.writeFileSync(
-          path.join(input.root, 'terminal-settings.json'),
-          JSON.stringify({ keybindings: projected.keybindings, layout: projected.layout }),
-          { mode: 0o600 },
-        )
-      }
+    if (profile !== null) {
+      references = profile.profile.vault
+      tools = profile.profile.tools
+      const projected = projectProfile(profile.profile, platform)
+      fs.writeFileSync(
+        path.join(input.root, 'terminal-settings.json'),
+        JSON.stringify({ keybindings: projected.keybindings, layout: projected.layout }),
+        { mode: 0o600 },
+      )
     }
     options.onPhase?.('credentials')
     if (supportsVault(pinnedRemote)) {
@@ -323,8 +326,19 @@ export async function materializeWorkbench(
     let installed: { name: string; directory: string }[] = []
     options.onPhase?.('tools')
     tools = resolveToolLock(tools, ctx.deps.curatedTools ?? shippedToolLock())
+    tools = tools.filter((tool) => {
+      const name = tool.name.toLowerCase()
+      if (platform === 'darwin' && name === 'tmux') return input.executables.tmux === undefined
+      if (platform === 'win32' && name === 'wezterm') {
+        return input.executables.wezterm === undefined
+      }
+      if (platform === 'win32' && (name === 'powershell' || name === 'pwsh')) {
+        return input.executables.powershell === undefined
+      }
+      return true
+    })
     if (tools.length > 0) {
-      const target = options.cacheTools
+      const target = options.persistentCache
         ? { kind: 'cache' as const, root: path.join(ctx.home, '.laurencio', 'tools') }
         : { kind: 'session' as const, root: path.join(input.root, 'tools') }
       installed = await new ToolManager(

@@ -41,7 +41,7 @@ Release targets are `bun-darwin-arm64`, `bun-darwin-x64`, `bun-windows-x64`, and
 laurencio open ~/project
 ```
 
-Sign in and enter the workbench passphrase. On macOS 15 or later, a clean host downloads the pinned tmux build shipped in the CLI and starts a private server. Older macOS releases need a host tmux executable. On Windows x64, a clean host downloads pinned portable WezTerm and PowerShell 7 releases. Windows ARM64 downloads portable PowerShell 7, but currently needs a host WezTerm executable because upstream does not publish a Windows ARM64 archive. The project directory remains the real host directory, while `HOME`, agent config roots, credentials, and downloaded tools point into the private runtime.
+On an enrolled computer, `open` reuses the device sign-in and the cached store key: no browser approval and no passphrase prompt. Elsewhere it signs in through the browser and asks for the workbench passphrase. On macOS 15 or later, a clean host downloads the pinned tmux build shipped in the CLI and starts a private server; a host tmux executable is used instead of the pinned download when present. Older macOS releases need a host tmux executable. On Windows x64, a clean host downloads pinned portable WezTerm and PowerShell 7 releases; host executables take precedence when present. Windows ARM64 downloads portable PowerShell 7, but currently needs a host WezTerm executable because upstream does not publish a Windows ARM64 archive. The project directory remains the real host directory, while `HOME`, agent config roots, credentials, and downloaded tools point into the private runtime.
 
 Closing the runtime deletes its private configuration and session token. Project edits remain. To keep selected configuration edits before closing:
 
@@ -51,7 +51,7 @@ laurencio save <session-id> --surface codex.config
 laurencio close <session-id>
 ```
 
-Public tool caching is offered at launch and defaults to deletion. When enabled, verified tools stay under `~/.laurencio/tools`; later temporary launches reuse a matching checksum receipt without downloading the artifact again.
+On enrolled computers, verified tools stay under `~/.laurencio/tools` and encrypted blobs under `~/.laurencio/cache/blobs`, so later launches skip downloads. On other computers pass `--cache-tools` to keep the same caches; otherwise everything is deleted with the session. Cached tools are reused through a matching checksum receipt without downloading the artifact again.
 
 The shipped catalog is the fallback when the encrypted profile has an empty tool lock. `laurencio tools update` returns the account to the catalog shipped with the current client. A lock file may select exact entries from that embedded catalog; Laurencio rejects new executable names, sources, versions, or checksums. Catalog and profile artifacts use versioned HTTPS release URLs and pinned SHA-256 hashes.
 

@@ -57,6 +57,7 @@ function bytes(value: number): string {
 export function createWorkbenchProgress(
   io: CliIo,
   json: boolean,
+  options: { skipAuthorization?: boolean } = {},
   timing: ProgressClock = clock,
 ): {
   phase(phase: WorkbenchSetupPhase): void
@@ -69,6 +70,8 @@ export function createWorkbenchProgress(
   if (terminal === undefined) {
     return { phase() {}, sync() {}, pause() {}, succeed() {}, finish() {} }
   }
+  const skipAuthorization = options.skipAuthorization === true
+  const total = skipAuthorization ? 5 : 6
   const started = timing.now()
   let current: WorkbenchSetupPhase | null = null
   let syncProgress: SyncProgress | null = null
@@ -94,12 +97,13 @@ export function createWorkbenchProgress(
     if (closed || !visible || current === null) return
     lastDraw = timing.now()
     const { index, label } = workbenchPhases[current]
+    const step = skipAuthorization ? index - 1 : index
     const known = current === 'syncing' ? syncProgress : null
     const hasExactProgress = known?.planned !== null && (known?.planned ?? 0) > 0
     const ratio = hasExactProgress
       ? Math.min(1, (known?.completed ?? 0) / (known?.planned ?? 1))
       : 0
-    const filled = Math.min(12, Math.floor(((index - 1 + ratio) / 6) * 12))
+    const filled = Math.min(12, Math.floor(((step - 1 + ratio) / total) * 12))
     const bar = `${'━'.repeat(filled)}${'─'.repeat(12 - filled)}`
     const indicator = `${frames[frame++ % frames.length]}  ${bar}`
     const syncDetail =
@@ -110,7 +114,7 @@ export function createWorkbenchProgress(
       known !== null && terminal.columns() >= 100
         ? `  ↑ ${known.uploaded}  ↓ ${known.downloaded}`
         : ''
-    write(`${indicator}  ${index}/6  ${label}${syncDetail}${transfers}`)
+    write(`${indicator}  ${step}/${total}  ${label}${syncDetail}${transfers}`)
   }
   const clear = (): void => {
     if (!visible) return
@@ -151,7 +155,7 @@ export function createWorkbenchProgress(
       stop()
       detach()
       const elapsed = duration(timing.now() - started)
-      write(`✓  ${'━'.repeat(12)}  6/6  Temporary workbench ready  ${elapsed}`, true)
+      write(`✓  ${'━'.repeat(12)}  ${total}/${total}  Temporary workbench ready  ${elapsed}`, true)
     },
     finish,
   }

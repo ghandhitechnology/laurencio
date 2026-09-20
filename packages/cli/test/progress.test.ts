@@ -137,7 +137,7 @@ describe('temporary workbench progress', () => {
   test('shows blue phases, exact sync progress, and a final ready line', () => {
     const f = fixture()
     if (f.io.terminal !== undefined) f.io.terminal.color = true
-    const progress = createWorkbenchProgress(f.io, false, f.timing)
+    const progress = createWorkbenchProgress(f.io, false, {}, f.timing)
 
     progress.phase('preparing')
     expect(f.writes.at(-1)).toContain('\u001b[94m')
@@ -157,10 +157,21 @@ describe('temporary workbench progress', () => {
     expect(f.active()).toBe(false)
   })
 
+  test('numbers five phases when authorization is skipped', () => {
+    const f = fixture()
+    const progress = createWorkbenchProgress(f.io, false, { skipAuthorization: true }, f.timing)
+    progress.phase('preparing')
+    expect(f.writes.at(-1)).toContain('1/5  Creating private workspace')
+    progress.phase('launching')
+    progress.succeed()
+    expect(f.writes.at(-1)).toContain('5/5  Temporary workbench ready')
+    expect(f.active()).toBe(false)
+  })
+
   test('pauses for prompts and cleans up on errors or interrupt', () => {
     for (const interrupted of [false, true]) {
       const f = fixture()
-      const progress = createWorkbenchProgress(f.io, false, f.timing)
+      const progress = createWorkbenchProgress(f.io, false, {}, f.timing)
       progress.phase('authorizing')
       progress.pause()
       expect(f.writes.at(-1)).toBe('\r\u001b[2K')
@@ -176,7 +187,7 @@ describe('temporary workbench progress', () => {
     for (const json of [false, true]) {
       const f = fixture()
       if (!json) delete f.io.terminal
-      const progress = createWorkbenchProgress(f.io, json, f.timing)
+      const progress = createWorkbenchProgress(f.io, json, {}, f.timing)
       progress.phase('preparing')
       progress.sync({ ...upload, completed: 5 })
       progress.succeed()
