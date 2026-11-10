@@ -75,7 +75,7 @@ export function isTokenizedCredentialPath(value: string): boolean {
   )
 }
 
-/** Native login files captured by a newly migrated workbench profile. */
+/** Known native login files available only after explicit auth opt-in or resolution. */
 export const DEFAULT_VAULT_REFERENCES: readonly AgentAuthVaultReference[] = [
   {
     kind: 'agent-auth',

@@ -36,6 +36,7 @@ export function routeWorkbenchEnvironment(
   environment: NodeJS.ProcessEnv,
   platform: 'darwin' | 'win32',
   home: string,
+  certificateFileExists: (candidate: string) => boolean = fs.existsSync,
 ): NodeJS.ProcessEnv {
   const paths = platform === 'win32' ? path.win32 : path.posix
   const overrides: NodeJS.ProcessEnv = {
@@ -62,6 +63,13 @@ export function routeWorkbenchEnvironment(
     TMUX: undefined,
     TMUX_PANE: undefined,
   }
+  if (
+    platform === 'darwin' &&
+    !environment.CODEX_CA_CERTIFICATE &&
+    !environment.SSL_CERT_FILE &&
+    certificateFileExists('/etc/ssl/cert.pem')
+  )
+    overrides.CODEX_CA_CERTIFICATE = '/etc/ssl/cert.pem'
   if (platform === 'win32')
     Object.assign(overrides, {
       USERPROFILE: home,

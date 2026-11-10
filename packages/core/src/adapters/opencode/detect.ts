@@ -4,7 +4,7 @@ export type OpenCodeSchemaVersion = 1 | 2
 
 /**
  * One file or directory under the global OpenCode config root, and the schema versions that
- * read it. OpenCode 1.18.x and the 2.x beta share the directory with different schemas, so
+ * read it. OpenCode 1.x and 2.x share the directory with different schemas, so
  * "which version owns this" is a property of each file.
  */
 export interface OpenCodeSchemaFile {
@@ -98,8 +98,10 @@ export function detectOpenCode(ctx: AdapterContext): OpenCodeProbeReport {
   const observed = parseObservedFiles(probe)
   const files = observed.map((name) => ({ name, owners: schemasForFile(name) }))
 
-  const v1FromBinary = binaries.some((binary) => binary.name === 'opencode')
-  const v2FromBinary = binaries.some((binary) => binary.name === 'opencode2')
+  const v1FromBinary = binaries.some((binary) => /^v?1\./.test(binary.version))
+  const v2FromBinary = binaries.some(
+    (binary) => /^v?2\./.test(binary.version) || binary.name === 'opencode2',
+  )
   const v1FromShape = observed.includes('tui.json') || observed.includes('tools')
   const v2FromShape = observed.includes('cli.json')
   const schemas = { v1: v1FromBinary || v1FromShape, v2: v2FromBinary || v2FromShape }

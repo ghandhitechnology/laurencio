@@ -7,6 +7,19 @@ import {
 import { buildFakeHome } from './helpers/fake-home'
 
 describe('opencode schema detection', () => {
+  test('the stable opencode command reports its installed major version', () => {
+    const home = buildFakeHome({ entries: [] })
+    const report = detectOpenCode({
+      ...home.ctx,
+      probes: {
+        opencode: { installed: true, version: '2.0.11', notes: ['opencode 2.0.11'] },
+      },
+    })
+    expect(report.schemas).toEqual({ v1: false, v2: true })
+    expect(report.version).toBe('2.0.11')
+    home.cleanup()
+  })
+
   test('both binaries present means both schemas own the config dir', () => {
     const home = buildFakeHome({ entries: [] })
     const report = detectOpenCode({

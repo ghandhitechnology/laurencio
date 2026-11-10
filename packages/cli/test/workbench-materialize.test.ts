@@ -2,9 +2,16 @@ import { describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { createFileRemote, crypto, type Remote, supportsVault } from '@laurencio/core'
+import {
+  createFileRemote,
+  crypto,
+  defaultPolicy,
+  type Remote,
+  supportsVault,
+} from '@laurencio/core'
 import { DeviceId, WorkbenchSessionId } from '@laurencio/protocol'
 import { parseCliArgs } from '../src/args'
+import { saveCliConfig } from '../src/config'
 import { createContext } from '../src/context'
 import type { WorkbenchMaterializeInput } from '../src/workbench/controller'
 import { captureWorkbenchSnapshot, materializeWorkbench } from '../src/workbench/materialize'
@@ -18,6 +25,12 @@ import {
   seedStore,
   writeHomeFile,
 } from './helpers'
+
+function enableCodexLoginSync(home: string): void {
+  const policy = defaultPolicy()
+  policy.harnesses.codex = { enabled: true, surfaces: { 'codex.auth': 'on' } }
+  saveCliConfig(home, { server: null, policy })
+}
 
 describe('temporary workbench materialization', () => {
   test('materializes skills when macOS aliases the temporary root through /private', async () => {
@@ -117,6 +130,7 @@ describe('temporary workbench materialization', () => {
       await seedStore({ home: source.home, remoteDir: source.remoteDir })
       writeHomeFile(source.home, '.codex/config.toml', 'model = "stable"\n')
       writeHomeFile(source.home, '.codex/auth.json', '{"token":"credential"}\n')
+      enableCodexLoginSync(source.home)
       expect(
         (await runForTest(['init', '--yes'], { home: source.home, remoteDir: source.remoteDir }))
           .exitCode,
@@ -379,6 +393,7 @@ describe('temporary workbench materialization', () => {
       writeHomeFile(source.home, '.codex/config.toml', 'model = "portable"\n')
       writeHomeFile(source.home, '.codex/auth.json', '{"token":"portable-login"}\n')
       writeHomeFile(source.home, '.claude/CLAUDE.md', 'portable instructions\n')
+      enableCodexLoginSync(source.home)
       const pushed = await runForTest(['init', '--yes'], {
         home: source.home,
         remoteDir: source.remoteDir,

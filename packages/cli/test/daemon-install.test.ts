@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { loadCredentials } from '@laurencio/core'
 import {
   daemonProgram,
   type ExecFn,
@@ -15,7 +16,7 @@ import {
   uninstallService,
   windowsDaemonScript,
 } from '../src/daemon/installer'
-import { makeScratch, runForTest } from './helpers'
+import { makeScratch, memoryKeychain, runForTest, seedStore } from './helpers'
 
 function spec(overrides: Partial<ServiceSpec> = {}): ServiceSpec {
   return {
@@ -91,6 +92,7 @@ describe('service file content', () => {
     expect(plist).toContain('<string>run</string>')
     expect(plist).toContain('<key>RunAtLoad</key>')
     expect(plist).toContain('<key>KeepAlive</key>')
+    expect(plist).toContain('<key>ThrottleInterval</key>\n  <integer>60</integer>')
     expect(plist).toContain('<string>/Users/andy/Library/Logs/laurencio/daemon.log</string>')
     expect(plist).toContain('<string>/Users/andy/Library/Logs/laurencio/daemon.log.err</string>')
     expect(plist.startsWith('<?xml version="1.0" encoding="UTF-8"?>')).toBe(true)
@@ -269,9 +271,11 @@ describe('daemon command', () => {
   test('install writes the plist through the injected exec and uninstall removes it', async () => {
     const scratch = makeScratch()
     try {
+      await seedStore({ home: scratch.home, remoteDir: scratch.remoteDir })
       const { calls, exec } = recorder()
       const install = await runForTest(['daemon', 'install', '--json'], {
         home: scratch.home,
+        remoteDir: scratch.remoteDir,
         deps: { exec },
       })
       expect(install.exitCode).toBe(0)
@@ -290,6 +294,69 @@ describe('daemon command', () => {
       expect(uninstall.exitCode).toBe(0)
       expect(fs.existsSync(installed.service.path)).toBe(false)
       expect(calls.some((call) => call[0] === 'launchctl')).toBe(true)
+    } finally {
+      scratch.cleanup()
+    }
+  })
+
+  test('macOS install copies keychain credentials into the private daemon cache', async () => {
+    const scratch = makeScratch()
+    try {
+      const keychain = memoryKeychain()
+      await seedStore({ home: scratch.home, remoteDir: scratch.remoteDir, keychain })
+      const install = await runForTest(['daemon', 'install', '--json'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        keychain,
+        deps: { exec: recorder().exec },
+      })
+
+      expect(install.exitCode).toBe(0)
+      const credentials = await loadCredentials({
+        home: scratch.home,
+        keychain: null,
+        platform: 'darwin',
+      })
+      try {
+        expect(credentials.backend).toBe('file')
+      } finally {
+        credentials.key.zeroize()
+      }
+    } finally {
+      scratch.cleanup()
+    }
+  })
+
+  test('install preserves only existing certificate bundle paths from the shell', async () => {
+    const scratch = makeScratch()
+    try {
+      await seedStore({ home: scratch.home, remoteDir: scratch.remoteDir })
+      const bundle = path.join(scratch.home, 'certs', 'roots.pem')
+      fs.mkdirSync(path.dirname(bundle), { recursive: true })
+      fs.writeFileSync(bundle, 'test certificate bundle')
+      const { exec } = recorder()
+      const install = await runForTest(['daemon', 'install', '--json'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        env: {
+          CODEX_CA_CERTIFICATE: bundle,
+          SSL_CERT_FILE: '/missing/cert.pem',
+          API_TOKEN: 'must-not-enter-service-file',
+        },
+        deps: { exec },
+      })
+      expect(install.exitCode).toBe(0)
+      const plist = fs.readFileSync(
+        path.join(scratch.home, 'Library', 'LaunchAgents', 'com.laurencio.daemon.plist'),
+        'utf8',
+      )
+      expect(plist).toContain('<key>CODEX_CA_CERTIFICATE</key>')
+      expect(plist).toContain(`<string>${bundle}</string>`)
+      expect(plist).toContain('<key>LAURENCIO_KEYCHAIN</key>')
+      expect(plist).toContain('<string>file</string>')
+      expect(plist).not.toContain('SSL_CERT_FILE')
+      expect(plist).not.toContain('API_TOKEN')
+      expect(plist).not.toContain('must-not-enter-service-file')
     } finally {
       scratch.cleanup()
     }

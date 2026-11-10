@@ -39,26 +39,7 @@ describe('portable profile', () => {
     expect(profile.shared).toEqual({ keybindings: {}, layout: {} })
     expect(profile.platforms).toEqual({})
     expect(profile.tools).toEqual([])
-    expect(profile.vault).toEqual([
-      expect.objectContaining({
-        kind: 'agent-auth',
-        name: 'claude-login',
-        harness: 'claude',
-        path: `\${CLAUDE_CONFIG_DIR}/.credentials.json`,
-      }),
-      expect.objectContaining({
-        kind: 'agent-auth',
-        name: 'codex-login',
-        harness: 'codex',
-        path: `\${CODEX_HOME}/auth.json`,
-      }),
-      expect.objectContaining({
-        kind: 'agent-auth',
-        name: 'opencode-login',
-        harness: 'opencode',
-        path: '$HOME/.local/share/opencode/auth.json',
-      }),
-    ])
+    expect(profile.vault).toEqual([])
   })
 
   test('projects shared semantic settings with deterministic platform overrides', () => {

@@ -80,13 +80,13 @@ Mechanics that matter
 - Memory is a local store by design (current builds use `memories_1.sqlite`), so Codex memory is out of scope for v1 and the adapter reports it as unsupported rather than guessing.
 - The account carries entitlements, cloud-managed config defaults, plugin catalog, and cloud threads. https://developers.openai.com/codex/config-file/config-advanced, https://developers.openai.com/codex/agent-configuration/agents-md
 
-### OpenCode 1.18.x and 2.x beta
+### OpenCode 1.x and 2.x
 
-Both versions read `~/.config/opencode` with different schemas. v1 uses `plugins`, `agents`/`commands`, array `permissions`, `mcp.servers`, `tui.json`. v2 uses `plugin`, `agent`/`command`, object permissions, flat `mcp`, `cli.json`.
+Both versions read `~/.config/opencode`. V1 uses `plugin`, `agent`/`command`, object `permission`, flat `mcp`, and `tui.json`. Native V2 uses `plugins`, `agents`/`commands`, array `permissions`, `mcp.servers`, and `cli.json`. V2 accepts supported V1 configuration and normalizes it in memory. Sync preserves the source schema without synthesizing aliases or converting permission values. Both stable versions use the `opencode` command, so detection uses the reported major version; `opencode2` remains a legacy beta hint.
 
 | Path | Contents | Sync verdict |
 |---|---|---|
-| `~/.config/opencode/opencode.json(c)` | providers, model, MCP, permissions, agents, commands | sync; keep v2-compatible keys |
+| `~/.config/opencode/opencode.json(c)` | providers, model, MCP, permissions, agents, commands | sync; preserve native schema |
 | `~/.config/opencode/cli.json` (v2), `tui.json` (v1) | TUI preferences | sync; fix absolute sound paths |
 | `~/.config/opencode/AGENTS.md` | global rules, symlinked here | sync target; preserve the symlink |
 | `~/.config/opencode/{agents,commands,skills,themes}/` | global assets | sync |
@@ -101,6 +101,7 @@ Both versions read `~/.config/opencode` with different schemas. v1 uses `plugins
 Mechanics that matter
 
 - Project config walks cwd to root and merges farthest to closest; v2 then applies all `.opencode` configs last.
+- V1 plugins and server clients require explicit migration to V2. Syncing their files does not migrate their APIs. Native V2 config must not be handed to V1. https://opencode.ai/v2/docs/migrate-v1/
 - Skill sources include `~/.claude/skills` and `~/.agents/skills`. Duplicate skill IDs resolve by precedence: explicit `skills` entries, then project `.opencode/skills`, then auto dirs.
 - Symlinks are load-bearing on this machine: `AGENTS.md`, `agents/`, `skills/` point into `~/.agents-opencode`. The tool must preserve links, never dereference or replace them.
 - Secrets live in three places: `service.json`, `auth.json`, and the v2 SQLite database. https://opencode.ai/v2/docs/config, https://opencode.ai/v2/docs/cli/config

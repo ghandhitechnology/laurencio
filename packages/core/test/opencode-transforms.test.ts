@@ -23,7 +23,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 describe('opencodeSchemaNormalize', () => {
-  test('upload mirrors key families and mcp shapes so both schemas read the file', () => {
+  test('upload and apply preserve native V2 fields without synthesizing V1 aliases', () => {
     const input = `{
   "$schema": "https://opencode.ai/config.json",
   "plugins": ["./plugins/local"],
@@ -36,68 +36,42 @@ describe('opencodeSchemaNormalize', () => {
   "unknown_future_key": { "keep": true }
 }
 `
-    const result = opencodeSchemaNormalize(input, 'upload')
-    const value = asRecord(parseStrict(result.text))
-    expect(value.plugin).toEqual(['./plugins/local'])
-    expect(value.plugins).toEqual(['./plugins/local'])
-    expect(value.agent).toEqual({ reviewer: { mode: 'subagent' } })
-    expect(value.command).toEqual({ deploy: { template: 'go' } })
-    expect(value.permission).toEqual([{ action: '*', resource: '*', effect: 'allow' }])
-    expect(value.mcp).toEqual({
-      servers: { railway: { type: 'local', command: ['railway', 'mcp'] } },
-      railway: { type: 'local', command: ['railway', 'mcp'] },
-    })
-    expect(value.unknown_future_key).toEqual({ keep: true })
-    expect(result.notes.filter((note) => note.kind === 'mirrored').map((note) => note.key)).toEqual(
-      ['plugin', 'agent', 'command', 'permission', 'mcp.railway'],
-    )
+    for (const mode of ['upload', 'apply'] as const) {
+      expect(opencodeSchemaNormalize(input, mode).text).toBe(input)
+    }
   })
 
-  test('upload mirrors flat mcp servers under mcp.servers for v1', () => {
-    const result = opencodeSchemaNormalize(
-      '{"plugin": ["a"], "mcp": {"local": {"type": "local"}}}\n',
-      'upload',
-    )
-    const value = asRecord(parseStrict(result.text))
-    expect(value.mcp).toEqual({ local: { type: 'local' }, servers: { local: { type: 'local' } } })
-    expect(result.notes.some((note) => note.key === 'mcp.servers')).toBe(true)
+  test('upload and apply preserve V1 permission objects and flat MCP servers', () => {
+    const input = `{
+  "plugin": ["a"],
+  "agent": {"reviewer": {"prompt": "Review changes"}},
+  "command": {"review": {"template": "Review changes"}},
+  "permission": {"bash": "ask", "edit": "deny"},
+  "mcp": {"local": {"type": "local", "command": ["echo"]}}
+}\n`
+    for (const mode of ['upload', 'apply'] as const) {
+      expect(opencodeSchemaNormalize(input, mode).text).toBe(input)
+    }
   })
 
   test('upload does not overwrite either spelling when both exist with different values', () => {
     const input = '{"plugin": ["a"], "plugins": ["b"]}\n'
     const result = opencodeSchemaNormalize(input, 'upload')
     expect(parseStrict(result.text)).toEqual({ plugin: ['a'], plugins: ['b'] })
-    expect(result.notes).toContainEqual({
-      kind: 'conflict',
-      key: 'plugins/plugin',
-      detail: 'both spellings present with different values; kept both',
-    })
+    expect(result.text).toBe(input)
   })
 
-  test('upload keeps comments and formatting while adding keys', () => {
+  test('upload keeps comments and formatting byte for byte', () => {
     const input = '{\n  // keep this comment\n  "plugin": ["a"],\n}\n'
     const result = opencodeSchemaNormalize(input, 'upload')
-    expect(result.text).toContain('// keep this comment')
-    expect(result.text).toContain('"plugins"')
+    expect(result.text).toBe(input)
   })
 
-  test('apply leaves the file untouched and logs keys only one schema reads', () => {
+  test('apply preserves unknown fields without claiming another runtime ignores them', () => {
     const input = '{"plugins": [], "skills": ["x"], "mcp": {"a": {}}, "future": 1}\n'
     const result = opencodeSchemaNormalize(input, 'apply')
     expect(result.text).toBe(input)
-    expect(result.notes).toEqual([
-      {
-        kind: 'single-owner',
-        key: 'plugins',
-        detail: 'read by v1 only; the other schema ignores it',
-      },
-      { kind: 'single-owner', key: 'mcp', detail: 'read by v2 only; the other schema ignores it' },
-      {
-        kind: 'single-owner',
-        key: 'skills',
-        detail: 'read by v2 only; the other schema ignores it',
-      },
-    ])
+    expect(result.notes).toEqual([])
   })
 
   test('invalid JSONC is reported, not rewritten', () => {

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
+  builtinAdapters,
   CONFLICT_LEDGER_META_KEY,
   ConflictLedger,
   conflictCopyPath,
@@ -162,12 +163,15 @@ describe('cli parsing', () => {
 })
 
 describe('init and sync', () => {
-  test('publishes the profile manifest only after the matching credential vault', async () => {
+  test('publishes an explicitly enabled credential vault before the profile manifest', async () => {
     const scratch = makeScratch()
     try {
       await seedStore({ home: scratch.home, remoteDir: scratch.remoteDir })
       writeHomeFile(scratch.home, '.codex/AGENTS.md', '# Portable instructions\n')
       writeHomeFile(scratch.home, '.codex/auth.json', '{"token":"encrypted-login"}\n')
+      const policy = defaultPolicy()
+      policy.harnesses.codex = { enabled: true, surfaces: { 'codex.auth': 'on' } }
+      saveCliConfig(scratch.home, { server: null, policy })
       const real = createFileRemote({ dir: scratch.remoteDir })
       const publications: string[] = []
       const ordered: typeof real = {
@@ -248,7 +252,7 @@ describe('init and sync', () => {
     }
   })
 
-  test('init pushes local config and sync uploads later edits', async () => {
+  test('init and later syncs leave native agent logins local by default', async () => {
     const scratch = makeScratch()
     try {
       await seedStore({ home: scratch.home, remoteDir: scratch.remoteDir })
@@ -266,11 +270,7 @@ describe('init and sync', () => {
       const first = await remote.listRevisions()
       expect(first.head).not.toBeNull()
       expect(first.revisions.length).toBe(1)
-      const vault = await remote.getVaultHead()
-      expect(vault?.generation).toBe(1)
-      expect(
-        fs.readFileSync(path.join(scratch.remoteDir, 'blobs', vault?.blob.id ?? ''), 'utf8'),
-      ).not.toContain('encrypted-login')
+      expect(await remote.getVaultHead()).toBeNull()
 
       writeHomeFile(scratch.home, '.claude/CLAUDE.md', '# Instructions\n\nMore.\n')
       writeHomeFile(scratch.home, '.codex/auth.json', '{"token":"rotated-login"}\n')
@@ -295,7 +295,8 @@ describe('init and sync', () => {
       expect(sync.output).toContain('Sync synced')
       const second = await remote.listRevisions()
       expect(second.revisions.length).toBe(2)
-      expect((await remote.getVaultHead())?.generation).toBe(2)
+      expect(await remote.getVaultHead()).toBeNull()
+      expect(readHomeFile(scratch.home, '.codex/auth.json')).toBe('{"token":"rotated-login"}\n')
 
       const unchanged = await runForTest(['sync'], {
         home: scratch.home,
@@ -303,7 +304,7 @@ describe('init and sync', () => {
         deps: QUICK,
       })
       expect(unchanged.exitCode).toBe(0)
-      expect((await remote.getVaultHead())?.generation).toBe(2)
+      expect(await remote.getVaultHead()).toBeNull()
     } finally {
       scratch.cleanup()
     }
@@ -445,6 +446,84 @@ describe('init and sync', () => {
         'utf8',
       )
       expect(backedUp).toBe('local version\n')
+    } finally {
+      scratch.cleanup()
+      other.cleanup()
+    }
+  })
+
+  test('init replacement preserves excluded Codex and OpenCode descendants', async () => {
+    const scratch = makeScratch()
+    const other = makeScratch()
+    const selected = new Set(['codex.skills', 'opencode.plugins'])
+    const replacementPolicy = (home: string) => {
+      const policy = defaultPolicy()
+      for (const adapter of builtinAdapters) {
+        policy.harnesses[adapter.id] = {
+          enabled: adapter.id !== 'claude',
+          surfaces: Object.fromEntries(
+            adapter
+              .surfaces({ home, platform: 'darwin', env: { HOME: home }, probes: {} })
+              .filter((surface) => surface.policy !== 'never')
+              .map((surface) => [surface.id, selected.has(surface.id) ? 'on' : 'off']),
+          ),
+        }
+      }
+      policy.cadence.watch = false
+      return policy
+    }
+    try {
+      await seedStore({
+        home: other.home,
+        remoteDir: scratch.remoteDir,
+        deviceId: DeviceId.parse('00000000000000000000000011'),
+      })
+      saveCliConfig(other.home, { server: null, policy: replacementPolicy(other.home) })
+      writeHomeFile(other.home, '.codex/skills/remote/SKILL.md', '# remote\n')
+      writeHomeFile(other.home, '.config/opencode/plugins/remote.js', 'export const remote = {}\n')
+      await runForTest(['init', '--yes'], {
+        home: other.home,
+        remoteDir: scratch.remoteDir,
+        deps: QUICK,
+      })
+
+      await seedStore({
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        deviceId: DeviceId.parse('00000000000000000000000012'),
+      })
+      saveCliConfig(scratch.home, { server: null, policy: replacementPolicy(scratch.home) })
+      writeHomeFile(scratch.home, '.codex/skills/local/SKILL.md', '# local\n')
+      writeHomeFile(scratch.home, '.codex/skills/.system/runtime/SKILL.md', '# runtime-owned\n')
+      writeHomeFile(scratch.home, '.config/opencode/plugins/local.js', 'export const local = {}\n')
+      writeHomeFile(
+        scratch.home,
+        '.config/opencode/plugins/node_modules/pkg/index.js',
+        'local dependency\n',
+      )
+
+      const out = await runForTest(['init'], {
+        home: scratch.home,
+        remoteDir: scratch.remoteDir,
+        answers: ['k', 'r', 'r'],
+        deps: QUICK,
+      })
+
+      expect(out.exitCode).toBe(0)
+      expect(readHomeFile(scratch.home, '.codex/skills/.system/runtime/SKILL.md')).toBe(
+        '# runtime-owned\n',
+      )
+      expect(readHomeFile(scratch.home, '.config/opencode/plugins/node_modules/pkg/index.js')).toBe(
+        'local dependency\n',
+      )
+      expect(fs.existsSync(path.join(scratch.home, '.codex/skills/local/SKILL.md'))).toBe(false)
+      expect(fs.existsSync(path.join(scratch.home, '.config/opencode/plugins/local.js'))).toBe(
+        false,
+      )
+      expect(readHomeFile(scratch.home, '.codex/skills/remote/SKILL.md')).toBe('# remote\n')
+      expect(readHomeFile(scratch.home, '.config/opencode/plugins/remote.js')).toBe(
+        'export const remote = {}\n',
+      )
     } finally {
       scratch.cleanup()
       other.cleanup()

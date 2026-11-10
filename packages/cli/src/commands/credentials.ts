@@ -6,11 +6,7 @@ import {
 } from '@laurencio/core'
 import { requirePositional } from '../args'
 import { adapterContext } from '../context'
-import {
-  readCredentialBaselines,
-  selectedCredentialReferences,
-  writeCredentialBaselines,
-} from '../credential-sync'
+import { readCredentialBaselines, writeCredentialBaselines } from '../credential-sync'
 import { cliError } from '../errors'
 import { ensureProfileV2 } from '../profile-version'
 import { ok } from '../result'
@@ -96,12 +92,17 @@ export const credentialsCommand: CommandSpec = {
         storeId: session.credentials.storeId,
         key: session.credentials.key,
       })
-      if (stored !== null) references = stored.profile.vault
+      if (stored !== null) {
+        const names = new Set(stored.profile.vault.map((reference) => reference.name))
+        references = [
+          ...stored.profile.vault,
+          ...DEFAULT_VAULT_REFERENCES.filter((reference) => !names.has(reference.name)),
+        ]
+      }
     }
-    const eligible = selectedCredentialReferences(
-      references,
-      session.config.policy,
-      ctx.flags.harness,
+    const eligible = references.filter(
+      (reference) =>
+        ctx.flags.harness.length === 0 || ctx.flags.harness.includes(reference.harness),
     )
     const reference = referenceNamed(eligible, name)
     const selected = [reference]

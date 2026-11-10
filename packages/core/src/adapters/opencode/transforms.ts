@@ -10,7 +10,7 @@ import {
   parse,
   parseTree,
 } from 'jsonc-parser'
-import { deepEqual, isPlainObject } from '../../merge/treeMerge'
+import { isPlainObject } from '../../merge/treeMerge'
 import { expand, PathError, type TokenEnv, tokenize } from '../../paths'
 import type { TreeSurface } from '../../types'
 import type { OpenCodeSchemaVersion } from './detect'
@@ -23,25 +23,26 @@ export interface OpenCodeSchema {
 }
 
 /**
- * Which schema reads a config key. v1 and v2 read the same file with different spellings and
- * shapes; everything not listed is either shared or unknown and is preserved untouched.
+ * Which versions accept a key. V2 also accepts supported V1 fields and normalizes them
+ * in memory. This metadata must never be used to copy values between schema shapes.
  */
 export const OPENCODE_SCHEMA_KEYS: Readonly<Record<string, OpenCodeKeyOwner>> = {
-  plugin: 'v2',
-  plugins: 'v1',
-  agent: 'v2',
-  agents: 'v1',
-  command: 'v2',
-  commands: 'v1',
-  permission: 'v2',
-  permissions: 'v1',
-  mcp: 'v2',
-  'mcp.servers': 'v1',
-  // v2 reads `skills` as an array of sources; v1 expects an object under the same key.
-  skills: 'v2',
+  plugin: 'both',
+  plugins: 'v2',
+  agent: 'both',
+  agents: 'v2',
+  command: 'both',
+  commands: 'v2',
+  permission: 'both',
+  permissions: 'v2',
+  mcp: 'both',
+  'mcp.servers': 'v2',
+  // V1 uses an object; V2 also accepts an array. Preserve the source shape.
+  skills: 'both',
   model: 'both',
   small_model: 'both',
-  providers: 'both',
+  provider: 'both',
+  providers: 'v2',
   instructions: 'both',
 }
 
@@ -49,14 +50,6 @@ export const OPENCODE_SCHEMA_KEYS: Readonly<Record<string, OpenCodeKeyOwner>> = 
 export function opencodeSchema(version: OpenCodeSchemaVersion): OpenCodeSchema {
   return { version, keys: { ...OPENCODE_SCHEMA_KEYS } }
 }
-
-/** Ambiguous families: v1 reads the plural spelling, v2 the singular one. */
-const MIRRORED_KEY_FAMILIES: readonly (readonly [string, string])[] = [
-  ['plugins', 'plugin'],
-  ['agents', 'agent'],
-  ['commands', 'command'],
-  ['permissions', 'permission'],
-]
 
 export type OpenCodeNormalizeNoteKind =
   | 'mirrored'
@@ -121,13 +114,13 @@ function valueAtPath(root: unknown, segments: readonly (string | number)[]): unk
 }
 
 /**
- * Upload projection: write the keys both schemas read so neither silently drops content when
- * the file lands on a machine running the other version. Apply: leave the file as the merge
- * engine wrote it and report keys only one version reads. Unknown keys always survive.
+ * Preserve native config in both directions. OpenCode handles supported V1 compatibility
+ * itself; copying aliases can turn permission objects into invalid V2 arrays and override
+ * valid settings. Version migration belongs to OpenCode, never the sync projection.
  */
 export function opencodeSchemaNormalize(
   text: string,
-  mode: 'upload' | 'apply',
+  _mode: 'upload' | 'apply',
 ): OpenCodeNormalizeResult {
   const notes: OpenCodeNormalizeNote[] = []
   const parsed = parseJsonc(text)
@@ -135,121 +128,7 @@ export function opencodeSchemaNormalize(
     notes.push({ kind: 'invalid', key: '', detail: 'not a JSONC object; left untouched' })
     return { text, notes }
   }
-  const value = parsed.value
-
-  if (mode === 'apply') {
-    for (const [key, owner] of Object.entries(OPENCODE_SCHEMA_KEYS)) {
-      if (owner === 'both' || !Object.hasOwn(value, key)) continue
-      notes.push({
-        kind: 'single-owner',
-        key,
-        detail: `read by ${owner} only; the other schema ignores it`,
-      })
-    }
-    return { text, notes }
-  }
-
-  let content = text
-  const format = formattingOptions(text)
-  const insert = (keyPath: (string | number)[], inserted: unknown): boolean => {
-    const outcome = applyEdit(
-      content,
-      modify(content, keyPath, inserted, { formattingOptions: format }),
-    )
-    if (!outcome.ok) {
-      notes.push({ kind: 'unparsed', key: keyPath.join('.'), detail: outcome.reason })
-      return false
-    }
-    content = outcome.text
-    return true
-  }
-
-  for (const [plural, singular] of MIRRORED_KEY_FAMILIES) {
-    const hasPlural = Object.hasOwn(value, plural)
-    const hasSingular = Object.hasOwn(value, singular)
-    if (!hasPlural && !hasSingular) continue
-    if (hasPlural && hasSingular) {
-      if (!deepEqual(value[plural], value[singular])) {
-        notes.push({
-          kind: 'conflict',
-          key: `${plural}/${singular}`,
-          detail: 'both spellings present with different values; kept both',
-        })
-      }
-      continue
-    }
-    const from = hasPlural ? plural : singular
-    const to = hasPlural ? singular : plural
-    // Values may be profile-scoped arrays or definition maps; mirror the whole value.
-    if (insert([to], value[from])) {
-      notes.push({
-        kind: 'mirrored',
-        key: to,
-        detail: `mirrored ${from} to ${to}; both schemas read the same value`,
-      })
-    }
-  }
-
-  mirrorMcpServers(value, insert, notes)
-  return { text: content, notes }
-}
-
-/** v1 nests servers under `mcp.servers`, v2 reads them flat; write both shapes when ambiguous. */
-function mirrorMcpServers(
-  value: Record<string, unknown>,
-  insert: (keyPath: (string | number)[], inserted: unknown) => boolean,
-  notes: OpenCodeNormalizeNote[],
-): void {
-  const mcp = value.mcp
-  if (!isPlainObject(mcp)) return
-  const servers = isPlainObject(mcp.servers) ? mcp.servers : undefined
-  const flat = Object.entries(mcp).filter(([key]) => key !== 'servers')
-
-  if (servers === undefined) {
-    if (flat.length === 0) return
-    if (insert(['mcp', 'servers'], Object.fromEntries(flat))) {
-      notes.push({
-        kind: 'mirrored',
-        key: 'mcp.servers',
-        detail: 'mirrored flat mcp servers under mcp.servers for v1',
-      })
-    }
-    return
-  }
-
-  if (flat.length === 0) {
-    for (const [name, config] of Object.entries(servers)) {
-      if (insert(['mcp', name], config)) {
-        notes.push({
-          kind: 'mirrored',
-          key: `mcp.${name}`,
-          detail: 'mirrored an mcp.servers entry to the flat shape for v2',
-        })
-      }
-    }
-    return
-  }
-
-  for (const [name, config] of flat) {
-    if (Object.hasOwn(servers, name)) continue
-    if (insert(['mcp', 'servers', name], config)) {
-      notes.push({
-        kind: 'mirrored',
-        key: `mcp.servers.${name}`,
-        detail: 'unioned a flat mcp server into mcp.servers for v1',
-      })
-    }
-  }
-  for (const [name, config] of Object.entries(servers)) {
-    if (flat.some(([flatName]) => flatName === name)) continue
-    if (insert(['mcp', name], config)) {
-      notes.push({
-        kind: 'mirrored',
-        key: `mcp.${name}`,
-        detail: 'unioned an mcp.servers entry into the flat shape for v2',
-      })
-    }
-  }
+  return { text, notes }
 }
 
 export type OpenCodePathFieldKind = 'sound' | 'plugin' | 'skill'

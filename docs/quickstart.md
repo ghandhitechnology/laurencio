@@ -33,7 +33,7 @@ codesign --force --sign - --identifier com.ghandhitechnology.laurencio laurencio
 ./laurencio --version
 ```
 
-Release targets are `bun-darwin-arm64`, `bun-darwin-x64`, `bun-windows-x64`, and `bun-windows-arm64`. Build on the target OS and architecture so the native credential-store binding is included. Windows executables use the `.exe` extension. The macOS signing step repairs the linker signature before the binary is copied or backed up. `laurencio daemon install` records the path of the program that ran it, so run the binary you want the service to use when installing.
+Release targets are `bun-darwin-arm64`, `bun-darwin-x64`, `bun-windows-x64`, and `bun-windows-arm64`. Build on the target OS and architecture so the native credential-store binding is included. Windows executables use the `.exe` extension. On macOS, sign the binary again after copying it to its final path if a fresh launch exits with code 137; the installer repairs copied install and rollback files automatically. `laurencio daemon install` records the path of the program that ran it, so run the binary you want the service to use when installing.
 
 ## Temporary workbench
 
@@ -116,11 +116,13 @@ laurencio pause | resume     # stop and restart background syncs
 laurencio daemon uninstall   # stops and removes the background service
 ```
 
-The daemon watches the enabled surfaces, syncs on an interval, backs off on failures, and defers any file a harness is actively writing. Logs go to `~/Library/Logs/laurencio` on macOS and `%USERPROFILE%\.laurencio\logs` on Windows. The Windows task starts at sign-in and runs as your account while you remain signed in, keeping access to your Credential Manager entries without an administrator prompt.
+The daemon watches the enabled surfaces, syncs on an interval, backs off on failures, and defers any file a harness is actively writing. On macOS, installation copies the enrolled device token and store key into Laurencio's mode-`0600` private cache before starting launchd. This keeps rebuilt binaries from blocking unattended sync on a Keychain approval dialog. Installation also carries an existing `CODEX_CA_CERTIFICATE` or `SSL_CERT_FILE` bundle into launchd, and temporary workbenches use `/etc/ssl/cert.pem` when neither override is set. Logs go to `~/Library/Logs/laurencio` on macOS and `%USERPROFILE%\.laurencio\logs` on Windows. The Windows task starts at sign-in and runs as your account while you remain signed in, keeping access to your Credential Manager entries without an administrator prompt.
 
 ## Per-device overrides
 
 `~/.laurencio/config.toml` is local to each device. It controls harness and surface toggles, ignore patterns, pruning, and daemon cadence.
+
+Native agent login files stay local by default, even when that agent's skills or settings sync. To opt one in explicitly, set its auth surface to `"on"`, for example `"codex.auth" = "on"` under `[harnesses.codex.surfaces]`.
 
 Machine-specific sections in Claude's `CLAUDE.md`, Codex's `AGENTS.md` and `AGENTS.override.md`, and OpenCode's `AGENTS.md` can be wrapped in `<!-- laurencio:local -->` blocks. Laurencio strips their contents before upload and restores each device's own contents when applying remote edits. Settings such as models and MCP definitions remain shared when their containing surface is enabled, so disable that surface on devices that need different values.
 

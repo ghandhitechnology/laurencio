@@ -71,9 +71,9 @@ A generated recovery passphrase was saved in the Mac mini Keychain. macOS refuse
 
 ### Rebuilt standalone binaries can trigger Keychain ACL prompts
 
-The first Mac mini enrollment cached its token and derived store key through one unsigned standalone binary. Rebuilding and replacing that binary caused macOS Keychain access to wait for interactive approval on the next sync. Source-built installations need a stable signing identity, or setup must explain that a rebuilt executable may require “Always Allow” again. Background commands should time out or report this state instead of appearing network-stalled.
+The first Mac mini enrollment cached its token and derived store key through one unsigned standalone binary. Rebuilding and replacing that binary caused macOS Keychain access to wait for interactive approval on the next sync. `daemon install` now copies those two daemon credentials into Laurencio's private mode-`0600` cache and launchd uses that cache, so later binary replacements do not block background sync on a Keychain dialog.
 
-The first rollback copy also exposed an invalid linker signature in the raw Bun-compiled Mach-O: the original inode launched, while a byte-identical copied backup was killed with exit 137. macOS builds and release artifacts now receive an explicit ad-hoc `codesign` pass before installation. This makes copied rollback binaries executable, though a future Developer ID signature is still needed to preserve Keychain trust across releases.
+The first rollback copy also exposed an invalid linker signature in the raw Bun-compiled Mach-O: the original inode launched, while a byte-identical copied backup was killed with exit 137. macOS builds and release artifacts receive an explicit ad-hoc `codesign` pass, and the installer tests copied install and rollback files before repairing their signatures in place. A future Developer ID signature is still needed to preserve Keychain trust across releases.
 
 ### Device authorization used to require copying a code
 

@@ -36,6 +36,15 @@ fi
 temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/laurencio-install.XXXXXX")"
 trap 'rm -rf "$temp_dir"' EXIT HUP INT TERM
 
+repair_copied_signature() {
+  binary="$1"
+  if "$binary" --version >/dev/null 2>&1; then
+    return
+  fi
+  codesign --force --sign - --identifier com.ghandhitechnology.laurencio "$binary"
+  "$binary" --version >/dev/null
+}
+
 curl -fL --retry 3 --output "$temp_dir/$asset" "$base_url/$asset"
 curl -fL --retry 3 --output "$temp_dir/$asset.sha256" "$base_url/$asset.sha256"
 
@@ -51,8 +60,10 @@ fi
 mkdir -p "$install_dir"
 if [ -f "$install_dir/laurencio" ]; then
   cp "$install_dir/laurencio" "$install_dir/laurencio.previous"
+  repair_copied_signature "$install_dir/laurencio.previous"
 fi
 install -m 755 "$temp_dir/$asset" "$install_dir/laurencio"
+repair_copied_signature "$install_dir/laurencio"
 
 echo "Installed Laurencio to $install_dir/laurencio"
 case ":${PATH}:" in

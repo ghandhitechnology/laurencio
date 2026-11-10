@@ -114,6 +114,8 @@ export function launchdPlist(spec: ServiceSpec): string {
     '    <key>SuccessfulExit</key>',
     '    <false/>',
     '  </dict>',
+    '  <key>ThrottleInterval</key>',
+    '  <integer>60</integer>',
     '  <key>ProcessType</key>',
     plistString('Background', '  '),
     '  <key>LowPriorityIO</key>',

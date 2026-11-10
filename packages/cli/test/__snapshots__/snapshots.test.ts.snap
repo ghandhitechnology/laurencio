@@ -1315,7 +1315,7 @@ Daemon: running
 
 Harnesses
   codex: not found
-    credentials: auth.json or OS keyring (not probed); encrypted vault sync uses auth.json when present
+    credentials: auth.json or OS keyring (not probed); encrypted credential vault sync requires explicit codex.auth opt-in
     unsupported: Codex memory (\${CODEX_HOME}/memories_*.sqlite): Codex memory is an opaque SQLite store; file-based memory sync is unsupported
 
 Link topology
@@ -1372,7 +1372,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock doctor hu
         "\${CODEX_HOME}"
       ],
       "notes": [
-        "credentials: auth.json or OS keyring (not probed); encrypted vault sync uses auth.json when present",
+        "credentials: auth.json or OS keyring (not probed); encrypted credential vault sync requires explicit codex.auth opt-in",
         "unsupported: Codex memory (\${CODEX_HOME}/memories_*.sqlite): Codex memory is an opaque SQLite store; file-based memory sync is unsupported"
       ]
     }
@@ -1671,7 +1671,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock surfaces 
 "exit: 0
 --- stdout
 Codex CLI (codex)  not found
-  credentials: auth.json or OS keyring (not probed); encrypted vault sync uses auth.json when present
+  credentials: auth.json or OS keyring (not probed); encrypted credential vault sync requires explicit codex.auth opt-in
   unsupported: Codex memory (\${CODEX_HOME}/memories_*.sqlite): Codex memory is an opaque SQLite store; file-based memory sync is unsupported
   SURFACE                      POLICY  STATE  PATH                                    FILES
   codex.agents-skills          sync    on     $HOME/.agents/skills                    -
@@ -1716,7 +1716,7 @@ exports[`snapshots: devices, resolve, export, doctor, surfaces, unlock surfaces 
         "\${CODEX_HOME}"
       ],
       "notes": [
-        "credentials: auth.json or OS keyring (not probed); encrypted vault sync uses auth.json when present",
+        "credentials: auth.json or OS keyring (not probed); encrypted credential vault sync requires explicit codex.auth opt-in",
         "unsupported: Codex memory (\${CODEX_HOME}/memories_*.sqlite): Codex memory is an opaque SQLite store; file-based memory sync is unsupported"
       ]
     }

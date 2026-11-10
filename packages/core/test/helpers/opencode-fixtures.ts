@@ -1,33 +1,28 @@
 import type { AdapterContext, HarnessProbe } from '../../src/types'
 import { buildFakeHome, type FakeEntry, type FakeHome } from './fake-home'
 
-/** Sanitized v1-shaped sample: plural key families, array permissions, nested mcp servers. */
+/** Sanitized V1 sample: singular key families, object permissions, flat MCP servers. */
 export const OPENCODE_V1_CONFIG = `{
   "$schema": "https://opencode.ai/config.json",
-  "plugins": [
-    "./plugins/local",
-    { "package": "./plugins/router", "options": { "threshold": 90 } }
-  ],
-  "agents": { "reviewer": { "mode": "subagent", "system": "Review the diff." } },
-  "commands": { "deploy": { "template": "Deploy now." } },
-  "permissions": [{ "action": "shell", "resource": "*", "effect": "ask" }],
+  "plugin": ["./plugins/local", "./plugins/router"],
+  "agent": { "reviewer": { "mode": "subagent", "prompt": "Review the diff." } },
+  "command": { "deploy": { "template": "Deploy now." } },
+  "permission": { "bash": "ask" },
   "mcp": {
-    "servers": {
-      "railway": { "type": "local", "command": ["railway", "mcp"] }
-    }
+    "railway": { "type": "local", "command": ["railway", "mcp"] }
   }
 }
 `
 
-/** Sanitized v2-shaped sample: singular key families, object permissions, flat mcp, skills array. */
+/** Sanitized V2 sample: plural key families, array permissions, nested MCP, skills array. */
 export const OPENCODE_V2_CONFIG = `{
   "$schema": "https://opencode.ai/config.json",
   // Skills and agents live in ~/.agents-opencode.
-  "plugin": ["opencode-notify"],
-  "agent": { "poteto": { "mode": "primary" } },
-  "command": { "review": { "template": "Review the diff." } },
-  "permissions": { "edit": "allow" },
-  "mcp": { "cua-driver": { "type": "local", "command": ["cua-driver", "mcp"] } },
+  "plugins": ["opencode-notify"],
+  "agents": { "poteto": { "mode": "primary" } },
+  "commands": { "review": { "template": "Review the diff." } },
+  "permissions": [{ "action": "edit", "resource": "*", "effect": "allow" }],
+  "mcp": { "servers": { "cua-driver": { "type": "local", "command": ["cua-driver", "mcp"] } } },
   "skills": ["~/.agents-opencode/skills"],
   "unknown_future_key": { "keep": true }
 }

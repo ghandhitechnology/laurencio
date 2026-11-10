@@ -3,8 +3,10 @@
  * launchd agent / Windows Scheduled Task that keeps it running.
  */
 
+import fs from 'node:fs'
+import path from 'node:path'
 import type { Platform } from '@laurencio/core'
-import { LockHeldError, SyncLoop } from '@laurencio/core'
+import { crypto, LockHeldError, SyncLoop, storeCredentials } from '@laurencio/core'
 import { adapterContext, type CommandContext } from '../context'
 import { syncSessionCredentials } from '../credential-sync'
 import {
@@ -66,6 +68,35 @@ function serviceSpec(ctx: CommandContext): ServiceSpec {
     program: invocation.program,
     args: invocation.args,
     uid: process.getuid?.() ?? 0,
+    env: Object.fromEntries([
+      ...(ctx.platform === 'darwin' ? [['LAURENCIO_KEYCHAIN', 'file']] : []),
+      ...['CODEX_CA_CERTIFICATE', 'SSL_CERT_FILE'].flatMap((name) => {
+        const value = ctx.env[name]
+        return value !== undefined && path.isAbsolute(value) && fs.existsSync(value)
+          ? [[name, value]]
+          : []
+      }),
+    ]),
+  }
+}
+
+/** Cache the enrolled token and store key for a non-interactive macOS launchd process. */
+async function prepareDaemonCredentials(ctx: CommandContext): Promise<void> {
+  if (ctx.platform !== 'darwin') return
+  const session = await openSession(ctx)
+  try {
+    await storeCredentials(
+      { home: ctx.home, keychain: null, platform: 'darwin' },
+      { identity: session.identity, token: session.credentials.token },
+    )
+    const cache = await crypto.openKeyCache({
+      home: ctx.home,
+      keychain: null,
+      platform: 'darwin',
+    })
+    await cache.save(session.credentials.storeId, session.credentials.key)
+  } finally {
+    session.credentials.key.zeroize()
   }
 }
 
@@ -210,8 +241,9 @@ async function runDaemon(ctx: CommandContext): Promise<DaemonData> {
   }
 }
 
-export function installBackgroundSync(ctx: CommandContext): DaemonData {
+export async function installBackgroundSync(ctx: CommandContext): Promise<DaemonData> {
   requireSupported(ctx)
+  await prepareDaemonCredentials(ctx)
   const spec = serviceSpec(ctx)
   const result = installService(spec, {
     ...(ctx.deps.exec === undefined ? {} : { exec: ctx.deps.exec }),
@@ -302,7 +334,7 @@ export const daemonCommand: CommandSpec = {
         return ok(data, () => humanDaemon(data))
       }
       case 'install': {
-        const data = installBackgroundSync(ctx)
+        const data = await installBackgroundSync(ctx)
         return ok(data, () => humanDaemon(data))
       }
       case 'uninstall': {

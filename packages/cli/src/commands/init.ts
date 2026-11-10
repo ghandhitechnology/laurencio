@@ -146,6 +146,18 @@ function remoteCountsBySurface(
   return counts
 }
 
+function clearReplaceableEntries(
+  inventory: ReturnType<typeof scanInventory>,
+  surfaceIds: ReadonlySet<string>,
+): void {
+  for (const entry of inventory.scan.entries) {
+    if (!surfaceIds.has(entry.surfaceId)) continue
+    if (entry.classification !== 'sync' && entry.classification !== 'opt-in') continue
+    if (entry.kind !== 'file') continue
+    fs.rmSync(entry.localPath, { force: true })
+  }
+}
+
 function inventorySummary(surfaces: readonly SurfaceRow[]): string {
   const counts = { sync: 0, 'opt-in': 0, never: 0 }
   for (const surface of surfaces) counts[surface.policy as 'sync' | 'opt-in' | 'never'] += 1
@@ -352,7 +364,7 @@ export const initCommand: CommandSpec = {
         ),
       )
       if (firstEnrollment) {
-        const replaceRoots: string[] = []
+        const replaceSurfaceIds = new Set<string>()
         for (const surface of inventory.surfaces.values()) {
           if (!activeIds.has(surface.id)) continue
           const report = inventory.scan.surfaces.find((item) => item.surfaceId === surface.id)
@@ -371,7 +383,7 @@ export const initCommand: CommandSpec = {
           enrollment.push({ surfaceId: surface.id, choice })
           if (choice === 's') setToggle(policy, surface, 'off')
           if (choice === 'r' && report.role === 'owner') {
-            replaceRoots.push(report.resolvedPath)
+            replaceSurfaceIds.add(surface.id)
           }
         }
 
@@ -388,7 +400,7 @@ export const initCommand: CommandSpec = {
           )
           .map((report) => ({ label: report.surfaceId, path: report.resolvedPath }))
         if (roots.length > 0) backup = createBackup(ctx.home, roots, ctx.now()).dir
-        for (const root of replaceRoots) fs.rmSync(root, { recursive: true, force: true })
+        clearReplaceableEntries(activeInventory, replaceSurfaceIds)
       }
 
       await enrollMcpSecrets(ctx, session)
@@ -436,7 +448,7 @@ export const initCommand: CommandSpec = {
       ctx.command === 'enroll' &&
       (syncData.status === 'synced' || syncData.status === 'idle') &&
       syncData.conflicts.length === 0
-        ? installBackgroundSync(ctx)
+        ? await installBackgroundSync(ctx)
         : null
     const data: InitData = {
       home: ctx.home,

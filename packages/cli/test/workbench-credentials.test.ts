@@ -70,6 +70,12 @@ describe('workbench credential IO', () => {
       await seedStore({ home: source.home, remoteDir: source.remoteDir })
       writeHomeFile(source.home, '.claude/CLAUDE.md', 'remote instructions\n')
       writeHomeFile(source.home, '.claude/.credentials.json', '{"accessToken":"remote-login"}')
+      const sourcePolicy = defaultPolicy()
+      sourcePolicy.harnesses.claude = {
+        enabled: true,
+        surfaces: { 'claude.auth': 'on', 'claude.instructions': 'on' },
+      }
+      saveCliConfig(source.home, { server: null, policy: sourcePolicy })
       expect(
         (
           await runForTest(['sync', '--yes'], {
@@ -79,6 +85,7 @@ describe('workbench credential IO', () => {
           })
         ).exitCode,
       ).toBe(0)
+      expect((await createFileRemote({ dir: source.remoteDir }).getVaultHead())?.generation).toBe(1)
       await seedStore({ home: target.home, remoteDir: source.remoteDir })
       writeHomeFile(target.home, '.claude/CLAUDE.md', 'local instructions\n')
       const policy = defaultPolicy()
@@ -404,7 +411,7 @@ describe('workbench credential IO', () => {
     restored?.fill(0)
   })
 
-  test('selects credential references through both device policy and command scope', () => {
+  test('requires an explicit auth toggle instead of inferring login sync from skills', () => {
     const references: VaultReference[] = [
       {
         kind: 'agent-auth',
@@ -447,6 +454,11 @@ describe('workbench credential IO', () => {
       cadence: { watch: true, intervalSeconds: 300 },
     }
 
+    expect(selectedCredentialReferences(references, policy)).toEqual([])
+
+    const codexPolicy = policy.harnesses.codex
+    if (codexPolicy === undefined) throw new Error('expected Codex policy')
+    codexPolicy.surfaces['codex.auth'] = 'on'
     expect(selectedCredentialReferences(references, policy).map((entry) => entry.harness)).toEqual([
       'codex',
     ])

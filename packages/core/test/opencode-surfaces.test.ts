@@ -198,7 +198,7 @@ describe('opencode surfaces', () => {
     home.cleanup()
   })
 
-  test('the v2 config projects to valid JSONC with both key spellings and no absolute paths', () => {
+  test('the V2 config projects to valid JSONC preserving its native shape', () => {
     const home = buildOpenCodeHome()
     const raw = home.read('.config/opencode/opencode.jsonc')
     const normalized = opencodeSchemaNormalize(raw, 'upload')
@@ -208,11 +208,12 @@ describe('opencode surfaces', () => {
     parse(tokenized.text, errors, { allowTrailingComma: true, disallowComments: false })
     expect(errors).toEqual([])
     expect(tokenized.text).toContain('// Skills and agents live in ~/.agents-opencode.')
-    expect(tokenized.text).toContain('"plugin"')
+    expect(tokenized.text).not.toContain('"plugin"')
     expect(tokenized.text).toContain('"plugins"')
     expect(tokenized.text).toContain('"servers"')
     expect(tokenized.text).toContain('"unknown_future_key"')
     expect(tokenized.text).not.toContain(home.home)
+    expect(tokenized.text).toBe(raw)
     home.cleanup()
   })
 

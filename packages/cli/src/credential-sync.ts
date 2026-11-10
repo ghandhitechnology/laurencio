@@ -9,6 +9,7 @@ import {
   supportsProfile,
   supportsVault,
   type VaultReference,
+  vaultRecordId,
 } from '@laurencio/core'
 import { loadCliConfig } from './config'
 import { adapterContext, type CommandContext } from './context'
@@ -33,6 +34,8 @@ export function selectedCredentialReferences(
   return references.filter((reference) => {
     const harness = policy.harnesses[reference.harness]
     if (harness?.enabled === false) return false
+    if (reference.kind === 'agent-auth' && harness?.surfaces[`${reference.harness}.auth`] !== 'on')
+      return false
     const surfaceChoices = Object.values(harness?.surfaces ?? {})
     if (surfaceChoices.length > 0 && surfaceChoices.every((choice) => choice === 'off'))
       return false
@@ -78,6 +81,7 @@ export async function syncSessionCredentials(
   harnesses: readonly string[] = [],
 ): Promise<CredentialOperationResult[]> {
   await ensureProfileV2(session.remote)
+  const policy = loadCliConfig(ctx.home).policy
   let references: readonly VaultReference[] = DEFAULT_VAULT_REFERENCES
   let profileToPublish: PortableProfile | null = null
   let profileGeneration: number | null = null
@@ -116,6 +120,17 @@ export async function syncSessionCredentials(
       profileGeneration = stored?.head.generation ?? null
     }
     if (profileToPublish !== null) {
+      const existing = new Set(profileToPublish.vault.map(vaultRecordId))
+      const additions = selectedCredentialReferences(DEFAULT_VAULT_REFERENCES, policy).filter(
+        (reference) => !existing.has(vaultRecordId(reference)),
+      )
+      if (additions.length > 0) {
+        profileToPublish = {
+          ...profileToPublish,
+          vault: [...profileToPublish.vault, ...additions],
+        }
+        profileNeedsPublish = true
+      }
       references = profileToPublish.vault
       if (ctx.platform === 'darwin' || ctx.platform === 'win32') {
         const which =
@@ -136,7 +151,7 @@ export async function syncSessionCredentials(
       }
     }
   }
-  references = selectedCredentialReferences(references, loadCliConfig(ctx.home).policy, harnesses)
+  references = selectedCredentialReferences(references, policy, harnesses)
   let results: CredentialOperationResult[] = []
   if (references.length > 0 && supportsVault(session.remote)) {
     if (ctx.platform !== 'darwin' && ctx.platform !== 'win32') {

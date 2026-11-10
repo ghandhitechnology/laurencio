@@ -74,13 +74,8 @@ describe('credentials resolve', () => {
         remoteDir: scratch.remoteDir,
         deps: { quiescence: { windowMs: 0 } },
       })
-      expect(conflicted.exitCode).toBe(1)
-      expect(JSON.parse(conflicted.errorOutput)).toMatchObject({
-        error: {
-          code: 'credential-conflict',
-          hint: expect.stringContaining('laurencio credentials resolve <reference>'),
-        },
-      })
+      expect(conflicted.exitCode).toBe(0)
+      expect(readHomeFile(scratch.home, '.codex/auth.json')).toBe(localSecret)
       const remote = createFileRemote({ dir: scratch.remoteDir })
       const expectedGenerations: Array<number | null> = []
       const instrumented = {

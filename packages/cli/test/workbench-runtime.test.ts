@@ -52,6 +52,27 @@ describe('workbench runtime', () => {
     },
   )
 
+  test('uses the macOS certificate bundle when a workbench has no certificate override', () => {
+    const env = routeWorkbenchEnvironment(
+      {},
+      'darwin',
+      '/tmp/workbench/home',
+      (candidate) => candidate === '/etc/ssl/cert.pem',
+    )
+    expect(env.CODEX_CA_CERTIFICATE).toBe('/etc/ssl/cert.pem')
+  })
+
+  test('preserves an explicit workbench certificate override', () => {
+    const env = routeWorkbenchEnvironment(
+      { SSL_CERT_FILE: '/private/company-roots.pem' },
+      'darwin',
+      '/tmp/workbench/home',
+      () => true,
+    )
+    expect(env.SSL_CERT_FILE).toBe('/private/company-roots.pem')
+    expect(env.CODEX_CA_CERTIFICATE).toBeUndefined()
+  })
+
   test.each(['darwin', 'win32'] as const)(
     'applies projected terminal settings and observes natural %s exit',
     async (platform) => {

@@ -13,7 +13,7 @@ Back-link: [README](../README.md). Design decisions live in [DESIGN.md](../DESIG
 
 - File contents, paths, skill names, project names, or memory text. Manifests are encrypted, so even the file list is opaque.
 - Your passphrase. It is stretched locally with Argon2id; only the public salt and cost parameters are stored server-side.
-- Plaintext credentials. Agent login files and explicitly referenced MCP secrets can enter the separately encrypted credential vault; the server sees only its opaque ciphertext. Other credential, database, keyring, and session stores remain excluded.
+- Plaintext credentials. Agent login files enter the separately encrypted credential vault only when their `*.auth` policy toggle is explicitly enabled. Confirmed MCP references can also enter it; the server sees only opaque ciphertext. Other credential, database, keyring, and session stores remain excluded.
 
 ## Key custody
 
@@ -30,7 +30,7 @@ Windows workbenches launch a separate WezTerm GUI with an explicit configuration
 
 ## Secrets inside synced files
 
-Files that may contain live credentials never enter configuration revisions. Secret scanning runs before every config upload and fails closed: a file with a key-shaped value is blocked, not sanitized. Agent login files and MCP variables named by the profile use the separate encrypted vault, with per-record versions and compare-and-swap head rotation. Other secrets stay local. Where a harness supports it, MCP values in synced config are rewritten to environment indirection (`${ENV}` for Claude, `{env:VAR}` for OpenCode).
+Files that may contain live credentials never enter configuration revisions. Secret scanning runs before every config upload and fails closed: a file with a key-shaped value is blocked, not sanitized. Explicitly enabled agent login files and confirmed MCP variables use the separate encrypted vault, with per-record versions and compare-and-swap head rotation. Other secrets stay local. Where a harness supports it, MCP values in synced config are rewritten to environment indirection (`${ENV}` for Claude, `{env:VAR}` for OpenCode).
 
 ## Conflicts and history
 
