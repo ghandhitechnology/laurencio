@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(echo \"=== HOME=$HOME ===\"; echo \"--- ~/.codex ---\"; ls -la ~/.codex/ 2>&1 | head -n 50; echo \"--- CODEX_HOME=$CODEX_HOME ---\"; echo \"--- ~/.config/opencode ---\"; ls -la ~/.config/opencode/ 2>&1 | head -n 80; echo \"--- ~/.agents-opencode ---\"; ls -la ~/.agents-opencode/ 2>&1 | head -n 40; echo \"--- symlinks ---\"; ls -la ~/.config/opencode/AGENTS.md ~/.config/opencode/agents ~/.config/opencode/skills 2>&1; echo \"--- ~/.agents/skills ---\"; ls -la ~/.agents/skills/ 2>&1 | head -n 20; echo \"--- ~/.codex/skills ---\"; ls -la ~/.codex/skills/ 2>&1 | head -n 20)",
+      "Shell(ls ~/.laurencio/ 2>&1; cat ~/.laurencio/*.json ~/.laurencio/*.toml 2>&1 | head -n 100; echo \"=== daemon ===\"; launchctl list 2>&1 | grep -i laurencio; echo \"=== backups ===\"; ls -la ~/.*laurencio* ~/.config/laurencio 2>&1 | head -n 30)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}
